@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """
-Arrow Lang — A small programming language with C-like syntax and <- assignment.
+Arrow Lang v0.3 — A small programming language.
 
-Supports:
+Features:
     - Variables with <- assignment
     - Arithmetic, comparisons, logical operators
     - If/else, while loops
     - Named functions:    fn add(a, b) { return a + b; }
     - Arrow functions:    add <- (a, b) => a + b;
-    - First-class functions (assign, pass, return)
-    - Closures
-    - Recursion
-
-Example:
-    fn fib(n) {
-        if (n <= 1) { return n; }
-        return fib(n - 1) + fib(n - 2);
-    }
-    print(fib(10));
+    - First-class functions, closures, recursion
+    - Arrays:             nums <- [1, 2, 3];
+    - Index access:       nums[0], nums[i + 1]
+    - Index assignment:   nums[0] <- 99;
+    - Builtins:           len(arr), push(arr, val), pop(arr)
 """
 
 import sys
@@ -59,6 +54,8 @@ class TokenType(Enum):
     RPAREN    = auto()  # )
     LBRACE    = auto()  # {
     RBRACE    = auto()  # }
+    LBRACKET  = auto()  # [
+    RBRACKET  = auto()  # ]
     SEMI      = auto()  # ;
     COMMA     = auto()  # ,
 
@@ -145,19 +142,14 @@ class Lexer:
             ch = self._peek()
             line, col = self.line, self.col
 
-            # Numbers
             if ch.isdigit():
                 tokens.append(self._read_number())
-
-            # Strings
             elif ch == '"':
                 tokens.append(self._read_string())
-
-            # Identifiers / keywords
             elif ch.isalpha() or ch == '_':
                 tokens.append(self._read_ident())
 
-            # Two-character operators (order matters!)
+            # Two-character operators
             elif ch == '<' and self._peek(1) == '-':
                 self._advance(); self._advance()
                 tokens.append(Token(TokenType.ARROW, '<-', line, col))
@@ -181,21 +173,23 @@ class Lexer:
                 tokens.append(Token(TokenType.OR, '||', line, col))
 
             # Single-character tokens
-            elif ch == '+': self._advance(); tokens.append(Token(TokenType.PLUS,    '+', line, col))
-            elif ch == '-': self._advance(); tokens.append(Token(TokenType.MINUS,   '-', line, col))
-            elif ch == '*': self._advance(); tokens.append(Token(TokenType.STAR,    '*', line, col))
-            elif ch == '/': self._advance(); tokens.append(Token(TokenType.SLASH,   '/', line, col))
-            elif ch == '%': self._advance(); tokens.append(Token(TokenType.PERCENT, '%', line, col))
-            elif ch == '<': self._advance(); tokens.append(Token(TokenType.LT,      '<', line, col))
-            elif ch == '>': self._advance(); tokens.append(Token(TokenType.GT,      '>', line, col))
-            elif ch == '!': self._advance(); tokens.append(Token(TokenType.NOT,     '!', line, col))
-            elif ch == '=': self._advance(); tokens.append(Token(TokenType.EQ,      '=', line, col))
-            elif ch == '(': self._advance(); tokens.append(Token(TokenType.LPAREN,  '(', line, col))
-            elif ch == ')': self._advance(); tokens.append(Token(TokenType.RPAREN,  ')', line, col))
-            elif ch == '{': self._advance(); tokens.append(Token(TokenType.LBRACE,  '{', line, col))
-            elif ch == '}': self._advance(); tokens.append(Token(TokenType.RBRACE,  '}', line, col))
-            elif ch == ';': self._advance(); tokens.append(Token(TokenType.SEMI,    ';', line, col))
-            elif ch == ',': self._advance(); tokens.append(Token(TokenType.COMMA,   ',', line, col))
+            elif ch == '+': self._advance(); tokens.append(Token(TokenType.PLUS,     '+', line, col))
+            elif ch == '-': self._advance(); tokens.append(Token(TokenType.MINUS,    '-', line, col))
+            elif ch == '*': self._advance(); tokens.append(Token(TokenType.STAR,     '*', line, col))
+            elif ch == '/': self._advance(); tokens.append(Token(TokenType.SLASH,    '/', line, col))
+            elif ch == '%': self._advance(); tokens.append(Token(TokenType.PERCENT,  '%', line, col))
+            elif ch == '<': self._advance(); tokens.append(Token(TokenType.LT,       '<', line, col))
+            elif ch == '>': self._advance(); tokens.append(Token(TokenType.GT,       '>', line, col))
+            elif ch == '!': self._advance(); tokens.append(Token(TokenType.NOT,      '!', line, col))
+            elif ch == '=': self._advance(); tokens.append(Token(TokenType.EQ,       '=', line, col))
+            elif ch == '(': self._advance(); tokens.append(Token(TokenType.LPAREN,   '(', line, col))
+            elif ch == ')': self._advance(); tokens.append(Token(TokenType.RPAREN,   ')', line, col))
+            elif ch == '{': self._advance(); tokens.append(Token(TokenType.LBRACE,   '{', line, col))
+            elif ch == '}': self._advance(); tokens.append(Token(TokenType.RBRACE,   '}', line, col))
+            elif ch == '[': self._advance(); tokens.append(Token(TokenType.LBRACKET, '[', line, col))
+            elif ch == ']': self._advance(); tokens.append(Token(TokenType.RBRACKET, ']', line, col))
+            elif ch == ';': self._advance(); tokens.append(Token(TokenType.SEMI,     ';', line, col))
+            elif ch == ',': self._advance(); tokens.append(Token(TokenType.COMMA,    ',', line, col))
 
             else:
                 raise LexerError(f"Unexpected character '{ch}' at line {line}, col {col}")
@@ -214,7 +208,7 @@ class Lexer:
 
     def _read_string(self) -> Token:
         line, col = self.line, self.col
-        self._advance()  # skip opening "
+        self._advance()
         chars = []
         while self.pos < len(self.source) and self._peek() != '"':
             ch = self._advance()
@@ -226,7 +220,7 @@ class Lexer:
                 chars.append(ch)
         if self.pos >= len(self.source):
             raise LexerError(f"Unterminated string at line {line}, col {col}")
-        self._advance()  # skip closing "
+        self._advance()
         return Token(TokenType.STRING, ''.join(chars), line, col)
 
     def _read_ident(self) -> Token:
@@ -260,6 +254,23 @@ class BoolLit:
 @dataclass
 class Identifier:
     name: str
+
+@dataclass
+class ArrayLit:
+    elements: list
+
+@dataclass
+class IndexExpr:
+    """Array index access: expr[index]"""
+    obj: Any
+    index: Any
+
+@dataclass
+class IndexAssign:
+    """Array index assignment: expr[index] <- value;"""
+    obj: Any
+    index: Any
+    value: Any
 
 @dataclass
 class BinOp:
@@ -302,24 +313,22 @@ class Program:
 
 @dataclass
 class FnDecl:
-    """Named function declaration: fn name(params) { body }"""
     name: str
     params: list[str]
     body: list
 
 @dataclass
 class ArrowFn:
-    """Arrow function expression: (params) => expr  OR  (params) => { body }"""
     params: list[str]
-    body: Any  # single expression or list of statements
+    body: Any
 
 @dataclass
 class ReturnStmt:
-    expr: Any  # None for bare "return;"
+    expr: Any
 
 @dataclass
 class CallExpr:
-    callee: Any  # expression that evaluates to a function
+    callee: Any
     args: list
 
 
@@ -382,14 +391,41 @@ class Parser:
             return self._print_stmt()
         if tok.type == TokenType.LBRACE:
             return self._block()
+
+        # Assignment: ident <- expr; OR ident[idx] <- expr;
         if tok.type == TokenType.IDENT:
             if self._peek_type(1) == TokenType.ARROW:
                 return self._assignment()
+            # Check for index assignment: ident[...] <- ...
+            if self._peek_type(1) == TokenType.LBRACKET:
+                return self._try_index_assignment()
 
         # Expression statement
         expr = self._expression()
         self._eat(TokenType.SEMI)
         return expr
+
+    def _try_index_assignment(self):
+        """Try to parse: ident[index] <- value; or fall through to expr stmt."""
+        # Save position for backtracking
+        saved = self.pos
+
+        # Parse the target expression (could be ident[i], ident[i][j], etc.)
+        expr = self._expression()
+
+        # Check if followed by <-
+        if self._current().type == TokenType.ARROW:
+            # It's an index assignment
+            if not isinstance(expr, IndexExpr):
+                raise ParseError("Invalid assignment target")
+            self._eat(TokenType.ARROW)
+            value = self._expression()
+            self._eat(TokenType.SEMI)
+            return IndexAssign(expr.obj, expr.index, value)
+        else:
+            # Not an assignment, treat as expression statement
+            self._eat(TokenType.SEMI)
+            return expr
 
     def _block(self) -> Block:
         self._eat(TokenType.LBRACE)
@@ -424,7 +460,6 @@ class Parser:
         return ReturnStmt(expr)
 
     def _fn_decl(self) -> FnDecl:
-        """Parse: fn name(a, b, c) { body }"""
         self._eat(TokenType.FN)
         name = self._eat(TokenType.IDENT).value
         params = self._param_list()
@@ -432,7 +467,6 @@ class Parser:
         return FnDecl(name, params, body.statements)
 
     def _param_list(self) -> list[str]:
-        """Parse: (a, b, c)"""
         self._eat(TokenType.LPAREN)
         params = []
         if self._current().type != TokenType.RPAREN:
@@ -464,24 +498,16 @@ class Parser:
         body = self._block()
         return WhileStmt(cond, body.statements)
 
-    # ── Expressions (precedence climbing) ────
+    # ── Expressions ──────────────────────────
 
     def _expression(self):
-        # Check for arrow function: (params) => ...
         if self._is_arrow_fn():
             return self._arrow_fn()
         return self._or_expr()
 
     def _is_arrow_fn(self) -> bool:
-        """Look ahead to determine if this is an arrow function.
-
-        Arrow functions:  () => expr,  (a) => expr,  (a, b) => { ... }
-        Must distinguish from grouped expressions like (a + b).
-        """
         if self._current().type != TokenType.LPAREN:
             return False
-
-        # Scan forward, matching parens
         depth = 0
         i = self.pos
         while i < len(self.tokens):
@@ -491,17 +517,14 @@ class Parser:
             elif tt == TokenType.RPAREN:
                 depth -= 1
                 if depth == 0:
-                    # Token after closing ')' must be '=>'
                     return (i + 1 < len(self.tokens)
                             and self.tokens[i + 1].type == TokenType.FAT_ARROW)
             i += 1
         return False
 
     def _arrow_fn(self) -> ArrowFn:
-        """Parse: (a, b) => expr  OR  (a, b) => { body }"""
         params = self._param_list()
         self._eat(TokenType.FAT_ARROW)
-
         if self._current().type == TokenType.LBRACE:
             body = self._block()
             return ArrowFn(params, body.statements)
@@ -556,20 +579,29 @@ class Parser:
             return UnaryOp('-', self._unary())
         if tok := self._match(TokenType.NOT):
             return UnaryOp('!', self._unary())
-        return self._call()
+        return self._postfix()
 
-    def _call(self):
-        """Parse function calls: expr(args) — supports chaining like f(1)(2)"""
+    def _postfix(self):
+        """Parse postfix operations: calls f(args) and indexing expr[i].
+        Supports chaining: arr[0], f(x)(y), f(x)[0], arr[0](args), etc."""
         expr = self._primary()
-        while self._current().type == TokenType.LPAREN:
-            self._eat(TokenType.LPAREN)
-            args = []
-            if self._current().type != TokenType.RPAREN:
-                args.append(self._expression())
-                while self._match(TokenType.COMMA):
+        while True:
+            if self._current().type == TokenType.LPAREN:
+                self._eat(TokenType.LPAREN)
+                args = []
+                if self._current().type != TokenType.RPAREN:
                     args.append(self._expression())
-            self._eat(TokenType.RPAREN)
-            expr = CallExpr(expr, args)
+                    while self._match(TokenType.COMMA):
+                        args.append(self._expression())
+                self._eat(TokenType.RPAREN)
+                expr = CallExpr(expr, args)
+            elif self._current().type == TokenType.LBRACKET:
+                self._eat(TokenType.LBRACKET)
+                index = self._expression()
+                self._eat(TokenType.RBRACKET)
+                expr = IndexExpr(expr, index)
+            else:
+                break
         return expr
 
     def _primary(self):
@@ -591,6 +623,10 @@ class Parser:
             self.pos += 1
             return Identifier(tok.value)
 
+        # Array literal: [expr, expr, ...]
+        if tok.type == TokenType.LBRACKET:
+            return self._array_literal()
+
         if tok.type == TokenType.LPAREN:
             self._eat(TokenType.LPAREN)
             expr = self._expression()
@@ -602,12 +638,21 @@ class Parser:
             f"at line {tok.line}, col {tok.col}"
         )
 
+    def _array_literal(self) -> ArrayLit:
+        self._eat(TokenType.LBRACKET)
+        elements = []
+        if self._current().type != TokenType.RBRACKET:
+            elements.append(self._expression())
+            while self._match(TokenType.COMMA):
+                elements.append(self._expression())
+        self._eat(TokenType.RBRACKET)
+        return ArrayLit(elements)
+
 
 # ─────────────────────────────────────────────
 #  INTERPRETER
 # ─────────────────────────────────────────────
 class ReturnSignal(Exception):
-    """Used to unwind the call stack on return statements."""
     def __init__(self, value: Any):
         self.value = value
 
@@ -617,7 +662,6 @@ class RuntimeError_(Exception):
 
 
 class Environment:
-    """Scoped variable environment with parent chain for closures."""
     def __init__(self, parent: 'Environment | None' = None):
         self.vars: dict[str, Any] = {}
         self.parent = parent
@@ -634,15 +678,18 @@ class Environment:
 
 
 class Function:
-    """Runtime representation of a function (both named and arrow)."""
     def __init__(self, name: str, params: list[str], body: Any, closure: Environment):
         self.name = name
         self.params = params
-        self.body = body          # list of stmts, or a single expr for arrow fns
-        self.closure = closure    # environment captured at definition time
+        self.body = body
+        self.closure = closure
 
     def __repr__(self):
         return f"<fn {self.name}({', '.join(self.params)})>"
+
+
+# Built-in function names
+BUILTINS = {"len", "push", "pop"}
 
 
 class Interpreter:
@@ -658,12 +705,22 @@ class Interpreter:
         match node:
             case Assignment(name, expr):
                 val = self._eval(expr)
-                # If assigning a function, give it a name for recursion/debugging
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
-                    # Re-bind in its own closure so it can call itself
                     val.closure.set(name, val)
                 self.env.set(name, val)
+
+            case IndexAssign(obj, index, value):
+                target = self._eval(obj)
+                idx = self._eval(index)
+                val = self._eval(value)
+                if not isinstance(target, list):
+                    raise RuntimeError_("Cannot index into non-array value")
+                if not isinstance(idx, int):
+                    raise RuntimeError_("Array index must be an integer")
+                if idx < 0 or idx >= len(target):
+                    raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
+                target[idx] = val
 
             case PrintStmt(expr):
                 val = self._eval(expr)
@@ -693,10 +750,6 @@ class Interpreter:
                     self._exec(s)
 
             case FnDecl(name, params, body):
-                # Create the function and bind it — note: we set the name
-                # in the env BEFORE creating the Function so that the closure
-                # captures a reference to the env that contains itself,
-                # enabling recursion.
                 fn = Function(name, params, body, self.env)
                 self.env.set(name, fn)
 
@@ -718,6 +771,27 @@ class Interpreter:
             case Identifier(name):
                 return self.env.get(name)
 
+            case ArrayLit(elements):
+                return [self._eval(e) for e in elements]
+
+            case IndexExpr(obj, index):
+                target = self._eval(obj)
+                idx = self._eval(index)
+                if isinstance(target, list):
+                    if not isinstance(idx, int):
+                        raise RuntimeError_("Array index must be an integer")
+                    if idx < 0 or idx >= len(target):
+                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
+                    return target[idx]
+                elif isinstance(target, str):
+                    if not isinstance(idx, int):
+                        raise RuntimeError_("String index must be an integer")
+                    if idx < 0 or idx >= len(target):
+                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
+                    return target[idx]
+                else:
+                    raise RuntimeError_("Cannot index into this type")
+
             case UnaryOp('-', operand):
                 return -self._eval(operand)
             case UnaryOp('!', operand):
@@ -736,6 +810,10 @@ class Interpreter:
                 raise RuntimeError_(f"Cannot evaluate node: {node}")
 
     def _eval_call(self, callee, args) -> Any:
+        # Handle builtins: len, push, pop
+        if isinstance(callee, Identifier) and callee.name in BUILTINS:
+            return self._eval_builtin(callee.name, args)
+
         fn = self._eval(callee)
         if not isinstance(fn, Function):
             raise RuntimeError_(f"'{fn}' is not a function")
@@ -748,12 +826,10 @@ class Interpreter:
                 f"got {len(arg_vals)}"
             )
 
-        # New scope chained to the function's closure (not the call site)
         call_env = Environment(parent=fn.closure)
         for param, val in zip(fn.params, arg_vals):
             call_env.set(param, val)
 
-        # Save and restore environment
         prev_env = self.env
         self.env = call_env
 
@@ -763,7 +839,6 @@ class Interpreter:
                 for stmt in fn.body:
                     self._exec(stmt)
             else:
-                # Expression body (arrow fn shorthand)
                 result = self._eval(fn.body)
         except ReturnSignal as ret:
             result = ret.value
@@ -772,12 +847,45 @@ class Interpreter:
 
         return result
 
+    def _eval_builtin(self, name: str, args: list) -> Any:
+        if name == "len":
+            if len(args) != 1:
+                raise RuntimeError_("len() takes exactly 1 argument")
+            val = self._eval(args[0])
+            if isinstance(val, (list, str)):
+                return len(val)
+            raise RuntimeError_("len() requires an array or string")
+
+        elif name == "push":
+            if len(args) != 2:
+                raise RuntimeError_("push() takes exactly 2 arguments")
+            arr = self._eval(args[0])
+            val = self._eval(args[1])
+            if not isinstance(arr, list):
+                raise RuntimeError_("push() requires an array as first argument")
+            arr.append(val)
+            return len(arr)
+
+        elif name == "pop":
+            if len(args) != 1:
+                raise RuntimeError_("pop() takes exactly 1 argument")
+            arr = self._eval(args[0])
+            if not isinstance(arr, list):
+                raise RuntimeError_("pop() requires an array")
+            if len(arr) == 0:
+                raise RuntimeError_("Cannot pop from empty array")
+            return arr.pop()
+
+        raise RuntimeError_(f"Unknown builtin: {name}")
+
     def _eval_binop(self, op: str, left, right) -> Any:
         lv = self._eval(left)
         rv = self._eval(right)
 
         match op:
             case '+':
+                if isinstance(lv, list) and isinstance(rv, list):
+                    return lv + rv  # array concatenation
                 if isinstance(lv, str) or isinstance(rv, str):
                     return self._format(lv) + self._format(rv)
                 return lv + rv
@@ -809,6 +917,8 @@ class Interpreter:
             return val != 0
         if isinstance(val, str):
             return len(val) > 0
+        if isinstance(val, list):
+            return len(val) > 0
         return val is not None
 
     def _format(self, val) -> str:
@@ -816,6 +926,8 @@ class Interpreter:
             return "true" if val else "false"
         if isinstance(val, float) and val == int(val):
             return str(int(val))
+        if isinstance(val, list):
+            return "[" + ", ".join(self._format(v) for v in val) + "]"
         if isinstance(val, Function):
             return repr(val)
         return str(val)
@@ -838,7 +950,7 @@ def run_source(source: str) -> Interpreter:
 #  REPL & FILE RUNNER
 # ─────────────────────────────────────────────
 def repl():
-    print("Arrow Lang v0.2 — Type 'exit' to quit")
+    print("Arrow Lang v0.3 — Type 'exit' to quit")
     print("─" * 40)
     interp = Interpreter()
     while True:

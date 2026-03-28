@@ -1,0 +1,84 @@
+// Arrow Lang v0.3 — Arrays (compiler test)
+// Tests array features that work with the LLVM backend.
+
+// Array literal and printing
+nums <- [10, 20, 30, 40, 50];
+print(nums);
+
+// Index access
+print(nums[0]);
+print(nums[4]);
+
+// Index assignment
+nums[2] <- 99;
+print(nums);
+
+// Empty array + push
+items <- [];
+push(items, 100);
+push(items, 200);
+push(items, 300);
+print(items);
+print(len(items));
+
+// Pop
+last <- pop(items);
+print(last);
+print(items);
+
+// Dynamic index
+i <- 3;
+print(nums[i]);
+
+// Loop over array
+j <- 0;
+while (j < len(nums)) {
+    print(nums[j]);
+    j <- j + 1;
+}
+
+// Sum function with array
+fn sum(arr) {
+    total <- 0;
+    i <- 0;
+    while (i < len(arr)) {
+        total <- total + arr[i];
+        i <- i + 1;
+    }
+    return total;
+}
+print(sum([1, 2, 3, 4, 5]));
+
+// Bubble sort
+fn sort(arr) {
+    n <- len(arr);
+    i <- 0;
+    while (i < n) {
+        j <- 0;
+        while (j < n - i - 1) {
+            if (arr[j] > arr[j + 1]) {
+                tmp <- arr[j];
+                arr[j] <- arr[j + 1];
+                arr[j + 1] <- tmp;
+            }
+            j <- j + 1;
+        }
+        i <- i + 1;
+    }
+    return arr;
+}
+
+unsorted <- [5, 3, 8, 1, 9, 2, 7, 4, 6];
+sort(unsorted);
+print(unsorted);
+
+// Build array in a loop
+squares <- [];
+k <- 0;
+while (k < 6) {
+    push(squares, k * k);
+    k <- k + 1;
+}
+print(squares);
+
+print("Done!");

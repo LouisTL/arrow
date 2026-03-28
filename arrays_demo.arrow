@@ -1,0 +1,134 @@
+// Arrow Lang v0.3 — Arrays Demo
+
+// ── Array literals ──────────────────────
+nums <- [10, 20, 30, 40, 50];
+print(nums);
+print(nums[0]);
+print(nums[4]);
+
+// ── Index assignment ────────────────────
+nums[2] <- 99;
+print(nums);
+
+// ── Empty array + push ──────────────────
+items <- [];
+push(items, "hello");
+push(items, "world");
+push(items, "!");
+print(items);
+print(len(items));
+
+// ── Pop ─────────────────────────────────
+last <- pop(items);
+print(last);
+print(items);
+
+// ── Array concatenation with + ──────────
+a <- [1, 2, 3];
+b <- [4, 5, 6];
+c <- a + b;
+print(c);
+
+// ── String indexing ─────────────────────
+s <- "hello";
+print(s[0]);
+print(s[4]);
+print(len(s));
+
+// ── Nested arrays ───────────────────────
+matrix <- [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+print(matrix[0]);
+print(matrix[1][2]);
+
+// ── Dynamic index ───────────────────────
+i <- 2;
+print(nums[i]);
+
+// ── Loop over array ─────────────────────
+names <- ["Alice", "Bob", "Charlie"];
+i <- 0;
+while (i < len(names)) {
+    print("Hello, " + names[i] + "!");
+    i <- i + 1;
+}
+
+// ── Functions with arrays ───────────────
+fn sum(arr) {
+    total <- 0;
+    i <- 0;
+    while (i < len(arr)) {
+        total <- total + arr[i];
+        i <- i + 1;
+    }
+    return total;
+}
+print(sum([1, 2, 3, 4, 5]));
+
+fn map(arr, f) {
+    result <- [];
+    i <- 0;
+    while (i < len(arr)) {
+        push(result, f(arr[i]));
+        i <- i + 1;
+    }
+    return result;
+}
+
+doubled <- map([1, 2, 3, 4], (x) => x * 2);
+print(doubled);
+
+// ── Filter ──────────────────────────────
+fn filter(arr, pred) {
+    result <- [];
+    i <- 0;
+    while (i < len(arr)) {
+        if (pred(arr[i])) {
+            push(result, arr[i]);
+        }
+        i <- i + 1;
+    }
+    return result;
+}
+
+evens <- filter([1, 2, 3, 4, 5, 6, 7, 8], (x) => x % 2 = 0);
+print(evens);
+
+// ── Reduce ──────────────────────────────
+fn reduce(arr, init, f) {
+    acc <- init;
+    i <- 0;
+    while (i < len(arr)) {
+        acc <- f(acc, arr[i]);
+        i <- i + 1;
+    }
+    return acc;
+}
+
+product <- reduce([1, 2, 3, 4, 5], 1, (a, b) => a * b);
+print(product);
+
+// ── Bubble sort ─────────────────────────
+fn sort(arr) {
+    n <- len(arr);
+    i <- 0;
+    while (i < n) {
+        j <- 0;
+        while (j < n - i - 1) {
+            if (arr[j] > arr[j + 1]) {
+                // swap
+                tmp <- arr[j];
+                arr[j] <- arr[j + 1];
+                arr[j + 1] <- tmp;
+            }
+            j <- j + 1;
+        }
+        i <- i + 1;
+    }
+    return arr;
+}
+
+unsorted <- [5, 3, 8, 1, 9, 2, 7, 4, 6];
+sorted <- sort(unsorted);
+print(sorted);
+
+print("Done!");
