@@ -1,0 +1,88 @@
+// Arrow Lang v0.2 — Functions (compiler test)
+// All functions work with integer params/returns.
+
+// Named function
+fn add(a, b) {
+    return a + b;
+}
+print(add(3, 4));
+
+// Arrow function (expression body)
+mul <- (a, b) => a * b;
+print(mul(6, 7));
+
+// Arrow function (block body)
+abs <- (x) => {
+    if (x < 0) { return -x; }
+    return x;
+};
+print(abs(-42));
+print(abs(17));
+
+// Recursion
+fn factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+print(factorial(5));
+print(factorial(10));
+
+fn fib(n) {
+    if (n <= 1) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+print(fib(10));
+print(fib(20));
+
+// Recursive arrow function
+fn gcd(a, b) {
+    if (b = 0) { return a; }
+    return gcd(b, a % b);
+}
+print(gcd(48, 18));
+print(gcd(100, 75));
+
+// Function calling another function
+fn square(x) {
+    return mul(x, x);
+}
+print(square(9));
+
+// Pass function as argument
+fn apply(f, x, y) {
+    return f(x, y);
+}
+print(apply(add, 10, 20));
+print(apply(mul, 5, 8));
+
+// Function with loop
+fn sum_to(n) {
+    total <- 0;
+    i <- 1;
+    while (i <= n) {
+        total <- total + i;
+        i <- i + 1;
+    }
+    return total;
+}
+print(sum_to(100));
+
+// FizzBuzz as a function
+fn fizzbuzz(n) {
+    i <- 1;
+    while (i <= n) {
+        if (i % 15 = 0) {
+            print("FizzBuzz");
+        } else if (i % 3 = 0) {
+            print("Fizz");
+        } else if (i % 5 = 0) {
+            print("Buzz");
+        } else {
+            print(i);
+        }
+        i <- i + 1;
+    }
+}
+fizzbuzz(15);
+
+print("Done!");

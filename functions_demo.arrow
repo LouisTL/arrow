@@ -1,0 +1,127 @@
+// Arrow Lang v0.2 — Functions Demo
+// ═════════════════════════════════
+
+// ── Named functions ─────────────────────
+fn add(a, b) {
+    return a + b;
+}
+
+fn greet(name) {
+    return "Hello, " + name + "!";
+}
+
+print(add(3, 4));           // 7
+print(greet("world"));      // Hello, world!
+
+// ── Arrow functions (expression body) ───
+mul <- (a, b) => a * b;
+square <- (x) => x * x;
+
+print(mul(6, 7));            // 42
+print(square(9));            // 81
+
+// ── Arrow functions (block body) ────────
+abs <- (x) => {
+    if (x < 0) { return -x; }
+    return x;
+};
+
+print(abs(-42));             // 42
+print(abs(17));              // 17
+
+// ── Functions are first-class values ────
+op <- add;
+print(op(10, 20));           // 30
+
+fn apply(f, x, y) {
+    return f(x, y);
+}
+print(apply(mul, 5, 8));     // 40
+
+// ── Functions returning functions ───────
+fn make_adder(n) {
+    return (x) => x + n;
+}
+add5 <- make_adder(5);
+add10 <- make_adder(10);
+print(add5(3));              // 8
+print(add10(3));             // 13
+
+// ── Closures capture their environment ──
+fn counter() {
+    count <- 0;
+    return () => {
+        count <- count + 1;
+        return count;
+    };
+}
+// Note: this creates a new count each call since we use
+// simple scoping. Each arrow fn captures its own env.
+
+// ── Recursion ───────────────────────────
+fn factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+print(factorial(5));         // 120
+print(factorial(10));        // 3628800
+
+fn fib(n) {
+    if (n <= 1) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+print(fib(10));              // 55
+print(fib(20));              // 6765
+
+// ── Recursive with arrow function ───────
+gcd <- (a, b) => {
+    if (b = 0) { return a; }
+    return gcd(b, a % b);
+};
+print(gcd(48, 18));          // 6
+print(gcd(100, 75));         // 25
+
+// ── Higher-order: map-like behavior ─────
+fn repeat(f, n) {
+    i <- 0;
+    while (i < n) {
+        f(i);
+        i <- i + 1;
+    }
+}
+
+repeat((i) => {
+    print("iteration " + i);
+}, 3);
+
+// ── Chained calls ───────────────────────
+fn compose(f, g) {
+    return (x) => f(g(x));
+}
+
+double <- (x) => x * 2;
+inc <- (x) => x + 1;
+
+double_then_inc <- compose(inc, double);
+print(double_then_inc(5));   // 11  (5*2=10, 10+1=11)
+
+// ── Everything together: FizzBuzz with functions ──
+fn fizzbuzz(n) {
+    i <- 1;
+    while (i <= n) {
+        if (i % 15 = 0) {
+            print("FizzBuzz");
+        } else if (i % 3 = 0) {
+            print("Fizz");
+        } else if (i % 5 = 0) {
+            print("Buzz");
+        } else {
+            print(i);
+        }
+        i <- i + 1;
+    }
+}
+
+fizzbuzz(15);
+
+print("Done!");
