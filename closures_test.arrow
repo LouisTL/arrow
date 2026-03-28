@@ -1,0 +1,110 @@
+// Arrow Lang v0.4 — Closures (compiler test)
+
+// ── Basic functions still work ──────────
+fn add(a, b) {
+    return a + b;
+}
+print(add(3, 4));
+
+// ── Arrow function ──────────────────────
+mul <- (a, b) => a * b;
+print(mul(6, 7));
+
+// ── Recursion ───────────────────────────
+fn factorial(n) {
+    if (n <= 1) { return 1; }
+    return n * factorial(n - 1);
+}
+print(factorial(10));
+
+// ── Closure: make_adder ─────────────────
+fn make_adder(n) {
+    return (x) => x + n;
+}
+add5 <- make_adder(5);
+add10 <- make_adder(10);
+print(add5(3));
+print(add10(3));
+
+// ── Closure: make_multiplier ────────────
+fn make_multiplier(factor) {
+    return (x) => x * factor;
+}
+double <- make_multiplier(2);
+triple <- make_multiplier(3);
+print(double(7));
+print(triple(7));
+
+// ── Pass function as argument ───────────
+fn apply(f, x, y) {
+    return f(x, y);
+}
+print(apply(add, 10, 20));
+print(apply(mul, 5, 8));
+
+// ── Compose ─────────────────────────────
+fn compose(f, g) {
+    return (x) => f(g(x));
+}
+inc <- (x) => x + 1;
+dbl <- (x) => x * 2;
+inc_after_dbl <- compose(inc, dbl);
+print(inc_after_dbl(5));
+
+// ── Higher-order with arrays ────────────
+fn map(arr, f) {
+    result <- [];
+    i <- 0;
+    while (i < len(arr)) {
+        push(result, f(arr[i]));
+        i <- i + 1;
+    }
+    return result;
+}
+
+doubled <- map([1, 2, 3, 4], (x) => x * 2);
+print(doubled);
+
+fn filter(arr, pred) {
+    result <- [];
+    i <- 0;
+    while (i < len(arr)) {
+        if (pred(arr[i])) {
+            push(result, arr[i]);
+        }
+        i <- i + 1;
+    }
+    return result;
+}
+
+evens <- filter([1, 2, 3, 4, 5, 6, 7, 8], (x) => x % 2 = 0);
+print(evens);
+
+// ── Reduce ──────────────────────────────
+fn reduce(arr, init, f) {
+    acc <- init;
+    i <- 0;
+    while (i < len(arr)) {
+        acc <- f(acc, arr[i]);
+        i <- i + 1;
+    }
+    return acc;
+}
+
+product <- reduce([1, 2, 3, 4, 5], 1, (a, b) => a * b);
+print(product);
+
+// ── ForEach with closure ────────────────
+fn forEach(arr, f) {
+    i <- 0;
+    while (i < len(arr)) {
+        f(arr[i]);
+        i <- i + 1;
+    }
+}
+
+forEach([10, 20, 30], (x) => {
+    print("value: " + x);
+});
+
+print("Done!");
