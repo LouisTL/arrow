@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """
-Arrow Lang v0.3 — A small programming language.
+Arrow Lang v0.4 — A small programming language.
 
 Features:
     - Variables with <- assignment
     - Arithmetic, comparisons, logical operators
     - If/else, while loops
-    - Named functions:    fn add(a, b) { return a + b; }
-    - Arrow functions:    add <- (a, b) => a + b;
-    - First-class functions, closures, recursion
-    - Arrays:             nums <- [1, 2, 3];
-    - Index access:       nums[0], nums[i + 1]
-    - Index assignment:   nums[0] <- 99;
-    - Builtins:           len(arr), push(arr, val), pop(arr)
+    - Named functions, arrow functions, closures, recursion
+    - Arrays: [1, 2, 3], index access/assign, len/push/pop
+    - Structs: {name: "Alice", age: 30}, dot access/assign
 """
 
 import sys
@@ -25,13 +21,11 @@ from typing import Any
 #  TOKENS
 # ─────────────────────────────────────────────
 class TokenType(Enum):
-    # Literals & identifiers
     NUMBER    = auto()
     STRING    = auto()
     IDENT     = auto()
     BOOL      = auto()
 
-    # Operators
     PLUS      = auto()  # +
     MINUS     = auto()  # -
     STAR      = auto()  # *
@@ -48,8 +42,9 @@ class TokenType(Enum):
     AND       = auto()  # &&
     OR        = auto()  # ||
     NOT       = auto()  # !
+    DOT       = auto()  # .
+    COLON     = auto()  # :
 
-    # Delimiters
     LPAREN    = auto()  # (
     RPAREN    = auto()  # )
     LBRACE    = auto()  # {
@@ -59,7 +54,6 @@ class TokenType(Enum):
     SEMI      = auto()  # ;
     COMMA     = auto()  # ,
 
-    # Keywords
     IF        = auto()
     ELSE      = auto()
     WHILE     = auto()
@@ -85,14 +79,9 @@ class Token:
 #  LEXER
 # ─────────────────────────────────────────────
 KEYWORDS = {
-    "if":     TokenType.IF,
-    "else":   TokenType.ELSE,
-    "while":  TokenType.WHILE,
-    "print":  TokenType.PRINT,
-    "fn":     TokenType.FN,
-    "return": TokenType.RETURN,
-    "true":   TokenType.BOOL,
-    "false":  TokenType.BOOL,
+    "if": TokenType.IF, "else": TokenType.ELSE, "while": TokenType.WHILE,
+    "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
+    "true": TokenType.BOOL, "false": TokenType.BOOL,
 }
 
 
@@ -182,6 +171,8 @@ class Lexer:
             elif ch == '>': self._advance(); tokens.append(Token(TokenType.GT,       '>', line, col))
             elif ch == '!': self._advance(); tokens.append(Token(TokenType.NOT,      '!', line, col))
             elif ch == '=': self._advance(); tokens.append(Token(TokenType.EQ,       '=', line, col))
+            elif ch == '.': self._advance(); tokens.append(Token(TokenType.DOT,      '.', line, col))
+            elif ch == ':': self._advance(); tokens.append(Token(TokenType.COLON,    ':', line, col))
             elif ch == '(': self._advance(); tokens.append(Token(TokenType.LPAREN,   '(', line, col))
             elif ch == ')': self._advance(); tokens.append(Token(TokenType.RPAREN,   ')', line, col))
             elif ch == '{': self._advance(); tokens.append(Token(TokenType.LBRACE,   '{', line, col))
@@ -260,16 +251,32 @@ class ArrayLit:
     elements: list
 
 @dataclass
+class StructLit:
+    """Struct literal: {key: value, key: value, ...}"""
+    fields: list  # list of (name_str, expr) tuples
+
+@dataclass
 class IndexExpr:
-    """Array index access: expr[index]"""
     obj: Any
     index: Any
 
 @dataclass
+class DotExpr:
+    """Field access: expr.field_name"""
+    obj: Any
+    field: str
+
+@dataclass
 class IndexAssign:
-    """Array index assignment: expr[index] <- value;"""
     obj: Any
     index: Any
+    value: Any
+
+@dataclass
+class DotAssign:
+    """Field assignment: expr.field <- value;"""
+    obj: Any
+    field: str
     value: Any
 
 @dataclass
@@ -352,8 +359,7 @@ class Parser:
         if tok.type != tt:
             raise ParseError(
                 f"Expected {tt.name}, got {tok.type.name} ({tok.value!r}) "
-                f"at line {tok.line}, col {tok.col}"
-            )
+                f"at line {tok.line}, col {tok.col}")
         self.pos += 1
         return tok
 
@@ -390,42 +396,58 @@ class Parser:
         if tok.type == TokenType.PRINT:
             return self._print_stmt()
         if tok.type == TokenType.LBRACE:
+            # Distinguish block from struct literal used as expression stmt
+            if self._is_struct_literal():
+                expr = self._expression()
+                self._eat(TokenType.SEMI)
+                return expr
             return self._block()
 
-        # Assignment: ident <- expr; OR ident[idx] <- expr;
+        # Assignment: ident <- expr;
         if tok.type == TokenType.IDENT:
             if self._peek_type(1) == TokenType.ARROW:
                 return self._assignment()
-            # Check for index assignment: ident[...] <- ...
-            if self._peek_type(1) == TokenType.LBRACKET:
-                return self._try_index_assignment()
+            # index/dot assignment: ident[...] <- ... OR ident.field <- ...
+            if self._peek_type(1) in (TokenType.LBRACKET, TokenType.DOT):
+                return self._try_postfix_assignment()
 
         # Expression statement
         expr = self._expression()
         self._eat(TokenType.SEMI)
         return expr
 
-    def _try_index_assignment(self):
-        """Try to parse: ident[index] <- value; or fall through to expr stmt."""
-        # Save position for backtracking
-        saved = self.pos
+    def _is_struct_literal(self) -> bool:
+        """Look ahead to distinguish { key: val } from { stmts }."""
+        # { } is an empty struct
+        if self._peek_type(1) == TokenType.RBRACE:
+            return True
+        # { IDENT : ... } is a struct
+        if (self._peek_type(1) == TokenType.IDENT and
+                self._peek_type(2) == TokenType.COLON):
+            return True
+        # { STRING : ... } is also a struct
+        if (self._peek_type(1) == TokenType.STRING and
+                self._peek_type(2) == TokenType.COLON):
+            return True
+        return False
 
-        # Parse the target expression (could be ident[i], ident[i][j], etc.)
+    def _try_postfix_assignment(self):
+        """Parse: ident.field <- val; or ident[idx] <- val; or expr stmt."""
         expr = self._expression()
 
-        # Check if followed by <-
         if self._current().type == TokenType.ARROW:
-            # It's an index assignment
-            if not isinstance(expr, IndexExpr):
-                raise ParseError("Invalid assignment target")
             self._eat(TokenType.ARROW)
             value = self._expression()
             self._eat(TokenType.SEMI)
-            return IndexAssign(expr.obj, expr.index, value)
-        else:
-            # Not an assignment, treat as expression statement
-            self._eat(TokenType.SEMI)
-            return expr
+            if isinstance(expr, IndexExpr):
+                return IndexAssign(expr.obj, expr.index, value)
+            elif isinstance(expr, DotExpr):
+                return DotAssign(expr.obj, expr.field, value)
+            else:
+                raise ParseError("Invalid assignment target")
+
+        self._eat(TokenType.SEMI)
+        return expr
 
     def _block(self) -> Block:
         self._eat(TokenType.LBRACE)
@@ -512,8 +534,7 @@ class Parser:
         i = self.pos
         while i < len(self.tokens):
             tt = self.tokens[i].type
-            if tt == TokenType.LPAREN:
-                depth += 1
+            if tt == TokenType.LPAREN: depth += 1
             elif tt == TokenType.RPAREN:
                 depth -= 1
                 if depth == 0:
@@ -525,7 +546,7 @@ class Parser:
     def _arrow_fn(self) -> ArrowFn:
         params = self._param_list()
         self._eat(TokenType.FAT_ARROW)
-        if self._current().type == TokenType.LBRACE:
+        if self._current().type == TokenType.LBRACE and not self._is_struct_literal():
             body = self._block()
             return ArrowFn(params, body.statements)
         else:
@@ -535,55 +556,48 @@ class Parser:
     def _or_expr(self):
         left = self._and_expr()
         while self._match(TokenType.OR):
-            right = self._and_expr()
-            left = BinOp('||', left, right)
+            left = BinOp('||', left, self._and_expr())
         return left
 
     def _and_expr(self):
         left = self._equality()
         while self._match(TokenType.AND):
-            right = self._equality()
-            left = BinOp('&&', left, right)
+            left = BinOp('&&', left, self._equality())
         return left
 
     def _equality(self):
         left = self._comparison()
         while tok := self._match(TokenType.EQ, TokenType.NEQ):
-            right = self._comparison()
-            left = BinOp(tok.value, left, right)
+            left = BinOp(tok.value, left, self._comparison())
         return left
 
     def _comparison(self):
         left = self._addition()
         while tok := self._match(TokenType.LT, TokenType.GT, TokenType.LTE, TokenType.GTE):
-            right = self._addition()
-            left = BinOp(tok.value, left, right)
+            left = BinOp(tok.value, left, self._addition())
         return left
 
     def _addition(self):
         left = self._multiplication()
         while tok := self._match(TokenType.PLUS, TokenType.MINUS):
-            right = self._multiplication()
-            left = BinOp(tok.value, left, right)
+            left = BinOp(tok.value, left, self._multiplication())
         return left
 
     def _multiplication(self):
         left = self._unary()
         while tok := self._match(TokenType.STAR, TokenType.SLASH, TokenType.PERCENT):
-            right = self._unary()
-            left = BinOp(tok.value, left, right)
+            left = BinOp(tok.value, left, self._unary())
         return left
 
     def _unary(self):
-        if tok := self._match(TokenType.MINUS):
+        if self._match(TokenType.MINUS):
             return UnaryOp('-', self._unary())
-        if tok := self._match(TokenType.NOT):
+        if self._match(TokenType.NOT):
             return UnaryOp('!', self._unary())
         return self._postfix()
 
     def _postfix(self):
-        """Parse postfix operations: calls f(args) and indexing expr[i].
-        Supports chaining: arr[0], f(x)(y), f(x)[0], arr[0](args), etc."""
+        """Parse postfix: calls f(args), indexing expr[i], dot access expr.field."""
         expr = self._primary()
         while True:
             if self._current().type == TokenType.LPAREN:
@@ -600,6 +614,10 @@ class Parser:
                 index = self._expression()
                 self._eat(TokenType.RBRACKET)
                 expr = IndexExpr(expr, index)
+            elif self._current().type == TokenType.DOT:
+                self._eat(TokenType.DOT)
+                field = self._eat(TokenType.IDENT).value
+                expr = DotExpr(expr, field)
             else:
                 break
         return expr
@@ -610,22 +628,25 @@ class Parser:
         if tok.type == TokenType.NUMBER:
             self.pos += 1
             return NumberLit(tok.value)
-
         if tok.type == TokenType.STRING:
             self.pos += 1
             return StringLit(tok.value)
-
         if tok.type == TokenType.BOOL:
             self.pos += 1
             return BoolLit(tok.value)
-
         if tok.type == TokenType.IDENT:
             self.pos += 1
             return Identifier(tok.value)
 
-        # Array literal: [expr, expr, ...]
         if tok.type == TokenType.LBRACKET:
             return self._array_literal()
+
+        if tok.type == TokenType.LBRACE:
+            if self._is_struct_literal():
+                return self._struct_literal()
+            # Otherwise it's a block — but blocks aren't expressions in Arrow Lang,
+            # so this would be a parse error in expression context
+            raise ParseError(f"Unexpected '{{' in expression at line {tok.line}, col {tok.col}")
 
         if tok.type == TokenType.LPAREN:
             self._eat(TokenType.LPAREN)
@@ -635,8 +656,7 @@ class Parser:
 
         raise ParseError(
             f"Unexpected token {tok.type.name} ({tok.value!r}) "
-            f"at line {tok.line}, col {tok.col}"
-        )
+            f"at line {tok.line}, col {tok.col}")
 
     def _array_literal(self) -> ArrayLit:
         self._eat(TokenType.LBRACKET)
@@ -647,6 +667,32 @@ class Parser:
                 elements.append(self._expression())
         self._eat(TokenType.RBRACKET)
         return ArrayLit(elements)
+
+    def _struct_literal(self) -> StructLit:
+        """Parse: { key: expr, key: expr, ... }"""
+        self._eat(TokenType.LBRACE)
+        fields = []
+        if self._current().type != TokenType.RBRACE:
+            # Keys can be IDENT or STRING
+            if self._current().type == TokenType.STRING:
+                key = self._eat(TokenType.STRING).value
+            else:
+                key = self._eat(TokenType.IDENT).value
+            self._eat(TokenType.COLON)
+            val = self._expression()
+            fields.append((key, val))
+            while self._match(TokenType.COMMA):
+                if self._current().type == TokenType.RBRACE:
+                    break  # trailing comma
+                if self._current().type == TokenType.STRING:
+                    key = self._eat(TokenType.STRING).value
+                else:
+                    key = self._eat(TokenType.IDENT).value
+                self._eat(TokenType.COLON)
+                val = self._expression()
+                fields.append((key, val))
+        self._eat(TokenType.RBRACE)
+        return StructLit(fields)
 
 
 # ─────────────────────────────────────────────
@@ -688,8 +734,29 @@ class Function:
         return f"<fn {self.name}({', '.join(self.params)})>"
 
 
-# Built-in function names
-BUILTINS = {"len", "push", "pop"}
+class Struct:
+    """Runtime representation of a struct/record."""
+    def __init__(self, fields: dict[str, Any]):
+        self._fields = fields
+
+    def get(self, name: str):
+        if name not in self._fields:
+            raise RuntimeError_(f"Struct has no field '{name}'")
+        return self._fields[name]
+
+    def set(self, name: str, value: Any):
+        if name not in self._fields:
+            raise RuntimeError_(f"Struct has no field '{name}'")
+        self._fields[name] = value
+
+    def fields(self):
+        return self._fields
+
+    def __repr__(self):
+        return "{" + ", ".join(f"{k}: ..." for k in self._fields) + "}"
+
+
+BUILTINS = {"len", "push", "pop", "keys"}
 
 
 class Interpreter:
@@ -722,6 +789,13 @@ class Interpreter:
                     raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
                 target[idx] = val
 
+            case DotAssign(obj, field, value):
+                target = self._eval(obj)
+                val = self._eval(value)
+                if not isinstance(target, Struct):
+                    raise RuntimeError_("Cannot set field on non-struct value")
+                target.set(field, val)
+
             case PrintStmt(expr):
                 val = self._eval(expr)
                 text = self._format(val)
@@ -730,49 +804,42 @@ class Interpreter:
 
             case IfStmt(cond, then_body, else_body):
                 if self._truthy(self._eval(cond)):
-                    for s in then_body:
-                        self._exec(s)
+                    for s in then_body: self._exec(s)
                 elif else_body:
-                    for s in else_body:
-                        self._exec(s)
+                    for s in else_body: self._exec(s)
 
             case WhileStmt(cond, body):
                 iterations = 0
                 while self._truthy(self._eval(cond)):
-                    for s in body:
-                        self._exec(s)
+                    for s in body: self._exec(s)
                     iterations += 1
                     if iterations > 100_000:
-                        raise RuntimeError_("Infinite loop detected (>100,000 iterations)")
+                        raise RuntimeError_("Infinite loop detected")
 
             case Block(stmts):
-                for s in stmts:
-                    self._exec(s)
+                for s in stmts: self._exec(s)
 
             case FnDecl(name, params, body):
-                fn = Function(name, params, body, self.env)
-                self.env.set(name, fn)
+                self.env.set(name, Function(name, params, body, self.env))
 
             case ReturnStmt(expr):
-                value = self._eval(expr) if expr is not None else None
-                raise ReturnSignal(value)
+                raise ReturnSignal(self._eval(expr) if expr is not None else None)
 
             case _:
                 self._eval(node)
 
     def _eval(self, node) -> Any:
         match node:
-            case NumberLit(v):
-                return v
-            case StringLit(v):
-                return v
-            case BoolLit(v):
-                return v
-            case Identifier(name):
-                return self.env.get(name)
+            case NumberLit(v): return v
+            case StringLit(v): return v
+            case BoolLit(v): return v
+            case Identifier(name): return self.env.get(name)
 
             case ArrayLit(elements):
                 return [self._eval(e) for e in elements]
+
+            case StructLit(fields):
+                return Struct({k: self._eval(v) for k, v in fields})
 
             case IndexExpr(obj, index):
                 target = self._eval(obj)
@@ -781,21 +848,25 @@ class Interpreter:
                     if not isinstance(idx, int):
                         raise RuntimeError_("Array index must be an integer")
                     if idx < 0 or idx >= len(target):
-                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
+                        raise RuntimeError_(f"Index {idx} out of bounds")
                     return target[idx]
                 elif isinstance(target, str):
                     if not isinstance(idx, int):
                         raise RuntimeError_("String index must be an integer")
                     if idx < 0 or idx >= len(target):
-                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
+                        raise RuntimeError_(f"Index {idx} out of bounds")
                     return target[idx]
                 else:
                     raise RuntimeError_("Cannot index into this type")
 
-            case UnaryOp('-', operand):
-                return -self._eval(operand)
-            case UnaryOp('!', operand):
-                return not self._truthy(self._eval(operand))
+            case DotExpr(obj, field):
+                target = self._eval(obj)
+                if isinstance(target, Struct):
+                    return target.get(field)
+                raise RuntimeError_(f"Cannot access field '{field}' on non-struct value")
+
+            case UnaryOp('-', operand): return -self._eval(operand)
+            case UnaryOp('!', operand): return not self._truthy(self._eval(operand))
 
             case BinOp(op, left, right):
                 return self._eval_binop(op, left, right)
@@ -810,7 +881,6 @@ class Interpreter:
                 raise RuntimeError_(f"Cannot evaluate node: {node}")
 
     def _eval_call(self, callee, args) -> Any:
-        # Handle builtins: len, push, pop
         if isinstance(callee, Identifier) and callee.name in BUILTINS:
             return self._eval_builtin(callee.name, args)
 
@@ -819,12 +889,9 @@ class Interpreter:
             raise RuntimeError_(f"'{fn}' is not a function")
 
         arg_vals = [self._eval(a) for a in args]
-
         if len(arg_vals) != len(fn.params):
             raise RuntimeError_(
-                f"Function {fn.name} expects {len(fn.params)} args, "
-                f"got {len(arg_vals)}"
-            )
+                f"Function {fn.name} expects {len(fn.params)} args, got {len(arg_vals)}")
 
         call_env = Environment(parent=fn.closure)
         for param, val in zip(fn.params, arg_vals):
@@ -832,43 +899,34 @@ class Interpreter:
 
         prev_env = self.env
         self.env = call_env
-
         result = None
         try:
             if isinstance(fn.body, list):
-                for stmt in fn.body:
-                    self._exec(stmt)
+                for stmt in fn.body: self._exec(stmt)
             else:
                 result = self._eval(fn.body)
         except ReturnSignal as ret:
             result = ret.value
         finally:
             self.env = prev_env
-
         return result
 
     def _eval_builtin(self, name: str, args: list) -> Any:
         if name == "len":
-            if len(args) != 1:
-                raise RuntimeError_("len() takes exactly 1 argument")
             val = self._eval(args[0])
             if isinstance(val, (list, str)):
                 return len(val)
             raise RuntimeError_("len() requires an array or string")
 
         elif name == "push":
-            if len(args) != 2:
-                raise RuntimeError_("push() takes exactly 2 arguments")
             arr = self._eval(args[0])
             val = self._eval(args[1])
             if not isinstance(arr, list):
-                raise RuntimeError_("push() requires an array as first argument")
+                raise RuntimeError_("push() requires an array")
             arr.append(val)
             return len(arr)
 
         elif name == "pop":
-            if len(args) != 1:
-                raise RuntimeError_("pop() takes exactly 1 argument")
             arr = self._eval(args[0])
             if not isinstance(arr, list):
                 raise RuntimeError_("pop() requires an array")
@@ -876,28 +934,31 @@ class Interpreter:
                 raise RuntimeError_("Cannot pop from empty array")
             return arr.pop()
 
+        elif name == "keys":
+            val = self._eval(args[0])
+            if not isinstance(val, Struct):
+                raise RuntimeError_("keys() requires a struct")
+            return list(val.fields().keys())
+
         raise RuntimeError_(f"Unknown builtin: {name}")
 
     def _eval_binop(self, op: str, left, right) -> Any:
         lv = self._eval(left)
         rv = self._eval(right)
-
         match op:
             case '+':
                 if isinstance(lv, list) and isinstance(rv, list):
-                    return lv + rv  # array concatenation
+                    return lv + rv
                 if isinstance(lv, str) or isinstance(rv, str):
                     return self._format(lv) + self._format(rv)
                 return lv + rv
             case '-':  return lv - rv
             case '*':  return lv * rv
             case '/':
-                if rv == 0:
-                    raise RuntimeError_("Division by zero")
+                if rv == 0: raise RuntimeError_("Division by zero")
                 return lv / rv
             case '%':
-                if rv == 0:
-                    raise RuntimeError_("Modulo by zero")
+                if rv == 0: raise RuntimeError_("Modulo by zero")
                 return lv % rv
             case '<':  return lv < rv
             case '>':  return lv > rv
@@ -907,18 +968,13 @@ class Interpreter:
             case '!=': return lv != rv
             case '&&': return self._truthy(lv) and self._truthy(rv)
             case '||': return self._truthy(lv) or self._truthy(rv)
-            case _:
-                raise RuntimeError_(f"Unknown operator: {op}")
+            case _: raise RuntimeError_(f"Unknown operator: {op}")
 
     def _truthy(self, val) -> bool:
-        if isinstance(val, bool):
-            return val
-        if isinstance(val, (int, float)):
-            return val != 0
-        if isinstance(val, str):
-            return len(val) > 0
-        if isinstance(val, list):
-            return len(val) > 0
+        if isinstance(val, bool): return val
+        if isinstance(val, (int, float)): return val != 0
+        if isinstance(val, str): return len(val) > 0
+        if isinstance(val, list): return len(val) > 0
         return val is not None
 
     def _format(self, val) -> str:
@@ -928,42 +984,39 @@ class Interpreter:
             return str(int(val))
         if isinstance(val, list):
             return "[" + ", ".join(self._format(v) for v in val) + "]"
+        if isinstance(val, Struct):
+            parts = []
+            for k, v in val.fields().items():
+                parts.append(f"{k}: {self._format(v)}")
+            return "{" + ", ".join(parts) + "}"
         if isinstance(val, Function):
             return repr(val)
         return str(val)
 
 
 # ─────────────────────────────────────────────
-#  RUN HELPER
+#  RUN / REPL / MAIN
 # ─────────────────────────────────────────────
 def run_source(source: str) -> Interpreter:
-    lexer = Lexer(source)
-    tokens = lexer.tokenize()
-    parser = Parser(tokens)
-    program = parser.parse()
+    tokens = Lexer(source).tokenize()
+    program = Parser(tokens).parse()
     interp = Interpreter()
     interp.run(program)
     return interp
 
 
-# ─────────────────────────────────────────────
-#  REPL & FILE RUNNER
-# ─────────────────────────────────────────────
 def repl():
-    print("Arrow Lang v0.3 — Type 'exit' to quit")
+    print("Arrow Lang v0.4 — Type 'exit' to quit")
     print("─" * 40)
     interp = Interpreter()
     while True:
         try:
             line = input(">> ")
         except (EOFError, KeyboardInterrupt):
-            print("\nBye!")
-            break
+            print("\nBye!"); break
         if line.strip() in ("exit", "quit"):
-            print("Bye!")
-            break
-        if not line.strip():
-            continue
+            print("Bye!"); break
+        if not line.strip(): continue
         try:
             tokens = Lexer(line).tokenize()
             program = Parser(tokens).parse()

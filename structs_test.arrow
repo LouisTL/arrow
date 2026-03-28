@@ -1,0 +1,77 @@
+// Arrow Lang v0.4 — Structs (compiler test)
+
+// Basic struct with string and int fields
+person <- {name: "Alice", age: 30};
+print(person);
+print(person.name);
+print(person.age);
+
+// Update field
+person.age <- 31;
+print(person.age);
+
+// Integer-only struct
+point <- {x: 10, y: 20};
+print(point.x);
+print(point.y);
+
+// Function returning struct (int fields)
+fn make_point(x, y) {
+    return {x: x, y: y};
+}
+p1 <- make_point(3, 4);
+p2 <- make_point(7, 8);
+print(p1);
+print(p2);
+
+// Function taking struct
+fn distance_sq(a, b) {
+    dx <- b.x - a.x;
+    dy <- b.y - a.y;
+    return dx * dx + dy * dy;
+}
+print(distance_sq(p1, p2));
+
+// Nested struct
+ast <- {
+    op: "+",
+    left: {type: "num", value: 1},
+    right: {type: "num", value: 2}
+};
+print(ast.op);
+print(ast.left.value);
+print(ast.right.value);
+
+// Struct with computed values
+fn make_rect(w, h) {
+    return {width: w, height: h, area: w * h};
+}
+r <- make_rect(5, 3);
+print(r.width);
+print(r.height);
+print(r.area);
+
+// Struct with bool
+config <- {debug: true, level: 3};
+print(config);
+print(config.debug);
+
+// Empty struct
+empty <- {};
+print(empty);
+
+// Dot access in expressions
+p <- {x: 10, y: 20};
+sum <- p.x + p.y;
+print(sum);
+
+// Struct update in loop
+counter <- {count: 0};
+i <- 0;
+while (i < 5) {
+    counter.count <- counter.count + 1;
+    i <- i + 1;
+}
+print(counter.count);
+
+print("Done!");
