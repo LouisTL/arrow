@@ -112,6 +112,7 @@ class Compiler:
         self.functions: dict[str, FuncInfo] = {}
         self._scope_stack: list[FunctionScope] = []
         self._array_helpers_built = False; self._struct_helpers_built = False
+        self._io_helpers_built = False
         self._declare_externals()
         self._init_main()
 
@@ -693,7 +694,7 @@ class Compiler:
         raise CompileError(f"Undefined variable '{name}'")
 
     def _compile_call(self, callee, args):
-        if isinstance(callee, Identifier) and callee.name in ("len", "push", "pop", "keys"):
+        if isinstance(callee, Identifier) and callee.name in ("len", "push", "pop", "keys", "read_file", "write_file", "input"):
             return self._compile_builtin(callee.name, args)
         atvs = [self._compile_expr(a) for a in args]; avs = [self._to_i64(t) for t in atvs]
         known_ret = ArrowType.INT
@@ -738,7 +739,6 @@ class Compiler:
             st = self._compile_expr(args[0]); sptr = self._to_struct_ptr(st)
             count = self.builder.call(self._struct_count, [sptr])
             ap = self.builder.call(self._array_new, [count])
-            # Loop: push each name as i64 (string pointer)
             ip = self._create_entry_alloca("_kidx", i64); self.builder.store(ir.Constant(i64, 0), ip)
             cc = self.builder.append_basic_block("kc"); kb = self.builder.append_basic_block("kb")
             ke = self.builder.append_basic_block("ke"); self.builder.branch(cc)
@@ -750,7 +750,153 @@ class Compiler:
             self.builder.store(self.builder.add(idx, ir.Constant(i64, 1)), ip); self.builder.branch(cc)
             self.builder.position_at_start(ke)
             return TypedValue(ap, ArrowType.ARRAY)
+
+        elif name == "read_file":
+            self._ensure_io_helpers()
+            path_tv = self._compile_expr(args[0])
+            path_str = path_tv.value if path_tv.type == ArrowType.STRING else self.builder.inttoptr(path_tv.value, i8_ptr)
+            result = self.builder.call(self._read_file_fn, [path_str], name="file_data")
+            return TypedValue(result, ArrowType.STRING)
+
+        elif name == "write_file":
+            self._ensure_io_helpers()
+            path_tv = self._compile_expr(args[0])
+            content_tv = self._compile_expr(args[1])
+            path_str = path_tv.value if path_tv.type == ArrowType.STRING else self.builder.inttoptr(path_tv.value, i8_ptr)
+            content_str = self._value_to_string(content_tv)
+            result = self.builder.call(self._write_file_fn, [path_str, content_str], name="bytes_written")
+            return TypedValue(result, ArrowType.INT)
+
+        elif name == "input":
+            self._ensure_io_helpers()
+            if len(args) >= 1:
+                prompt_tv = self._compile_expr(args[0])
+                prompt_str = self._value_to_string(prompt_tv)
+                self.builder.call(self.printf, [prompt_str])
+                self.builder.call(self.fflush, [ir.Constant(i8_ptr, None)])
+            result = self.builder.call(self._input_fn, [], name="user_input")
+            return TypedValue(result, ArrowType.STRING)
+
         raise CompileError(f"Unknown builtin: {name}")
+
+    # ─── I/O helpers (lazy) ──────────────
+    def _ensure_io_helpers(self):
+        if self._io_helpers_built: return
+        self._io_helpers_built = True
+        # Declare C file I/O functions
+        self._fopen = ir.Function(self.module, ir.FunctionType(i8_ptr, [i8_ptr, i8_ptr]), name="fopen")
+        self._fclose = ir.Function(self.module, ir.FunctionType(i32, [i8_ptr]), name="fclose")
+        self._fread = ir.Function(self.module, ir.FunctionType(i64, [i8_ptr, i64, i64, i8_ptr]), name="fread")
+        self._fwrite = ir.Function(self.module, ir.FunctionType(i64, [i8_ptr, i64, i64, i8_ptr]), name="fwrite")
+        self._fseek = ir.Function(self.module, ir.FunctionType(i32, [i8_ptr, i64, i32]), name="fseek")
+        self._ftell = ir.Function(self.module, ir.FunctionType(i64, [i8_ptr]), name="ftell")
+        self._fgets = ir.Function(self.module, ir.FunctionType(i8_ptr, [i8_ptr, i32, i8_ptr]), name="fgets")
+        self._free = ir.Function(self.module, ir.FunctionType(void, [i8_ptr]), name="free")
+        # Get stdin — we'll use __acrt_iob_func on Windows, stdin global on Unix
+        # For portability, build a helper that reads via fgets
+        self._build_io_helpers()
+
+    def _build_io_helpers(self):
+        """Build read_file, write_file, and input as LLVM functions."""
+
+        # ── arrow_read_file(path) -> i8* ──
+        fn = ir.Function(self.module, ir.FunctionType(i8_ptr, [i8_ptr]), name="arrow_read_file")
+        fn.args[0].name = "path"
+        entry = fn.append_basic_block("entry")
+        ok_bb = fn.append_basic_block("ok")
+        fail_bb = fn.append_basic_block("fail")
+        b = ir.IRBuilder(entry)
+        rb = self._make_global_string_raw("rb")
+        fp = b.call(self._fopen, [fn.args[0], rb], name="fp")
+        is_null = b.icmp_signed('==', b.ptrtoint(fp, i64), ir.Constant(i64, 0))
+        b.cbranch(is_null, fail_bb, ok_bb)
+
+        b = ir.IRBuilder(fail_bb)
+        empty = b.call(self.malloc, [ir.Constant(i64, 1)], name="empty")
+        b.store(ir.Constant(i8, 0), empty)
+        b.ret(empty)
+
+        b = ir.IRBuilder(ok_bb)
+        # Seek to end to get size
+        b.call(self._fseek, [fp, ir.Constant(i64, 0), ir.Constant(i32, 2)])  # SEEK_END=2
+        size = b.call(self._ftell, [fp], name="size")
+        b.call(self._fseek, [fp, ir.Constant(i64, 0), ir.Constant(i32, 0)])  # SEEK_SET=0
+        # Allocate buffer
+        buf_size = b.add(size, ir.Constant(i64, 1))
+        buf = b.call(self.malloc, [buf_size], name="buf")
+        # Read file
+        b.call(self._fread, [buf, ir.Constant(i64, 1), size, fp])
+        # Null-terminate
+        end_ptr = b.gep(buf, [size])
+        b.store(ir.Constant(i8, 0), end_ptr)
+        b.call(self._fclose, [fp])
+        b.ret(buf)
+        self._read_file_fn = fn
+
+        # ── arrow_write_file(path, content) -> i64 bytes written ──
+        fn = ir.Function(self.module, ir.FunctionType(i64, [i8_ptr, i8_ptr]), name="arrow_write_file")
+        fn.args[0].name = "path"; fn.args[1].name = "content"
+        entry = fn.append_basic_block("entry")
+        ok_bb = fn.append_basic_block("ok")
+        fail_bb = fn.append_basic_block("fail")
+        b = ir.IRBuilder(entry)
+        wb = self._make_global_string_raw("wb")
+        fp = b.call(self._fopen, [fn.args[0], wb], name="fp")
+        is_null = b.icmp_signed('==', b.ptrtoint(fp, i64), ir.Constant(i64, 0))
+        b.cbranch(is_null, fail_bb, ok_bb)
+
+        b = ir.IRBuilder(fail_bb)
+        b.ret(ir.Constant(i64, 0))
+
+        b = ir.IRBuilder(ok_bb)
+        slen = b.call(self.strlen, [fn.args[1]], name="slen")
+        written = b.call(self._fwrite, [fn.args[1], ir.Constant(i64, 1), slen, fp], name="written")
+        b.call(self._fclose, [fp])
+        b.ret(written)
+        self._write_file_fn = fn
+
+        # ── arrow_input() -> i8* (reads a line from stdin) ──
+        fn = ir.Function(self.module, ir.FunctionType(i8_ptr, []), name="arrow_input")
+        entry = fn.append_basic_block("entry")
+        ok_bb = fn.append_basic_block("ok")
+        b = ir.IRBuilder(entry)
+        buf = b.call(self.malloc, [ir.Constant(i64, 4096)], name="buf")
+        # Get stdin: use __acrt_iob_func(0) on Windows, or declare stdin
+        if self._is_windows:
+            iob_func = ir.Function(self.module, ir.FunctionType(i8_ptr, [i32]), name="__acrt_iob_func")
+            stdin_fp = b.call(iob_func, [ir.Constant(i32, 0)], name="stdin")
+        else:
+            stdin_global = ir.GlobalVariable(self.module, i8_ptr, name="stdin")
+            stdin_global.linkage = "external"
+            stdin_fp = b.load(stdin_global, name="stdin")
+        result = b.call(self._fgets, [buf, ir.Constant(i32, 4096), stdin_fp], name="result")
+        # Strip trailing newline
+        slen = b.call(self.strlen, [buf], name="slen")
+        has_content = b.icmp_signed('>', slen, ir.Constant(i64, 0))
+        b.cbranch(has_content, ok_bb, ok_bb)  # always go to ok
+        b = ir.IRBuilder(ok_bb)
+        slen = b.call(self.strlen, [buf])
+        last_idx = b.sub(slen, ir.Constant(i64, 1))
+        last_ptr = b.gep(buf, [last_idx])
+        last_char = b.load(last_ptr)
+        is_newline = b.icmp_signed('==', last_char, ir.Constant(i8, 10))  # '\n' = 10
+        # If last char is newline, replace with null
+        null_val = b.select(is_newline, ir.Constant(i8, 0), last_char)
+        b.store(null_val, last_ptr)
+        b.ret(buf)
+        self._input_fn = fn
+
+    def _make_global_string_raw(self, text):
+        """Create a global string without using self.builder (for use in helper functions)."""
+        encoded = (text + "\0").encode("utf-8")
+        st = ir.ArrayType(i8, len(encoded))
+        name = f".str.{self._str_counter}"; self._str_counter += 1
+        gv = ir.GlobalVariable(self.module, st, name=name)
+        gv.linkage = "private"; gv.global_constant = True
+        gv.initializer = ir.Constant(st, bytearray(encoded))
+        # Return a ConstantExpr GEP — no builder needed
+        zero = ir.Constant(i64, 0)
+        return gv.gep([zero, zero])
 
     def _compile_unary(self, op, operand):
         tv = self._compile_expr(operand)
@@ -883,7 +1029,8 @@ def jit_execute(llvm_ir):
     else:
         ln = ctypes.util.find_library("c")
         if ln: libs.append(ctypes.CDLL(ln))
-    all_c = ["printf","puts","fflush","malloc","realloc","sprintf","strlen","strcpy","strcat","strcmp"]
+    all_c = ["printf","puts","fflush","malloc","realloc","sprintf","strlen","strcpy","strcat","strcmp",
+             "fopen","fclose","fread","fwrite","fseek","ftell","fgets","free","__acrt_iob_func"]
     needed = [n for n in all_c if f'@"{n}"' in llvm_ir or f'@{n}(' in llvm_ir]
     c_funcs = {}
     for n in needed:

@@ -1,0 +1,32 @@
+// Arrow Lang v0.4 — I/O Test
+
+// Write a file
+write_file("test_output.txt", "Hello from Arrow Lang!\nLine 2\nLine 3");
+print("File written!");
+
+// Read it back
+content <- read_file("test_output.txt");
+print(content);
+
+// Write computed content
+nums <- "";
+i <- 1;
+while (i <= 5) {
+    nums <- nums + i + " ";
+    i <- i + 1;
+}
+write_file("test_nums.txt", nums);
+print("Numbers written!");
+
+// Read back
+print(read_file("test_nums.txt"));
+
+// Overwrite
+write_file("test_output.txt", "Overwritten!");
+print(read_file("test_output.txt"));
+
+// File length
+data <- read_file("test_output.txt");
+print(len(data));
+
+print("Done!");

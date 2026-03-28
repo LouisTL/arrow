@@ -756,7 +756,7 @@ class Struct:
         return "{" + ", ".join(f"{k}: ..." for k in self._fields) + "}"
 
 
-BUILTINS = {"len", "push", "pop", "keys"}
+BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input"}
 
 
 class Interpreter:
@@ -939,6 +939,43 @@ class Interpreter:
             if not isinstance(val, Struct):
                 raise RuntimeError_("keys() requires a struct")
             return list(val.fields().keys())
+
+        elif name == "read_file":
+            if len(args) != 1:
+                raise RuntimeError_("read_file() takes exactly 1 argument")
+            path = self._eval(args[0])
+            if not isinstance(path, str):
+                raise RuntimeError_("read_file() requires a string path")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    return f.read()
+            except FileNotFoundError:
+                raise RuntimeError_(f"File not found: {path}")
+            except Exception as e:
+                raise RuntimeError_(f"Error reading file: {e}")
+
+        elif name == "write_file":
+            if len(args) != 2:
+                raise RuntimeError_("write_file() takes exactly 2 arguments")
+            path = self._eval(args[0])
+            content = self._eval(args[1])
+            if not isinstance(path, str):
+                raise RuntimeError_("write_file() requires a string path")
+            if not isinstance(content, str):
+                content = self._format(content)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    return f.write(content)
+            except Exception as e:
+                raise RuntimeError_(f"Error writing file: {e}")
+
+        elif name == "input":
+            if len(args) > 1:
+                raise RuntimeError_("input() takes 0 or 1 arguments")
+            if len(args) == 1:
+                prompt = self._eval(args[0])
+                return input(self._format(prompt))
+            return input()
 
         raise RuntimeError_(f"Unknown builtin: {name}")
 
