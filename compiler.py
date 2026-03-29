@@ -15,7 +15,7 @@ import sys, argparse, subprocess, tempfile, os
 from llvmlite import ir, binding
 from lang import (
     Lexer, Parser, LexerError, ParseError,
-    Program, Assignment, PrintStmt, IfStmt, WhileStmt, Block,
+    Program, Assignment, PrintStmt, IfStmt, WhileStmt, ForInStmt, Block,
     NumberLit, StringLit, BoolLit, Identifier, BinOp, UnaryOp,
     FnDecl, ArrowFn, ReturnStmt, CallExpr,
     ArrayLit, IndexExpr, IndexAssign,
@@ -73,6 +73,7 @@ def find_free_variables(params, body, outer_scope_vars):
                 scan_expr(c); [scan_stmt(s) for s in t]
                 if el: [scan_stmt(s) for s in el]
             case WhileStmt(c, b): scan_expr(c); [scan_stmt(s) for s in b]
+            case ForInStmt(v, it, b): scan_expr(it); defined.add(v); [scan_stmt(s) for s in b]
             case Block(ss): [scan_stmt(s) for s in ss]
             case FnDecl(n, _, fb): defined.add(n); [scan_stmt(s) for s in fb]
             case _: scan_expr(node)
@@ -138,7 +139,12 @@ class Compiler:
         self.strlen = ir.Function(self.module, ir.FunctionType(i64, [i8_ptr]), name="strlen")
         self.strcpy = ir.Function(self.module, ir.FunctionType(i8_ptr, [i8_ptr, i8_ptr]), name="strcpy")
         self.strcat = ir.Function(self.module, ir.FunctionType(i8_ptr, [i8_ptr, i8_ptr]), name="strcat")
-        self.strcmp = ir.Function(self.module, ir.FunctionType(i32, [i8_ptr, i8_ptr]), name="strcmp")
+        self._strcmp_declared = False
+
+    def _ensure_strcmp(self):
+        if not self._strcmp_declared:
+            self._strcmp_declared = True
+            self.strcmp = ir.Function(self.module, ir.FunctionType(i32, [i8_ptr, i8_ptr]), name="strcmp")
 
     # ─── Closure helpers ─────────────────
     def _make_closure(self, llvm_func, env_value=None):
@@ -213,6 +219,7 @@ class Compiler:
     def _ensure_struct_helpers(self):
         if self._struct_helpers_built: return
         self._struct_helpers_built = True
+        self._ensure_strcmp()
         self._build_struct_helpers()
 
     def _build_struct_helpers(self):
@@ -387,6 +394,7 @@ class Compiler:
             case ReturnStmt(expr): self._compile_return(expr)
             case IfStmt(cond, tb, eb): self._compile_if(cond, tb, eb)
             case WhileStmt(cond, body): self._compile_while(cond, body)
+            case ForInStmt(var_name, iterable, body): self._compile_for_in(var_name, iterable, body)
             case Block(stmts):
                 for s in stmts: self._compile_stmt(s)
             case _: self._compile_expr(node)
@@ -574,6 +582,80 @@ class Compiler:
         for s in body: self._compile_stmt(s)
         if not self.builder.block.is_terminated: self.builder.branch(cc)
         self.builder.position_at_start(we)
+
+    def _compile_for_in(self, var_name, iterable, body):
+        """Compile: for (x in collection) { body }
+        Desugars to: idx=0; len=len(coll); while(idx<len) { x=coll[idx]; body; idx++; }"""
+        coll_tv = self._compile_expr(iterable)
+
+        # Get length and element accessor based on type
+        if coll_tv.type == ArrowType.ARRAY:
+            self._ensure_array_helpers()
+            arr_p = coll_tv.value
+            length = self.builder.call(self._array_len, [arr_p], name="for_len")
+            is_array = True
+        elif coll_tv.type == ArrowType.STRING:
+            length = self.builder.call(self.strlen, [coll_tv.value], name="for_len")
+            is_array = False
+        else:
+            # INT through ABI — default to array
+            self._ensure_array_helpers()
+            arr_p = self.builder.inttoptr(coll_tv.value, array_ptr, name="for_arr")
+            length = self.builder.call(self._array_len, [arr_p], name="for_len")
+            is_array = True
+
+        # Index counter
+        idx_ptr = self._create_entry_alloca("_for_i", i64)
+        self.builder.store(ir.Constant(i64, 0), idx_ptr)
+
+        # Loop variable — type depends on collection
+        var_type = ArrowType.STRING if not is_array else ArrowType.INT
+        var_llvm_type = i8_ptr if not is_array else i64
+        if var_name not in self.variables:
+            var_ptr = self._create_entry_alloca(var_name, var_llvm_type)
+            self.variables[var_name] = (var_ptr, var_type)
+        else:
+            # Update type if iterating over string
+            if not is_array:
+                var_ptr = self._create_entry_alloca(var_name, i8_ptr)
+                self.variables[var_name] = (var_ptr, ArrowType.STRING)
+
+        cond_bb = self.builder.append_basic_block("for_c")
+        body_bb = self.builder.append_basic_block("for_b")
+        end_bb = self.builder.append_basic_block("for_e")
+        self.builder.branch(cond_bb)
+
+        # Condition: idx < length
+        self.builder.position_at_start(cond_bb)
+        idx = self.builder.load(idx_ptr, name="for_idx")
+        self.builder.cbranch(self.builder.icmp_signed('<', idx, length), body_bb, end_bb)
+
+        # Body: load element, execute body, increment
+        self.builder.position_at_start(body_bb)
+        idx = self.builder.load(idx_ptr)
+
+        if is_array:
+            elem = self.builder.call(self._array_get, [arr_p, idx], name="for_elem")
+            var_ptr, _ = self.variables[var_name]
+            self.builder.store(elem, var_ptr)
+        else:
+            # String: extract single char as i8* string
+            buf = self.builder.call(self.malloc, [ir.Constant(i64, 2)], name="for_ch")
+            ch = self.builder.load(self.builder.gep(coll_tv.value, [idx]))
+            self.builder.store(ch, buf)
+            self.builder.store(ir.Constant(i8, 0), self.builder.gep(buf, [ir.Constant(i64, 1)]))
+            var_ptr, _ = self.variables[var_name]
+            self.builder.store(buf, var_ptr)
+
+        for s in body:
+            self._compile_stmt(s)
+        if not self.builder.block.is_terminated:
+            # Increment index
+            idx = self.builder.load(idx_ptr)
+            self.builder.store(self.builder.add(idx, ir.Constant(i64, 1)), idx_ptr)
+            self.builder.branch(cond_bb)
+
+        self.builder.position_at_start(end_bb)
 
     # ─── Expression codegen ──────────────
     def _compile_expr(self, node):
@@ -1007,6 +1089,7 @@ class Compiler:
             return TypedValue(self.builder.fcmp_ordered(cm[op], self._to_float(lt), self._to_float(rt)), ArrowType.BOOL)
         if lt.type == ArrowType.STRING or rt.type == ArrowType.STRING:
             # String comparison via strcmp
+            self._ensure_strcmp()
             ls = lt.value if lt.type == ArrowType.STRING else self.builder.inttoptr(lt.value, i8_ptr)
             rs = rt.value if rt.type == ArrowType.STRING else self.builder.inttoptr(rt.value, i8_ptr)
             cmp_result = self.builder.call(self.strcmp, [ls, rs], name="scmp")

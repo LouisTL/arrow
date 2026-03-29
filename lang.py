@@ -57,6 +57,8 @@ class TokenType(Enum):
     IF        = auto()
     ELSE      = auto()
     WHILE     = auto()
+    FOR       = auto()
+    IN        = auto()
     PRINT     = auto()
     FN        = auto()
     RETURN    = auto()
@@ -80,6 +82,7 @@ class Token:
 # ─────────────────────────────────────────────
 KEYWORDS = {
     "if": TokenType.IF, "else": TokenType.ELSE, "while": TokenType.WHILE,
+    "for": TokenType.FOR, "in": TokenType.IN,
     "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
     "true": TokenType.BOOL, "false": TokenType.BOOL,
 }
@@ -311,6 +314,13 @@ class WhileStmt:
     body: list
 
 @dataclass
+class ForInStmt:
+    """For-in loop: for (var in iterable) { body }"""
+    var_name: str
+    iterable: Any
+    body: list
+
+@dataclass
 class Block:
     statements: list
 
@@ -393,6 +403,8 @@ class Parser:
             return self._if_stmt()
         if tok.type == TokenType.WHILE:
             return self._while_stmt()
+        if tok.type == TokenType.FOR:
+            return self._for_in_stmt()
         if tok.type == TokenType.PRINT:
             return self._print_stmt()
         if tok.type == TokenType.LBRACE:
@@ -519,6 +531,17 @@ class Parser:
         self._eat(TokenType.RPAREN)
         body = self._block()
         return WhileStmt(cond, body.statements)
+
+    def _for_in_stmt(self) -> ForInStmt:
+        """Parse: for (x in expr) { body }"""
+        self._eat(TokenType.FOR)
+        self._eat(TokenType.LPAREN)
+        var_name = self._eat(TokenType.IDENT).value
+        self._eat(TokenType.IN)
+        iterable = self._expression()
+        self._eat(TokenType.RPAREN)
+        body = self._block()
+        return ForInStmt(var_name, iterable, body.statements)
 
     # ── Expressions ──────────────────────────
 
@@ -816,6 +839,19 @@ class Interpreter:
                     iterations += 1
                     if iterations > 100_000:
                         raise RuntimeError_("Infinite loop detected")
+
+            case ForInStmt(var_name, iterable, body):
+                collection = self._eval(iterable)
+                if isinstance(collection, list):
+                    for item in collection:
+                        self.env.set(var_name, item)
+                        for s in body: self._exec(s)
+                elif isinstance(collection, str):
+                    for ch in collection:
+                        self.env.set(var_name, ch)
+                        for s in body: self._exec(s)
+                else:
+                    raise RuntimeError_("for-in requires an array or string")
 
             case Block(stmts):
                 for s in stmts: self._exec(s)

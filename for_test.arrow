@@ -1,0 +1,66 @@
+// Arrow Lang — For-In Loop Test
+
+// ── Basic for-in over array ─────────────
+nums <- [10, 20, 30, 40, 50];
+for (n in nums) {
+    print(n);
+}
+
+// ── For-in over string ──────────────────
+for (ch in "hello") {
+    print(ch);
+}
+
+// ── Accumulate in for loop ──────────────
+total <- 0;
+for (x in [1, 2, 3, 4, 5]) {
+    total <- total + x;
+}
+print(total);
+
+// ── Nested for-in ───────────────────────
+for (i in [1, 2, 3]) {
+    for (j in [10, 20]) {
+        print(i * j);
+    }
+}
+
+// ── For-in with function ────────────────
+fn sum(arr) {
+    total <- 0;
+    for (x in arr) {
+        total <- total + x;
+    }
+    return total;
+}
+print(sum([100, 200, 300]));
+
+// ── Count characters ────────────────────
+count <- 0;
+for (c in "abcdefghij") {
+    count <- count + 1;
+}
+print(count);
+
+// ── String building with for-in ─────────
+upper <- "";
+for (ch in "abc") {
+    code <- char_code(ch);
+    upper <- upper + from_char_code(code - 32);
+}
+print(upper);
+
+// ── Empty array ─────────────────────────
+for (x in []) {
+    print("should not print");
+}
+print("empty OK");
+
+// ── For-in with computed array ──────────
+squares <- [];
+for (n in [1, 2, 3, 4, 5]) {
+    push(squares, n * n);
+}
+print(squares);
+
+print("Done!");
