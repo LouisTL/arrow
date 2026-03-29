@@ -1,0 +1,91 @@
+// Arrow Lang — String Operations Test
+
+// ── char_code ───────────────────────────
+print(char_code("A"));
+print(char_code("a"));
+print(char_code("0"));
+print(char_code(" "));
+print(char_code("\n"));
+
+// ── from_char_code ──────────────────────
+print(from_char_code(65));
+print(from_char_code(97));
+print(from_char_code(48));
+print(from_char_code(33));
+
+// ── substring ───────────────────────────
+s <- "Hello, World!";
+print(substring(s, 0, 5));
+print(substring(s, 7, 12));
+print(substring(s, 0, 13));
+print(substring(s, 0, 1));
+
+// ── char_at ─────────────────────────────
+print(char_at("hello", 0));
+print(char_at("hello", 4));
+
+// ── Character classification ────────────
+fn is_digit(ch) {
+    c <- char_code(ch);
+    return c >= 48 && c <= 57;
+}
+
+fn is_alpha(ch) {
+    c <- char_code(ch);
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+}
+
+fn is_whitespace(ch) {
+    c <- char_code(ch);
+    return c = 32 || c = 9 || c = 10 || c = 13;
+}
+
+print(is_digit("5"));
+print(is_digit("a"));
+print(is_alpha("Z"));
+print(is_alpha("3"));
+print(is_whitespace(" "));
+print(is_whitespace("x"));
+
+// ── Build a string character by character ─
+result <- "";
+i <- 65;
+while (i <= 70) {
+    result <- result + from_char_code(i);
+    i <- i + 1;
+}
+print(result);
+
+// ── Extract words using char_at + str_len ─
+// (str_len and char_at are safe through function ABI)
+fn first_word(s) {
+    i <- 0;
+    while (i < str_len(s)) {
+        if (char_at(s, i) = " ") {
+            return substring(s, 0, i);
+        }
+        i <- i + 1;
+    }
+    return s;
+}
+print(first_word("hello world foo"));
+print(first_word("single"));
+
+// ── Simple number parser ────────────────
+fn parse_int(s) {
+    result <- 0;
+    i <- 0;
+    while (i < str_len(s)) {
+        c <- char_code(char_at(s, i));
+        if (c >= 48 && c <= 57) {
+            result <- result * 10 + (c - 48);
+        }
+        i <- i + 1;
+    }
+    return result;
+}
+print(parse_int("42"));
+print(parse_int("12345"));
+print(parse_int("007"));
+
+print("Done!");

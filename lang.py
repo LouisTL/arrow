@@ -756,7 +756,8 @@ class Struct:
         return "{" + ", ".join(f"{k}: ..." for k in self._fields) + "}"
 
 
-BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input"}
+BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input",
+            "char_code", "from_char_code", "substring", "char_at", "str_len"}
 
 
 class Interpreter:
@@ -976,6 +977,55 @@ class Interpreter:
                 prompt = self._eval(args[0])
                 return input(self._format(prompt))
             return input()
+
+        elif name == "char_code":
+            if len(args) != 1:
+                raise RuntimeError_("char_code() takes exactly 1 argument")
+            val = self._eval(args[0])
+            if not isinstance(val, str) or len(val) == 0:
+                raise RuntimeError_("char_code() requires a non-empty string")
+            return ord(val[0])
+
+        elif name == "from_char_code":
+            if len(args) != 1:
+                raise RuntimeError_("from_char_code() takes exactly 1 argument")
+            val = self._eval(args[0])
+            if not isinstance(val, int):
+                raise RuntimeError_("from_char_code() requires an integer")
+            return chr(val)
+
+        elif name == "substring":
+            if len(args) != 3:
+                raise RuntimeError_("substring() takes exactly 3 arguments")
+            s = self._eval(args[0])
+            start = self._eval(args[1])
+            end = self._eval(args[2])
+            if not isinstance(s, str):
+                raise RuntimeError_("substring() requires a string as first argument")
+            if not isinstance(start, int) or not isinstance(end, int):
+                raise RuntimeError_("substring() indices must be integers")
+            return s[start:end]
+
+        elif name == "char_at":
+            if len(args) != 2:
+                raise RuntimeError_("char_at() takes exactly 2 arguments")
+            s = self._eval(args[0])
+            idx = self._eval(args[1])
+            if not isinstance(s, str):
+                raise RuntimeError_("char_at() requires a string as first argument")
+            if not isinstance(idx, int):
+                raise RuntimeError_("char_at() index must be an integer")
+            if idx < 0 or idx >= len(s):
+                raise RuntimeError_(f"char_at() index {idx} out of bounds")
+            return s[idx]
+
+        elif name == "str_len":
+            if len(args) != 1:
+                raise RuntimeError_("str_len() takes exactly 1 argument")
+            val = self._eval(args[0])
+            if not isinstance(val, str):
+                raise RuntimeError_("str_len() requires a string")
+            return len(val)
 
         raise RuntimeError_(f"Unknown builtin: {name}")
 

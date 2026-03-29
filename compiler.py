@@ -540,7 +540,11 @@ class Compiler:
     def _compile_return(self, expr):
         if expr:
             tv = self._compile_expr(expr)
-            self.scope.observed_return_type = tv.type
+            # Track return type — prefer non-INT types (STRING, ARRAY, STRUCT, FUNC)
+            # since INT could just be a value passed through the ABI
+            prev = self.scope.observed_return_type
+            if prev is None or prev == ArrowType.INT or tv.type != ArrowType.INT:
+                self.scope.observed_return_type = tv.type
             if tv.type == ArrowType.STRUCT and tv.struct_fields:
                 self.scope.observed_return_struct_fields = tv.struct_fields
             self.builder.ret(self._to_i64(tv))
@@ -694,7 +698,9 @@ class Compiler:
         raise CompileError(f"Undefined variable '{name}'")
 
     def _compile_call(self, callee, args):
-        if isinstance(callee, Identifier) and callee.name in ("len", "push", "pop", "keys", "read_file", "write_file", "input"):
+        if isinstance(callee, Identifier) and callee.name in (
+                "len", "push", "pop", "keys", "read_file", "write_file", "input",
+                "char_code", "from_char_code", "substring", "char_at", "str_len"):
             return self._compile_builtin(callee.name, args)
         atvs = [self._compile_expr(a) for a in args]; avs = [self._to_i64(t) for t in atvs]
         known_ret = ArrowType.INT
@@ -726,6 +732,11 @@ class Compiler:
                 return TypedValue(self.builder.call(self.strlen, [tv.value]), ArrowType.INT)
             self._ensure_array_helpers()
             return TypedValue(self.builder.call(self._array_len, [self._to_array_ptr(tv)]), ArrowType.INT)
+        elif name == "str_len":
+            # Explicit string length — always uses strlen, safe through ABI
+            tv = self._compile_expr(args[0])
+            str_ptr = tv.value if tv.type == ArrowType.STRING else self.builder.inttoptr(tv.value, i8_ptr)
+            return TypedValue(self.builder.call(self.strlen, [str_ptr]), ArrowType.INT)
         elif name == "push":
             self._ensure_array_helpers()
             at = self._compile_expr(args[0]); vt = self._compile_expr(args[1])
@@ -776,6 +787,69 @@ class Compiler:
                 self.builder.call(self.fflush, [ir.Constant(i8_ptr, None)])
             result = self.builder.call(self._input_fn, [], name="user_input")
             return TypedValue(result, ArrowType.STRING)
+
+        elif name == "char_code":
+            tv = self._compile_expr(args[0])
+            str_ptr = tv.value if tv.type == ArrowType.STRING else self.builder.inttoptr(tv.value, i8_ptr)
+            # Load the first byte and zero-extend to i64
+            ch = self.builder.load(str_ptr, name="ch")
+            val = self.builder.zext(ch, i64, name="char_code")
+            return TypedValue(val, ArrowType.INT)
+
+        elif name == "from_char_code":
+            tv = self._compile_expr(args[0])
+            code_val = tv.value if tv.type == ArrowType.INT else self._to_int(tv)
+            # Allocate a 2-byte string: [char, null]
+            buf = self.builder.call(self.malloc, [ir.Constant(i64, 2)], name="ch_buf")
+            ch = self.builder.trunc(code_val, i8, name="ch")
+            self.builder.store(ch, buf)
+            self.builder.store(ir.Constant(i8, 0), self.builder.gep(buf, [ir.Constant(i64, 1)]))
+            return TypedValue(buf, ArrowType.STRING)
+
+        elif name == "substring":
+            s_tv = self._compile_expr(args[0])
+            start_tv = self._compile_expr(args[1])
+            end_tv = self._compile_expr(args[2])
+            str_ptr = s_tv.value if s_tv.type == ArrowType.STRING else self.builder.inttoptr(s_tv.value, i8_ptr)
+            start_val = start_tv.value if start_tv.type == ArrowType.INT else self._to_int(start_tv)
+            end_val = end_tv.value if end_tv.type == ArrowType.INT else self._to_int(end_tv)
+            # Length of substring
+            sub_len = self.builder.sub(end_val, start_val, name="sub_len")
+            buf_size = self.builder.add(sub_len, ir.Constant(i64, 1), name="buf_sz")
+            buf = self.builder.call(self.malloc, [buf_size], name="sub_buf")
+            # Source pointer: str_ptr + start
+            src = self.builder.gep(str_ptr, [start_val], name="src")
+            # Copy bytes using a loop
+            idx_ptr = self._create_entry_alloca("_si", i64)
+            self.builder.store(ir.Constant(i64, 0), idx_ptr)
+            cond_bb = self.builder.append_basic_block("sub_c")
+            body_bb = self.builder.append_basic_block("sub_b")
+            end_bb = self.builder.append_basic_block("sub_e")
+            self.builder.branch(cond_bb)
+            self.builder.position_at_start(cond_bb)
+            idx = self.builder.load(idx_ptr)
+            self.builder.cbranch(self.builder.icmp_signed('<', idx, sub_len), body_bb, end_bb)
+            self.builder.position_at_start(body_bb)
+            idx = self.builder.load(idx_ptr)
+            ch = self.builder.load(self.builder.gep(src, [idx]))
+            self.builder.store(ch, self.builder.gep(buf, [idx]))
+            self.builder.store(self.builder.add(idx, ir.Constant(i64, 1)), idx_ptr)
+            self.builder.branch(cond_bb)
+            self.builder.position_at_start(end_bb)
+            # Null-terminate
+            self.builder.store(ir.Constant(i8, 0), self.builder.gep(buf, [sub_len]))
+            return TypedValue(buf, ArrowType.STRING)
+
+        elif name == "char_at":
+            s_tv = self._compile_expr(args[0])
+            idx_tv = self._compile_expr(args[1])
+            str_ptr = s_tv.value if s_tv.type == ArrowType.STRING else self.builder.inttoptr(s_tv.value, i8_ptr)
+            idx_val = idx_tv.value if idx_tv.type == ArrowType.INT else self._to_int(idx_tv)
+            buf = self.builder.call(self.malloc, [ir.Constant(i64, 2)], name="ca_buf")
+            ch = self.builder.load(self.builder.gep(str_ptr, [idx_val]), name="ca_ch")
+            self.builder.store(ch, buf)
+            self.builder.store(ir.Constant(i8, 0), self.builder.gep(buf, [ir.Constant(i64, 1)]))
+            return TypedValue(buf, ArrowType.STRING)
 
         raise CompileError(f"Unknown builtin: {name}")
 
@@ -931,6 +1005,12 @@ class Compiler:
         cm = {'<':'<','>':'>','<=':'<=','>=':'>=','=':'==','!=':'!='}
         if lt.type == ArrowType.FLOAT or rt.type == ArrowType.FLOAT:
             return TypedValue(self.builder.fcmp_ordered(cm[op], self._to_float(lt), self._to_float(rt)), ArrowType.BOOL)
+        if lt.type == ArrowType.STRING or rt.type == ArrowType.STRING:
+            # String comparison via strcmp
+            ls = lt.value if lt.type == ArrowType.STRING else self.builder.inttoptr(lt.value, i8_ptr)
+            rs = rt.value if rt.type == ArrowType.STRING else self.builder.inttoptr(rt.value, i8_ptr)
+            cmp_result = self.builder.call(self.strcmp, [ls, rs], name="scmp")
+            return TypedValue(self.builder.icmp_signed(cm[op], cmp_result, ir.Constant(i32, 0)), ArrowType.BOOL)
         return TypedValue(self.builder.icmp_signed(cm[op], self._to_int(lt), self._to_int(rt)), ArrowType.BOOL)
 
     def _compile_string_concat(self, lt, rt):
