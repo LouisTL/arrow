@@ -1,8 +1,7 @@
-nums <- [10, 20, 30];
-for (n in nums) {
-    print(n);
+p <- {name: "Alice", age: 30};
+if (p.name = "Alice") {
+    print("found Alice!");
 }
-
-for (ch in "hello") {
-    print(ch);
-}
+msg <- "Name: " + p.name;
+print(msg);
+print(p.age);

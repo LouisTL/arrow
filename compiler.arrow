@@ -228,6 +228,42 @@ fn get_var_type(name) {
     return "int"; // default
 }
 
+// Track struct field layouts: var_name -> [{fname, ftype}]
+struct_layouts <- [[]]; // struct_layouts[0] is list of [{var_name, fields}]
+
+fn set_struct_layout(var_name, fields) {
+    layouts <- struct_layouts[0];
+    i <- 0;
+    while (i < len(layouts)) {
+        if (layouts[i].var_name = var_name) {
+            layouts[i] <- {var_name: var_name, fields: fields};
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(struct_layouts[0], {var_name: var_name, fields: fields});
+    return false;
+}
+
+fn get_struct_layout(var_name) {
+    layouts <- struct_layouts[0];
+    i <- len(layouts) - 1;
+    while (i >= 0) {
+        if (layouts[i].var_name = var_name) { return layouts[i].fields; }
+        i <- i - 1;
+    }
+    return false;
+}
+
+fn get_field_type(fields, fname) {
+    i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].fname = fname) { return fields[i].ftype; }
+        i <- i + 1;
+    }
+    return "int"; // default
+}
+
 // Function declarations we need to track
 declared_fns <- []; // [{name, param_count, ret_type}]
 
@@ -263,25 +299,17 @@ fn tv_str(reg) { return {reg: reg, type: "str"}; }
 fn to_i64(t) { return t.reg; }
 
 // Convert an i64 value to a string (for string concat with non-strings)
-// Emits sprintf call, returns new register name
+// Calls our own arrow_itoa helper (no sprintf dependency)
 fn int_to_str(reg) {
-    buf <- fresh("%i2s");
-    emit("  " + buf + " = call ptr @malloc(i64 24)");
-    fmt <- fresh("%i2sf");
-    emit("  " + fmt + " = ptrtoint ptr @fmt_int_nosuffix to i64");
-    buf_p <- fresh("%i2sp");
-    emit("  " + buf_p + " = inttoptr i64 " + reg + " to ptr");
-    // Actually: we need sprintf(buf, "%lld", val)
-    // buf is already a ptr from malloc
-    emit("  call i32 (ptr, ptr, ...) @sprintf(ptr " + buf + ", ptr @fmt_int_nosuffix, i64 " + reg + ")");
-    // ptrtoint buf to i64 for our uniform representation
-    r <- fresh("%i2sr");
-    emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
-    return r;
+    r <- fresh("%i2s");
+    rp <- fresh("%i2sp");
+    emit("  " + r + " = call ptr @arrow_itoa(i64 " + reg + ")");
+    emit("  " + rp + " = ptrtoint ptr " + r + " to i64");
+    return rp;
 }
 
 // Ensure a typed value is a string (i8* as i64)
-// If it's already a string, return as-is; if int, convert via sprintf
+// If it's already a string, return as-is; if int, convert via itoa
 fn ensure_str(t) {
     if (t.type = "str") { return t.reg; }
     return int_to_str(t.reg);
@@ -345,6 +373,10 @@ fn collect_vars_stmt(nd, vars) {
         collect_vars_expr(nd.index, vars);
         collect_vars_expr(nd.value, vars);
     }
+    else if (nd.node = "DotAssign") {
+        collect_vars_expr(nd.obj, vars);
+        collect_vars_expr(nd.value, vars);
+    }
     else { collect_vars_expr(nd, vars); }
 }
 
@@ -361,6 +393,11 @@ fn collect_vars_expr(nd, vars) {
         while (i < len(nd.elements)) { collect_vars_expr(nd.elements[i], vars); i <- i + 1; }
     }
     else if (nd.node = "IndexExpr") { collect_vars_expr(nd.obj, vars); collect_vars_expr(nd.index, vars); }
+    else if (nd.node = "DotExpr") { collect_vars_expr(nd.obj, vars); }
+    else if (nd.node = "StructLit") {
+        i <- 0;
+        while (i < len(nd.fields)) { collect_vars_expr(nd.fields[i].val, vars); i <- i + 1; }
+    }
 }
 
 // ── Emit LLVM IR for expression ─────────
@@ -424,6 +461,12 @@ fn emit_expr(nd) {
     }
     if (nd.node = "IndexExpr") {
         return emit_index(nd);
+    }
+    if (nd.node = "StructLit") {
+        return emit_struct_lit(nd);
+    }
+    if (nd.node = "DotExpr") {
+        return emit_dot_expr(nd);
     }
     print("Emit error: unsupported expr " + nd.node);
     return tv_int("0");
@@ -843,7 +886,13 @@ fn emit_stmt(nd) {
         reg <- find_var(nd.name);
         if (reg = "") { reg <- add_var(nd.name); }
         emit("  store i64 " + vt.reg + ", ptr " + reg);
-        set_var_type(nd.name, vt.type);
+        // Track type — structs become "int" for storage but we save layout
+        if (vt.type = "struct") {
+            set_var_type(nd.name, "int");
+            set_struct_layout(nd.name, vt.fields);
+        } else {
+            set_var_type(nd.name, vt.type);
+        }
         return false;
     }
     if (nd.node = "PrintStmt") {
@@ -884,6 +933,9 @@ fn emit_stmt(nd) {
         emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
         emit("  store i64 " + vt_val.reg + ", ptr " + ep);
         return false;
+    }
+    if (nd.node = "DotAssign") {
+        return emit_dot_assign(nd);
     }
     if (nd.node = "Block") {
         emit_block(nd.stmts);
@@ -964,6 +1016,233 @@ fn emit_while(nd) {
 
     emit(lbl_end + ":");
     return false;
+}
+
+// ── Struct support ──────────────────────
+
+// Struct layout: [count, val0, val1, ..., name_ptr0, name_ptr1, ...]
+// Total slots = 1 + 2*N.  All i64.
+
+fn emit_struct_lit(nd) {
+    n <- len(nd.fields);
+    total <- 1 + n * 2; // count + N values + N name ptrs
+    sz <- fresh("%ssz");
+    sp <- fresh("%sptr");
+    emit("  " + sz + " = mul i64 " + total + ", 8");
+    emit("  " + sp + " = call ptr @malloc(i64 " + sz + ")");
+
+    // Store count
+    emit("  store i64 " + n + ", ptr " + sp);
+
+    // Store values at slots [1..N] and track field types
+    field_info <- [];
+    i <- 0;
+    while (i < n) {
+        vt <- emit_expr(nd.fields[i].val);
+        slot <- i + 1;
+        vp <- fresh("%svp");
+        emit("  " + vp + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
+        emit("  store i64 " + vt.reg + ", ptr " + vp);
+        push(field_info, {fname: nd.fields[i].key, ftype: vt.type});
+        i <- i + 1;
+    }
+
+    // Store name pointers at slots [N+1..2N]
+    i <- 0;
+    while (i < n) {
+        fname <- nd.fields[i].key;
+        fid <- add_string(fname);
+        np <- fresh("%snp");
+        ni <- fresh("%sni");
+        slot <- 1 + n + i;
+        emit("  " + ni + " = ptrtoint ptr @" + fid + " to i64");
+        emit("  " + np + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
+        emit("  store i64 " + ni + ", ptr " + np);
+        i <- i + 1;
+    }
+
+    // Return struct pointer as i64, with field info attached
+    ri <- fresh("%sri");
+    emit("  " + ri + " = ptrtoint ptr " + sp + " to i64");
+    return {reg: ri, type: "struct", fields: field_info};
+}
+
+fn emit_dot_expr(nd) {
+    vt_obj <- emit_expr(nd.obj);
+
+    // Field name as string constant
+    fid <- add_string(nd.field);
+
+    // Object pointer
+    op <- fresh("%dop");
+    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+
+    // Call struct_find helper to get field index
+    idx <- fresh("%didx");
+    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
+
+    // Load value at slot [1 + idx]
+    slot <- fresh("%dslot");
+    vp <- fresh("%dvp");
+    val <- fresh("%dval");
+    emit("  " + slot + " = add i64 " + idx + ", 1");
+    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
+    emit("  " + val + " = load i64, ptr " + vp);
+
+    // Try to determine field type from struct layout
+    ftype <- "int"; // default
+    if (nd.obj.node = "Identifier") {
+        layout <- get_struct_layout(nd.obj.name);
+        if (layout != false) {
+            ftype <- get_field_type(layout, nd.field);
+        }
+    }
+    return tv(val, ftype);
+}
+
+fn emit_dot_assign(nd) {
+    vt_obj <- emit_expr(nd.obj);
+    vt_val <- emit_expr(nd.value);
+
+    // Field name as string constant
+    fid <- add_string(nd.field);
+
+    // Object pointer
+    op <- fresh("%daop");
+    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+
+    // Find field index
+    idx <- fresh("%daidx");
+    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
+
+    slot <- fresh("%daslot");
+    vp <- fresh("%davp");
+    emit("  " + slot + " = add i64 " + idx + ", 1");
+    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
+    emit("  store i64 " + vt_val.reg + ", ptr " + vp);
+    return false;
+}
+
+// Emit the struct_find helper function
+// arrow_struct_find(ptr %sptr, ptr %name) -> i64 index (or -1)
+fn emit_struct_find_helper() {
+    emit("define i64 @arrow_struct_find(ptr %sptr, ptr %name) {");
+    emit("entry:");
+    emit("  %count = load i64, ptr %sptr");
+    emit("  %idx = alloca i64");
+    emit("  store i64 0, ptr %idx");
+    emit("  br label %cond");
+    emit("cond:");
+    emit("  %i = load i64, ptr %idx");
+    emit("  %done = icmp slt i64 %i, %count");
+    emit("  br i1 %done, label %body, label %notfound");
+    emit("body:");
+    emit("  %i2 = load i64, ptr %idx");
+    // name slot = 1 + count + i
+    emit("  %ns1 = add i64 1, %count");
+    emit("  %ns2 = add i64 %ns1, %i2");
+    emit("  %nsp = getelementptr i64, ptr %sptr, i64 %ns2");
+    emit("  %ni = load i64, ptr %nsp");
+    emit("  %np = inttoptr i64 %ni to ptr");
+    emit("  %cmp = call i32 @strcmp(ptr %np, ptr %name)");
+    emit("  %eq = icmp eq i32 %cmp, 0");
+    emit("  br i1 %eq, label %found, label %next");
+    emit("found:");
+    emit("  %fi = load i64, ptr %idx");
+    emit("  ret i64 %fi");
+    emit("next:");
+    emit("  %i3 = load i64, ptr %idx");
+    emit("  %i4 = add i64 %i3, 1");
+    emit("  store i64 %i4, ptr %idx");
+    emit("  br label %cond");
+    emit("notfound:");
+    emit("  ret i64 -1");
+    emit("}");
+    emit("");
+}
+
+// Emit integer-to-string helper (no sprintf dependency)
+// arrow_itoa(i64 %val) -> ptr
+fn emit_itoa_helper() {
+    emit("define ptr @arrow_itoa(i64 %val) {");
+    emit("entry:");
+    emit("  %buf = call ptr @malloc(i64 24)");
+    emit("  %tmp = call ptr @malloc(i64 24)");
+    emit("  %pos = alloca i64");
+    emit("  %cur = alloca i64");
+    emit("  %wp = alloca i64");
+    emit("  store i64 0, ptr %wp");
+    // Handle zero
+    emit("  %is_zero = icmp eq i64 %val, 0");
+    emit("  br i1 %is_zero, label %zero, label %check_neg");
+    emit("zero:");
+    emit("  store i8 48, ptr %buf");
+    emit("  %zp = getelementptr i8, ptr %buf, i64 1");
+    emit("  store i8 0, ptr %zp");
+    emit("  ret ptr %buf");
+    // Handle negative
+    emit("check_neg:");
+    emit("  %is_neg = icmp slt i64 %val, 0");
+    emit("  br i1 %is_neg, label %neg, label %start");
+    emit("neg:");
+    emit("  store i8 45, ptr %buf");
+    emit("  store i64 1, ptr %wp");
+    emit("  %abs = sub i64 0, %val");
+    emit("  store i64 %abs, ptr %cur");
+    emit("  store i64 0, ptr %pos");
+    emit("  br label %dloop");
+    emit("start:");
+    emit("  store i64 %val, ptr %cur");
+    emit("  store i64 0, ptr %pos");
+    emit("  br label %dloop");
+    // Extract digits into tmp (reversed)
+    emit("dloop:");
+    emit("  %c = load i64, ptr %cur");
+    emit("  %d = srem i64 %c, 10");
+    emit("  %ch = add i64 %d, 48");
+    emit("  %ch8 = trunc i64 %ch to i8");
+    emit("  %p = load i64, ptr %pos");
+    emit("  %tp = getelementptr i8, ptr %tmp, i64 %p");
+    emit("  store i8 %ch8, ptr %tp");
+    emit("  %p1 = add i64 %p, 1");
+    emit("  store i64 %p1, ptr %pos");
+    emit("  %nc = sdiv i64 %c, 10");
+    emit("  store i64 %nc, ptr %cur");
+    emit("  %more = icmp sgt i64 %nc, 0");
+    emit("  br i1 %more, label %dloop, label %rev");
+    // Reverse copy from tmp into buf (after optional '-')
+    emit("rev:");
+    emit("  %len = load i64, ptr %pos");
+    emit("  %ri = alloca i64");
+    emit("  store i64 0, ptr %ri");
+    emit("  br label %rcond");
+    emit("rcond:");
+    emit("  %r = load i64, ptr %ri");
+    emit("  %rdone = icmp slt i64 %r, %len");
+    emit("  br i1 %rdone, label %rbody, label %rend");
+    emit("rbody:");
+    emit("  %r2 = load i64, ptr %ri");
+    emit("  %src_idx = sub i64 %len, %r2");
+    emit("  %src_idx2 = sub i64 %src_idx, 1");
+    emit("  %sp = getelementptr i8, ptr %tmp, i64 %src_idx2");
+    emit("  %sc = load i8, ptr %sp");
+    emit("  %w = load i64, ptr %wp");
+    emit("  %dst_idx = add i64 %w, %r2");
+    emit("  %dp = getelementptr i8, ptr %buf, i64 %dst_idx");
+    emit("  store i8 %sc, ptr %dp");
+    emit("  %r3 = add i64 %r2, 1");
+    emit("  store i64 %r3, ptr %ri");
+    emit("  br label %rcond");
+    emit("rend:");
+    // Null terminate
+    emit("  %w2 = load i64, ptr %wp");
+    emit("  %total = add i64 %w2, %len");
+    emit("  %ep = getelementptr i8, ptr %buf, i64 %total");
+    emit("  store i8 0, ptr %ep");
+    emit("  call void @free(ptr %tmp)");
+    emit("  ret ptr %buf");
+    emit("}");
+    emit("");
 }
 
 fn emit_for_in(nd) {
@@ -1094,8 +1373,10 @@ fn emit_function(nd) {
     // Save old vars and types, start fresh for this function
     old_vars <- alloc_vars[0];
     old_types <- var_types[0];
+    old_layouts <- struct_layouts[0];
     alloc_vars[0] <- [];
     var_types[0] <- [];
+    struct_layouts[0] <- [];
     old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -1145,6 +1426,7 @@ fn emit_function(nd) {
     // Restore vars and types
     alloc_vars[0] <- old_vars;
     var_types[0] <- old_types;
+    struct_layouts[0] <- old_layouts;
     current_fn[0] <- old_fn;
 }
 
@@ -1252,7 +1534,6 @@ fn compile(stmts) {
     // External declarations
     emit("declare i32 @printf(ptr, ...)");
     emit("declare i32 @puts(ptr)");
-    emit("declare i32 @sprintf(ptr, ptr, ...)");
     emit("declare ptr @malloc(i64)");
     emit("declare void @free(ptr)");
     emit("declare i64 @strlen(ptr)");
@@ -1284,6 +1565,8 @@ fn compile(stmts) {
 
     // Emit helpers
     emit_push_helper();
+    emit_struct_find_helper();
+    emit_itoa_helper();
     emit_read_file_helper();
     emit_write_file_helper();
     emit_input_helper();
@@ -1305,6 +1588,7 @@ fn compile(stmts) {
     // Alloca all
     alloc_vars[0] <- [];
     var_types[0] <- [];
+    struct_layouts[0] <- [];
     j <- 0;
     while (j < len(vars)) {
         reg <- "%" + vars[j];
@@ -1331,8 +1615,6 @@ fn compile(stmts) {
     // Emit string constants
     // Format string for integers (with newline)
     emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
-    // Format string for integers (no newline, for sprintf/int-to-string)
-    emit("@fmt_int_nosuffix = private constant [5 x i8] c\"%lld\\00\"");
     // File mode strings
     emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
     emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
