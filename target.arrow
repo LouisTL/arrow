@@ -1,1 +1,8 @@
-print("hello " + "world");
+nums <- [10, 20, 30];
+for (n in nums) {
+    print(n);
+}
+
+for (ch in "hello") {
+    print(ch);
+}

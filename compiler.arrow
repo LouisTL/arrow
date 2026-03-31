@@ -970,12 +970,6 @@ fn emit_for_in(nd) {
     // Compile iterable
     vt_coll <- emit_expr(nd.iterable);
 
-    // Get length
-    ap <- fresh("%fap");
-    flen <- fresh("%flen");
-    emit("  " + ap + " = inttoptr i64 " + vt_coll.reg + " to ptr");
-    emit("  " + flen + " = load i64, ptr " + ap);
-
     // Index variable
     idx_reg <- find_var("_for_idx");
     if (idx_reg = "") { idx_reg <- add_var("_for_idx"); }
@@ -985,40 +979,100 @@ fn emit_for_in(nd) {
     var_reg <- find_var(nd.var_name);
     if (var_reg = "") { var_reg <- add_var(nd.var_name); }
 
-    lbl_cond <- fresh_lbl("fc");
-    lbl_body <- fresh_lbl("fb");
-    lbl_end <- fresh_lbl("fe");
+    if (vt_coll.type = "str") {
+        // String iteration: iterate over characters
+        sp <- fresh("%fsp");
+        emit("  " + sp + " = inttoptr i64 " + vt_coll.reg + " to ptr");
+        flen <- fresh("%flen");
+        emit("  " + flen + " = call i64 @strlen(ptr " + sp + ")");
 
-    emit("  br label %" + lbl_cond);
-    emit(lbl_cond + ":");
-    ci2 <- fresh("%fi");
-    emit("  " + ci2 + " = load i64, ptr " + idx_reg);
-    cmp <- fresh("%fcmp");
-    emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
-    emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+        lbl_cond <- fresh_lbl("fc");
+        lbl_body <- fresh_lbl("fb");
+        lbl_end <- fresh_lbl("fe");
 
-    emit(lbl_body + ":");
-    ci3 <- fresh("%fi2");
-    emit("  " + ci3 + " = load i64, ptr " + idx_reg);
-    off <- fresh("%foff");
-    ep <- fresh("%fep");
-    ev <- fresh("%fev");
-    emit("  " + off + " = add i64 " + ci3 + ", 2");
-    emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
-    emit("  " + ev + " = load i64, ptr " + ep);
-    emit("  store i64 " + ev + ", ptr " + var_reg);
+        emit("  br label %" + lbl_cond);
+        emit(lbl_cond + ":");
+        ci2 <- fresh("%fi");
+        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
+        cmp <- fresh("%fcmp");
+        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
+        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
 
-    emit_block(nd.body);
+        emit(lbl_body + ":");
+        ci3 <- fresh("%fi2");
+        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
 
-    // Increment
-    ci4 <- fresh("%fi3");
-    ci5 <- fresh("%fi4");
-    emit("  " + ci4 + " = load i64, ptr " + idx_reg);
-    emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
-    emit("  store i64 " + ci5 + ", ptr " + idx_reg);
-    emit("  br label %" + lbl_cond);
+        // Extract single char as a 2-byte string [ch, 0]
+        chp <- fresh("%fchp");
+        chv <- fresh("%fchv");
+        buf <- fresh("%fbuf");
+        np <- fresh("%fnp");
+        ri <- fresh("%fri");
+        emit("  " + chp + " = getelementptr i8, ptr " + sp + ", i64 " + ci3);
+        emit("  " + chv + " = load i8, ptr " + chp);
+        emit("  " + buf + " = call ptr @malloc(i64 2)");
+        emit("  store i8 " + chv + ", ptr " + buf);
+        emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
+        emit("  store i8 0, ptr " + np);
+        emit("  " + ri + " = ptrtoint ptr " + buf + " to i64");
+        emit("  store i64 " + ri + ", ptr " + var_reg);
 
-    emit(lbl_end + ":");
+        // Set loop var type to string
+        set_var_type(nd.var_name, "str");
+
+        emit_block(nd.body);
+
+        // Increment
+        ci4 <- fresh("%fi3");
+        ci5 <- fresh("%fi4");
+        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
+        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
+        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
+        emit("  br label %" + lbl_cond);
+
+        emit(lbl_end + ":");
+    } else {
+        // Array iteration (existing logic)
+        ap <- fresh("%fap");
+        flen <- fresh("%flen");
+        emit("  " + ap + " = inttoptr i64 " + vt_coll.reg + " to ptr");
+        emit("  " + flen + " = load i64, ptr " + ap);
+
+        lbl_cond <- fresh_lbl("fc");
+        lbl_body <- fresh_lbl("fb");
+        lbl_end <- fresh_lbl("fe");
+
+        emit("  br label %" + lbl_cond);
+        emit(lbl_cond + ":");
+        ci2 <- fresh("%fi");
+        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
+        cmp <- fresh("%fcmp");
+        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
+        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+        emit(lbl_body + ":");
+        ci3 <- fresh("%fi2");
+        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
+        off <- fresh("%foff");
+        ep <- fresh("%fep");
+        ev <- fresh("%fev");
+        emit("  " + off + " = add i64 " + ci3 + ", 2");
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+        emit("  " + ev + " = load i64, ptr " + ep);
+        emit("  store i64 " + ev + ", ptr " + var_reg);
+
+        emit_block(nd.body);
+
+        // Increment
+        ci4 <- fresh("%fi3");
+        ci5 <- fresh("%fi4");
+        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
+        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
+        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
+        emit("  br label %" + lbl_cond);
+
+        emit(lbl_end + ":");
+    }
     return false;
 }
 
