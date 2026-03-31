@@ -1081,6 +1081,17 @@ class Interpreter:
         raise RuntimeError_(f"Unknown builtin: {name}")
 
     def _eval_binop(self, op: str, left, right) -> Any:
+        # Short-circuit && and || — must not evaluate right side eagerly
+        if op == '&&':
+            lv = self._eval(left)
+            if not self._truthy(lv):
+                return False
+            return self._truthy(self._eval(right))
+        if op == '||':
+            lv = self._eval(left)
+            if self._truthy(lv):
+                return lv
+            return self._eval(right)
         lv = self._eval(left)
         rv = self._eval(right)
         match op:
@@ -1104,8 +1115,6 @@ class Interpreter:
             case '>=': return lv >= rv
             case '=':  return lv == rv
             case '!=': return lv != rv
-            case '&&': return self._truthy(lv) and self._truthy(rv)
-            case '||': return self._truthy(lv) or self._truthy(rv)
             case _: raise RuntimeError_(f"Unknown operator: {op}")
 
     def _truthy(self, val) -> bool:
