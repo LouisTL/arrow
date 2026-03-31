@@ -780,7 +780,8 @@ class Struct:
 
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input",
-            "char_code", "from_char_code", "substring", "char_at", "str_len"}
+            "char_code", "from_char_code", "substring", "char_at", "str_len",
+            "exec_cmd"}
 
 
 class Interpreter:
@@ -1013,6 +1014,20 @@ class Interpreter:
                 prompt = self._eval(args[0])
                 return input(self._format(prompt))
             return input()
+
+        elif name == "exec_cmd":
+            if len(args) != 1:
+                raise RuntimeError_("exec_cmd() takes exactly 1 argument")
+            cmd = self._eval(args[0])
+            if not isinstance(cmd, str):
+                raise RuntimeError_("exec_cmd() requires a string command")
+            import subprocess
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout, end='')
+            if result.stderr:
+                print(result.stderr, end='', file=__import__('sys').stderr)
+            return result.returncode
 
         elif name == "char_code":
             if len(args) != 1:

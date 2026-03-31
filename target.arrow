@@ -1,0 +1,25 @@
+// Simple test for the self-hosted compiler
+x <- 42;
+print(x);
+print(x + 8);
+
+fn add(a, b) {
+    return a + b;
+}
+print(add(10, 20));
+
+fn fact(n) {
+    if (n <= 1) { return 1; }
+    return n * fact(n - 1);
+}
+print(fact(10));
+
+// FizzBuzz
+i <- 1;
+while (i <= 15) {
+    if (i % 15 = 0) { print("FizzBuzz"); }
+    else if (i % 3 = 0) { print("Fizz"); }
+    else if (i % 5 = 0) { print("Buzz"); }
+    else { print(i); }
+    i <- i + 1;
+}

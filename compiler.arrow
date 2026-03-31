@@ -1,0 +1,907 @@
+// ═══════════════════════════════════════════
+//  Arrow Lang — Self-Hosted Compiler
+//  Emits LLVM IR text (.ll), then shells out
+//  to clang for AOT compilation.
+//
+//  Usage: python lang.py compile.arrow
+//  Reads target.arrow, writes target.ll,
+//  runs clang to produce target.exe
+// ═══════════════════════════════════════════
+
+// ── Lexer ───────────────────────────────
+fn is_digit(c){return c>=48&&c<=57;}
+fn is_alpha(c){return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
+fn is_alnum(c){return is_digit(c)||is_alpha(c);}
+fn is_ws(c){return c=32||c=9||c=10||c=13;}
+fn mktok(t,v,l,c){return{type:t,value:v,line:l,col:c};}
+fn is_kw(w){if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}return false;}
+
+fn tokenize(src){
+    ts<-[];p<-0;ln<-1;cl<-1;sl<-str_len(src);
+    while(p<sl){ch<-char_code(char_at(src,p));
+        if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
+        else if(ch=47&&p+1<sl&&char_code(char_at(src,p+1))=47){while(p<sl&&char_code(char_at(src,p))!=10){p<-p+1;}}
+        else if(is_digit(ch)){s<-p;sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}
+        else if(ch=34){sc<-cl;p<-p+1;cl<-cl+1;sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
+        else if(is_alpha(ch)){s<-p;sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
+        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=45){push(ts,mktok("ARROW","<-",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=61&&p+1<sl&&char_code(char_at(src,p+1))=62){push(ts,mktok("FAT_ARROW","=>",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("LTE","<=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=62&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("GTE",">=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=33&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("NEQ","!=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=38&&p+1<sl&&char_code(char_at(src,p+1))=38){push(ts,mktok("AND","&&",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=124&&p+1<sl&&char_code(char_at(src,p+1))=124){push(ts,mktok("OR","||",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=43){push(ts,mktok("PLUS","+",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=45){push(ts,mktok("MINUS","-",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=42){push(ts,mktok("STAR","*",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=47){push(ts,mktok("SLASH","/",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=37){push(ts,mktok("PERCENT","%",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=60){push(ts,mktok("LT","<",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=62){push(ts,mktok("GT",">",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=33){push(ts,mktok("NOT","!",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=61){push(ts,mktok("EQ","=",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=46){push(ts,mktok("DOT",".",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=58){push(ts,mktok("COLON",":",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=40){push(ts,mktok("LPAREN","(",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=41){push(ts,mktok("RPAREN",")",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=123){push(ts,mktok("LBRACE","{",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=125){push(ts,mktok("RBRACE","}",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=91){push(ts,mktok("LBRACKET","[",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=93){push(ts,mktok("RBRACKET","]",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=59){push(ts,mktok("SEMI",";",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=44){push(ts,mktok("COMMA",",",ln,cl));p<-p+1;cl<-cl+1;}
+        else{p<-p+1;cl<-cl+1;}
+    }
+    push(ts,mktok("EOF","",ln,cl));return ts;
+}
+
+// ── Parser ──────────────────────────────
+toks<-[];pos<-[0];
+fn ci(e){return toks[pos[0]].type=e;}
+fn pi(o,e){x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
+fn adv(){pos[0]<-pos[0]+1;}
+fn cv(){return toks[pos[0]].value;}
+fn eat(e){t<-toks[pos[0]];if(t.type!=e){print("Parse error: expected "+e+" got "+t.type+" at "+t.line+":"+t.col);}pos[0]<-pos[0]+1;return t;}
+fn ev(e){t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
+fn pp(){ss<-[];while(!ci("EOF")){push(ss,ps());}return ss;}
+fn ps(){
+    if(ci("fn")){return pfd();}if(ci("return")){return prt();}
+    if(ci("if")){return pif();}if(ci("while")){return pwh();}
+    if(ci("for")){return pfi();}if(ci("print")){return ppr();}
+    if(ci("LBRACE")){if(isl()){e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
+    if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
+    e<-pe();eat("SEMI");return e;
+}
+fn isl(){if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
+fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
+fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e};}
+fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
+fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
+fn prt(){eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e};}
+fn pfd(){eat("fn");n<-ev("IDENT");p<-ppl();b<-pb();return{node:"FnDecl",name:n,params:p,body:b};}
+fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));}}eat("RPAREN");return p;}
+fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
+fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
+fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
+fn iaf(){d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){if(i+1<len(toks)){return toks[i+1].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
+fn paf(){p<-ppl();eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:p,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:p,body:e,is_expr:true};}
+fn por(){l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
+fn pan(){l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
+fn peq(){l<-pcm();while(ci("EQ")||ci("NEQ")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
+fn pcm(){l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:ppad()};}return l;}
+fn ppad(){l<-pmu();while(ci("PLUS")||ci("MINUS")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
+fn pmu(){l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
+fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
+fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a};}
+    else if(ci("LBRACKET")){eat("LBRACKET");x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
+    else if(ci("DOT")){eat("DOT");f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
+    else{dn<-true;}}return e;}
+fn ppm(){
+    if(ci("NUMBER")){v<-cv();adv();return{node:"NumberLit",value:v};}
+    if(ci("STRING")){v<-cv();adv();return{node:"StringLit",value:v};}
+    if(ci("BOOL")){v<-cv();adv();return{node:"BoolLit",value:v};}
+    if(ci("IDENT")){v<-cv();adv();return{node:"Identifier",name:v};}
+    if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
+    if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
+    if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
+    print("Parse error");adv();return{node:"NumberLit",value:"0"};
+}
+
+
+// ═══════════════════════════════════════════
+//  LLVM IR EMITTER
+//  Strategy: everything is i64. Strings are
+//  i8* cast to i64. Simple and uniform.
+// ═══════════════════════════════════════════
+
+// Output buffer: array of lines
+ir <- [""]; // ir[0] holds current accumulated text
+
+fn emit(s) {
+    ir[0] <- ir[0] + s + from_char_code(10);
+}
+
+// Counter for unique names
+tmp_counter <- [0];
+fn fresh(prefix) {
+    tmp_counter[0] <- tmp_counter[0] + 1;
+    return prefix + tmp_counter[0];
+}
+
+// Label counter
+lbl_counter <- [0];
+fn fresh_lbl(prefix) {
+    lbl_counter[0] <- lbl_counter[0] + 1;
+    return prefix + lbl_counter[0];
+}
+
+// Track which variables have been allocated in current function
+fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
+current_fn <- [""]; // name of function being compiled
+
+// String constants
+str_constants <- []; // [{id, text}]
+str_counter <- [0];
+
+fn add_string(text) {
+    str_counter[0] <- str_counter[0] + 1;
+    id <- "str" + str_counter[0];
+    push(str_constants, {id: id, text: text});
+    return id;
+}
+
+// Escape string for LLVM IR constant
+fn ir_escape(s) {
+    result <- "";
+    i <- 0;
+    total_len <- 0;
+    while (i < str_len(s)) {
+        ch <- char_code(char_at(s, i));
+        if (ch = 10) { result <- result + "\\0A"; }
+        else if (ch = 9) { result <- result + "\\09"; }
+        else if (ch = 34) { result <- result + "\\22"; }
+        else if (ch = 92) { result <- result + "\\5C"; }
+        else if (ch = 0) { result <- result + "\\00"; }
+        else { result <- result + char_at(s, i); }
+        total_len <- total_len + 1;
+        i <- i + 1;
+    }
+    return result;
+}
+
+fn ir_str_len(s) {
+    // Count actual bytes (escaped chars count as 1)
+    return str_len(s) + 1; // +1 for null terminator
+}
+
+// Track allocated variables per function — boxed in array
+alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
+
+fn find_var(name) {
+    vars <- alloc_vars[0];
+    i <- len(vars) - 1;
+    while (i >= 0) {
+        if (vars[i].name = name) { return vars[i].reg; }
+        i <- i - 1;
+    }
+    return "";
+}
+
+fn add_var(name) {
+    reg <- "%" + name;
+    if (find_var(name) != "") { return find_var(name); }
+    push(alloc_vars[0], {name: name, reg: reg});
+    return reg;
+}
+
+// Function declarations we need to track
+declared_fns <- []; // [{name, param_count}]
+
+fn find_fn(name) {
+    i <- 0;
+    while (i < len(declared_fns)) {
+        if (declared_fns[i].name = name) { return declared_fns[i]; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+// ── Pre-scan: collect all fn declarations ──
+fn scan_fns(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params)});
+        }
+        i <- i + 1;
+    }
+}
+
+// ── Collect all variables used in a function body ──
+fn collect_vars(stmts, vars) {
+    i <- 0;
+    while (i < len(stmts)) {
+        collect_vars_stmt(stmts[i], vars);
+        i <- i + 1;
+    }
+}
+
+fn var_exists(vars, name) {
+    i <- 0;
+    while (i < len(vars)) {
+        if (vars[i] = name) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn collect_vars_stmt(nd, vars) {
+    if (nd.node = "Assignment") {
+        if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
+        collect_vars_expr(nd.expr, vars);
+    }
+    else if (nd.node = "PrintStmt") { collect_vars_expr(nd.expr, vars); }
+    else if (nd.node = "IfStmt") {
+        collect_vars_expr(nd.cond, vars);
+        collect_vars(nd.then_body, vars);
+        collect_vars(nd.else_body, vars);
+    }
+    else if (nd.node = "WhileStmt") {
+        collect_vars_expr(nd.cond, vars);
+        collect_vars(nd.body, vars);
+    }
+    else if (nd.node = "ForInStmt") {
+        if (!var_exists(vars, nd.var_name)) { push(vars, nd.var_name); }
+        collect_vars_expr(nd.iterable, vars);
+        collect_vars(nd.body, vars);
+    }
+    else if (nd.node = "ReturnStmt") {
+        if (nd.expr != false) { collect_vars_expr(nd.expr, vars); }
+    }
+    else if (nd.node = "Block") { collect_vars(nd.stmts, vars); }
+    else if (nd.node = "IndexAssign") {
+        collect_vars_expr(nd.obj, vars);
+        collect_vars_expr(nd.index, vars);
+        collect_vars_expr(nd.value, vars);
+    }
+    else { collect_vars_expr(nd, vars); }
+}
+
+fn collect_vars_expr(nd, vars) {
+    if (nd.node = "BinOp") { collect_vars_expr(nd.left, vars); collect_vars_expr(nd.right, vars); }
+    else if (nd.node = "UnaryOp") { collect_vars_expr(nd.operand, vars); }
+    else if (nd.node = "CallExpr") {
+        collect_vars_expr(nd.callee, vars);
+        i <- 0;
+        while (i < len(nd.args)) { collect_vars_expr(nd.args[i], vars); i <- i + 1; }
+    }
+    else if (nd.node = "ArrayLit") {
+        i <- 0;
+        while (i < len(nd.elements)) { collect_vars_expr(nd.elements[i], vars); i <- i + 1; }
+    }
+    else if (nd.node = "IndexExpr") { collect_vars_expr(nd.obj, vars); collect_vars_expr(nd.index, vars); }
+}
+
+// ── Emit LLVM IR for expression (returns register name) ──
+
+fn emit_expr(nd) {
+    if (nd.node = "NumberLit") {
+        return nd.value; // literal integer
+    }
+    if (nd.node = "StringLit") {
+        id <- add_string(nd.value);
+        r <- fresh("%s");
+        escaped <- ir_escape(nd.value);
+        slen <- str_len(nd.value) + 1;
+        emit("  " + r + " = ptrtoint ptr @" + id + " to i64");
+        return r;
+    }
+    if (nd.node = "BoolLit") {
+        if (nd.value = "true") { return "1"; }
+        return "0";
+    }
+    if (nd.node = "Identifier") {
+        reg <- find_var(nd.name);
+        if (reg = "") {
+            // Might be a function reference
+            fi <- find_fn(nd.name);
+            if (fi != false) {
+                r <- fresh("%fref");
+                emit("  " + r + " = ptrtoint ptr @" + nd.name + " to i64");
+                return r;
+            }
+            print("Error: undefined var " + nd.name);
+            return "0";
+        }
+        r <- fresh("%ld");
+        emit("  " + r + " = load i64, ptr " + reg);
+        return r;
+    }
+    if (nd.node = "BinOp") {
+        return emit_binop(nd);
+    }
+    if (nd.node = "UnaryOp") {
+        v <- emit_expr(nd.operand);
+        if (nd.op = "-") {
+            r <- fresh("%neg");
+            emit("  " + r + " = sub i64 0, " + v);
+            return r;
+        }
+        if (nd.op = "!") {
+            r1 <- fresh("%cmp");
+            r2 <- fresh("%not");
+            emit("  " + r1 + " = icmp eq i64 " + v + ", 0");
+            emit("  " + r2 + " = zext i1 " + r1 + " to i64");
+            return r2;
+        }
+        return "0";
+    }
+    if (nd.node = "CallExpr") {
+        return emit_call(nd);
+    }
+    if (nd.node = "ArrayLit") {
+        return emit_array_lit(nd);
+    }
+    if (nd.node = "IndexExpr") {
+        return emit_index(nd);
+    }
+    print("Emit error: unsupported expr " + nd.node);
+    return "0";
+}
+
+fn emit_binop(nd) {
+    if (nd.op = "&&") {
+        return emit_and(nd);
+    }
+    if (nd.op = "||") {
+        return emit_or(nd);
+    }
+
+    l <- emit_expr(nd.left);
+    r <- emit_expr(nd.right);
+
+    if (nd.op = "+") {
+        // Could be int add or string concat — for now, just int
+        // We'll add string concat detection later
+        res <- fresh("%add");
+        emit("  " + res + " = add i64 " + l + ", " + r);
+        return res;
+    }
+    if (nd.op = "-") { res <- fresh("%sub"); emit("  " + res + " = sub i64 " + l + ", " + r); return res; }
+    if (nd.op = "*") { res <- fresh("%mul"); emit("  " + res + " = mul i64 " + l + ", " + r); return res; }
+    if (nd.op = "/") { res <- fresh("%div"); emit("  " + res + " = sdiv i64 " + l + ", " + r); return res; }
+    if (nd.op = "%") { res <- fresh("%rem"); emit("  " + res + " = srem i64 " + l + ", " + r); return res; }
+
+    // Comparisons
+    cmp_op <- "";
+    if (nd.op = "=") { cmp_op <- "eq"; }
+    else if (nd.op = "!=") { cmp_op <- "ne"; }
+    else if (nd.op = "<") { cmp_op <- "slt"; }
+    else if (nd.op = ">") { cmp_op <- "sgt"; }
+    else if (nd.op = "<=") { cmp_op <- "sle"; }
+    else if (nd.op = ">=") { cmp_op <- "sge"; }
+
+    if (cmp_op != "") {
+        r1 <- fresh("%cmp");
+        r2 <- fresh("%ext");
+        emit("  " + r1 + " = icmp " + cmp_op + " i64 " + l + ", " + r);
+        emit("  " + r2 + " = zext i1 " + r1 + " to i64");
+        return r2;
+    }
+    return "0";
+}
+
+fn emit_and(nd) {
+    l <- emit_expr(nd.left);
+    lbl_right <- fresh_lbl("and_r");
+    lbl_end <- fresh_lbl("and_e");
+    lc <- fresh("%ac");
+    emit("  " + lc + " = icmp ne i64 " + l + ", 0");
+    emit("  br i1 " + lc + ", label %" + lbl_right + ", label %" + lbl_end);
+    emit(lbl_right + ":");
+    r <- emit_expr(nd.right);
+    cur_bb <- [lbl_right]; // track for phi
+    emit("  br label %" + lbl_end);
+    emit(lbl_end + ":");
+    res <- fresh("%aphi");
+    emit("  " + res + " = phi i64 [0, %" + lbl_right + "], [" + r + ", %" + lbl_right + "]");
+    // Simplified: just evaluate both for now
+    return res;
+}
+
+fn emit_or(nd) {
+    l <- emit_expr(nd.left);
+    lbl_right <- fresh_lbl("or_r");
+    lbl_end <- fresh_lbl("or_e");
+    lc <- fresh("%oc");
+    emit("  " + lc + " = icmp ne i64 " + l + ", 0");
+    emit("  br i1 " + lc + ", label %" + lbl_end + ", label %" + lbl_right);
+    emit(lbl_right + ":");
+    r <- emit_expr(nd.right);
+    emit("  br label %" + lbl_end);
+    emit(lbl_end + ":");
+    res <- fresh("%ophi");
+    emit("  " + res + " = phi i64 [" + l + ", %" + lbl_right + "], [" + r + ", %" + lbl_right + "]");
+    return res;
+}
+
+fn emit_call(nd) {
+    // Builtins
+    if (nd.callee.node = "Identifier") {
+        nm <- nd.callee.name;
+
+        if (nm = "print") {
+            // Should not get here — print is a statement
+            return "0";
+        }
+
+        // User function call
+        fi <- find_fn(nm);
+        if (fi != false) {
+            args_str <- "";
+            i <- 0;
+            while (i < len(nd.args)) {
+                if (i > 0) { args_str <- args_str + ", "; }
+                v <- emit_expr(nd.args[i]);
+                args_str <- args_str + "i64 " + v;
+                i <- i + 1;
+            }
+            r <- fresh("%call");
+            emit("  " + r + " = call i64 @" + nm + "(" + args_str + ")");
+            return r;
+        }
+
+        // Builtin len
+        if (nm = "len") {
+            arr <- emit_expr(nd.args[0]);
+            ap <- fresh("%ap");
+            lp <- fresh("%lp");
+            lv <- fresh("%lv");
+            emit("  " + ap + " = inttoptr i64 " + arr + " to ptr");
+            emit("  " + lp + " = getelementptr i64, ptr " + ap + ", i64 0");
+            emit("  " + lv + " = load i64, ptr " + lp);
+            return lv;
+        }
+
+        // Builtin push
+        if (nm = "push") {
+            arr <- emit_expr(nd.args[0]);
+            val <- emit_expr(nd.args[1]);
+            emit("  call void @arrow_push(i64 " + arr + ", i64 " + val + ")");
+            return val;
+        }
+
+        print("Error: unknown function " + nm);
+        return "0";
+    }
+
+    print("Error: indirect calls not yet supported in compiler");
+    return "0";
+}
+
+fn emit_array_lit(nd) {
+    // Allocate: [len, cap, elem0, elem1, ...]
+    // Layout: i64* with [length, capacity, elements...]
+    n <- len(nd.elements);
+    cap <- n;
+    if (cap < 4) { cap <- 4; }
+    total <- 2 + cap; // len + cap + elements
+    sz <- fresh("%asz");
+    ap <- fresh("%aptr");
+    ai <- fresh("%aint");
+    emit("  " + sz + " = mul i64 " + total + ", 8");
+    emit("  " + ap + " = call ptr @malloc(i64 " + sz + ")");
+
+    // Store length
+    emit("  store i64 " + n + ", ptr " + ap);
+    // Store capacity
+    cp <- fresh("%cp");
+    emit("  " + cp + " = getelementptr i64, ptr " + ap + ", i64 1");
+    emit("  store i64 " + cap + ", ptr " + cp);
+
+    // Store elements
+    i <- 0;
+    while (i < n) {
+        v <- emit_expr(nd.elements[i]);
+        ep <- fresh("%ep");
+        idx <- i + 2;
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + idx);
+        emit("  store i64 " + v + ", ptr " + ep);
+        i <- i + 1;
+    }
+
+    emit("  " + ai + " = ptrtoint ptr " + ap + " to i64");
+    return ai;
+}
+
+fn emit_index(nd) {
+    obj <- emit_expr(nd.obj);
+    idx <- emit_expr(nd.index);
+    ap <- fresh("%ip");
+    off <- fresh("%ioff");
+    ep <- fresh("%iep");
+    ev <- fresh("%iev");
+    emit("  " + ap + " = inttoptr i64 " + obj + " to ptr");
+    emit("  " + off + " = add i64 " + idx + ", 2"); // skip len+cap
+    emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+    emit("  " + ev + " = load i64, ptr " + ep);
+    return ev;
+}
+
+// ── Emit statement ──────────────────────
+
+fn emit_stmt(nd) {
+    if (nd.node = "Assignment") {
+        v <- emit_expr(nd.expr);
+        reg <- find_var(nd.name);
+        if (reg = "") { reg <- add_var(nd.name); }
+        emit("  store i64 " + v + ", ptr " + reg);
+        return false;
+    }
+    if (nd.node = "PrintStmt") {
+        return emit_print(nd.expr);
+    }
+    if (nd.node = "IfStmt") {
+        return emit_if(nd);
+    }
+    if (nd.node = "WhileStmt") {
+        return emit_while(nd);
+    }
+    if (nd.node = "ForInStmt") {
+        return emit_for_in(nd);
+    }
+    if (nd.node = "ReturnStmt") {
+        if (nd.expr = false) {
+            emit("  ret i64 0");
+        } else {
+            v <- emit_expr(nd.expr);
+            emit("  ret i64 " + v);
+        }
+        return false;
+    }
+    if (nd.node = "IndexAssign") {
+        obj <- emit_expr(nd.obj);
+        idx <- emit_expr(nd.index);
+        val <- emit_expr(nd.value);
+        ap <- fresh("%iap");
+        off <- fresh("%iaoff");
+        ep <- fresh("%iaep");
+        emit("  " + ap + " = inttoptr i64 " + obj + " to ptr");
+        emit("  " + off + " = add i64 " + idx + ", 2");
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+        emit("  store i64 " + val + ", ptr " + ep);
+        return false;
+    }
+    if (nd.node = "Block") {
+        emit_block(nd.stmts);
+        return false;
+    }
+    // Expression statement
+    emit_expr(nd);
+    return false;
+}
+
+fn emit_block(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        emit_stmt(stmts[i]);
+        i <- i + 1;
+    }
+}
+
+fn emit_print(expr) {
+    // Detect type: if it's a string literal, use puts; otherwise printf %lld
+    if (expr.node = "StringLit") {
+        id <- add_string(expr.value);
+        emit("  call i32 @puts(ptr @" + id + ")");
+        return false;
+    }
+    // For now, print everything as integer
+    v <- emit_expr(expr);
+    emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + v + ")");
+    return false;
+}
+
+fn emit_if(nd) {
+    cv <- emit_expr(nd.cond);
+    cmp <- fresh("%ifc");
+    lbl_then <- fresh_lbl("then");
+    lbl_else <- fresh_lbl("else");
+    lbl_end <- fresh_lbl("ifend");
+
+    emit("  " + cmp + " = icmp ne i64 " + cv + ", 0");
+
+    if (len(nd.else_body) > 0) {
+        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_else);
+    } else {
+        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_end);
+    }
+
+    emit(lbl_then + ":");
+    emit_block(nd.then_body);
+    emit("  br label %" + lbl_end);
+
+    if (len(nd.else_body) > 0) {
+        emit(lbl_else + ":");
+        emit_block(nd.else_body);
+        emit("  br label %" + lbl_end);
+    }
+
+    emit(lbl_end + ":");
+    return false;
+}
+
+fn emit_while(nd) {
+    lbl_cond <- fresh_lbl("wc");
+    lbl_body <- fresh_lbl("wb");
+    lbl_end <- fresh_lbl("we");
+
+    emit("  br label %" + lbl_cond);
+    emit(lbl_cond + ":");
+    cv <- emit_expr(nd.cond);
+    cmp <- fresh("%wcc");
+    emit("  " + cmp + " = icmp ne i64 " + cv + ", 0");
+    emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+    emit(lbl_body + ":");
+    emit_block(nd.body);
+    emit("  br label %" + lbl_cond);
+
+    emit(lbl_end + ":");
+    return false;
+}
+
+fn emit_for_in(nd) {
+    // Compile iterable
+    coll <- emit_expr(nd.iterable);
+
+    // Get length
+    ap <- fresh("%fap");
+    flen <- fresh("%flen");
+    emit("  " + ap + " = inttoptr i64 " + coll + " to ptr");
+    emit("  " + flen + " = load i64, ptr " + ap);
+
+    // Index variable
+    idx_reg <- find_var("_for_idx");
+    if (idx_reg = "") { idx_reg <- add_var("_for_idx"); }
+    emit("  store i64 0, ptr " + idx_reg);
+
+    // Loop var
+    var_reg <- find_var(nd.var_name);
+    if (var_reg = "") { var_reg <- add_var(nd.var_name); }
+
+    lbl_cond <- fresh_lbl("fc");
+    lbl_body <- fresh_lbl("fb");
+    lbl_end <- fresh_lbl("fe");
+
+    emit("  br label %" + lbl_cond);
+    emit(lbl_cond + ":");
+    ci <- fresh("%fi");
+    emit("  " + ci + " = load i64, ptr " + idx_reg);
+    cmp <- fresh("%fcmp");
+    emit("  " + cmp + " = icmp slt i64 " + ci + ", " + flen);
+    emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+    emit(lbl_body + ":");
+    ci2 <- fresh("%fi2");
+    emit("  " + ci2 + " = load i64, ptr " + idx_reg);
+    off <- fresh("%foff");
+    ep <- fresh("%fep");
+    ev <- fresh("%fev");
+    emit("  " + off + " = add i64 " + ci2 + ", 2");
+    emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+    emit("  " + ev + " = load i64, ptr " + ep);
+    emit("  store i64 " + ev + ", ptr " + var_reg);
+
+    emit_block(nd.body);
+
+    // Increment
+    ci3 <- fresh("%fi3");
+    ci4 <- fresh("%fi4");
+    emit("  " + ci3 + " = load i64, ptr " + idx_reg);
+    emit("  " + ci4 + " = add i64 " + ci3 + ", 1");
+    emit("  store i64 " + ci4 + ", ptr " + idx_reg);
+    emit("  br label %" + lbl_cond);
+
+    emit(lbl_end + ":");
+    return false;
+}
+
+// ── Emit function ───────────────────────
+
+fn emit_function(nd) {
+    // Build param list
+    params_str <- "";
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (i > 0) { params_str <- params_str + ", "; }
+        params_str <- params_str + "i64 %" + nd.params[i] + ".arg";
+        i <- i + 1;
+    }
+
+    emit("define i64 @" + nd.name + "(" + params_str + ") {");
+    emit("entry:");
+
+    // Save old vars, start fresh for this function
+    old_vars <- alloc_vars[0];
+    alloc_vars[0] <- [];
+
+    // Collect all variables used in body
+    vars <- [];
+    collect_vars(nd.body, vars);
+
+    // Add params as vars
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (!var_exists(vars, nd.params[i])) {
+            push(vars, nd.params[i]);
+        }
+        i <- i + 1;
+    }
+
+    // Alloca all variables
+    i <- 0;
+    while (i < len(vars)) {
+        reg <- "%" + vars[i];
+        push(alloc_vars[0], {name: vars[i], reg: reg});
+        emit("  " + reg + " = alloca i64");
+        i <- i + 1;
+    }
+
+    // Also alloca _for_idx if any for-in loops
+    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
+    emit("  %_for_idx = alloca i64");
+
+    // Store params into allocas
+    i <- 0;
+    while (i < len(nd.params)) {
+        emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
+        i <- i + 1;
+    }
+
+    // Emit body
+    emit_block(nd.body);
+
+    // Default return
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // Restore vars
+    alloc_vars[0] <- old_vars;
+}
+
+// ── Emit push helper ────────────────────
+
+fn emit_push_helper() {
+    emit("define void @arrow_push(i64 %arr.i, i64 %val) {");
+    emit("entry:");
+    emit("  %arr = inttoptr i64 %arr.i to ptr");
+    emit("  %lenp = getelementptr i64, ptr %arr, i64 0");
+    emit("  %len = load i64, ptr %lenp");
+    emit("  %capp = getelementptr i64, ptr %arr, i64 1");
+    emit("  %cap = load i64, ptr %capp");
+    // For simplicity, assume capacity is enough (no realloc)
+    emit("  %off = add i64 %len, 2");
+    emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
+    emit("  store i64 %val, ptr %ep");
+    emit("  %nlen = add i64 %len, 1");
+    emit("  store i64 %nlen, ptr %lenp");
+    emit("  ret void");
+    emit("}");
+    emit("");
+}
+
+// ── Main compilation ────────────────────
+
+fn compile(stmts) {
+    // Preamble
+    emit("; Arrow Lang — compiled by self-hosted compiler");
+    emit("");
+
+    // External declarations
+    emit("declare i32 @printf(ptr, ...)");
+    emit("declare i32 @puts(ptr)");
+    emit("declare ptr @malloc(i64)");
+    emit("declare void @free(ptr)");
+    emit("");
+
+    // Pre-scan functions
+    scan_fns(stmts);
+
+    // Emit user functions first
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            emit_function(stmts[i]);
+        }
+        i <- i + 1;
+    }
+
+    // Emit push helper
+    emit_push_helper();
+
+    // Emit main
+    emit("define i64 @main() {");
+    emit("entry:");
+
+    // Collect all top-level vars
+    vars <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            collect_vars_stmt(stmts[i], vars);
+        }
+        i <- i + 1;
+    }
+
+    // Alloca all
+    alloc_vars[0] <- [];
+    j <- 0;
+    while (j < len(vars)) {
+        reg <- "%" + vars[j];
+        push(alloc_vars[0], {name: vars[j], reg: reg});
+        emit("  " + reg + " = alloca i64");
+        j <- j + 1;
+    }
+    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
+    emit("  %_for_idx = alloca i64");
+
+    // Emit top-level statements (skip fn decls)
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            emit_stmt(stmts[i]);
+        }
+        i <- i + 1;
+    }
+
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // Emit string constants
+    // Format string for integers
+    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
+
+    i <- 0;
+    while (i < len(str_constants)) {
+        sc <- str_constants[i];
+        escaped <- ir_escape(sc.text);
+        slen <- str_len(sc.text) + 1;
+        emit("@" + sc.id + " = private constant [" + slen + " x i8] c\"" + escaped + "\\00\"");
+        i <- i + 1;
+    }
+}
+
+
+// ═══════════════════════════════════════════
+//  MAIN — Read, lex, parse, compile, write, run clang
+// ═══════════════════════════════════════════
+
+source <- read_file("target.arrow");
+
+// Lex & parse
+toks <- tokenize(source);
+pos[0] <- 0;
+ast <- pp();
+
+// Compile to IR
+compile(ast);
+
+// Write .ll file
+write_file("target.ll", ir[0]);
+print("Wrote target.ll (" + len(str_constants) + " string constants)");
+
+// Run clang
+print("Running clang...");
+rc <- exec_cmd("clang target.ll -o target.exe -O2");
+if (rc = 0) {
+    print("Compiled target.exe successfully!");
+    print("");
+    print("--- Running target.exe ---");
+    exec_cmd("target.exe");
+} else {
+    print("Clang failed with exit code " + rc);
+}
