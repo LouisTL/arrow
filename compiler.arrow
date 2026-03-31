@@ -896,7 +896,7 @@ print("Wrote target.ll (" + len(str_constants) + " string constants)");
 
 // Run clang
 print("Running clang...");
-rc <- exec_cmd("clang target.ll -o target.exe -O2");
+rc <- exec_cmd("clang target.ll -o target.exe -O2  -Wno-override-module");
 if (rc = 0) {
     print("Compiled target.exe successfully!");
     print("");
