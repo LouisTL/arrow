@@ -276,11 +276,11 @@ fn find_fn(name) {
     return false;
 }
 
-fn set_fn_ret_type(name, rtype) {
+fn set_fn_ret_type(name, rtype, rfields) {
     i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
-            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype};
+            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields};
             return false;
         }
         i <- i + 1;
@@ -289,9 +289,9 @@ fn set_fn_ret_type(name, rtype) {
 }
 
 // ── Typed result helpers ────────────────
-fn tv(reg, vtype) { return {reg: reg, type: vtype}; }
-fn tv_int(reg) { return {reg: reg, type: "int"}; }
-fn tv_str(reg) { return {reg: reg, type: "str"}; }
+fn tv(reg, vtype) { return {reg: reg, type: vtype, fields: false}; }
+fn tv_int(reg) { return {reg: reg, type: "int", fields: false}; }
+fn tv_str(reg) { return {reg: reg, type: "str", fields: false}; }
 
 // Convert a typed value to i64 (for storing, passing as arg, etc.)
 // Strings are already i8*-as-i64 via ptrtoint, so no conversion needed.
@@ -315,12 +315,18 @@ fn ensure_str(t) {
     return int_to_str(t.reg);
 }
 
+// Like ensure_str, but when we know the context is string-heavy,
+// treat "int" as a string pointer (don't itoa it)
+fn as_str_ptr(t) {
+    return t.reg; // i64 is already the right value — just use it as-is
+}
+
 // ── Pre-scan: collect all fn declarations ──
 fn scan_fns(stmts) {
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: "int"});
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: "int", ret_fields: false});
         }
         i <- i + 1;
     }
@@ -480,13 +486,17 @@ fn emit_binop(nd) {
         return emit_or(nd);
     }
 
+    // Check AST for string context — catches cases where type tracking
+    // loses string info (e.g. struct fields from function returns)
+    has_str <- is_str_expr(nd.left) || is_str_expr(nd.right);
+
     l <- emit_expr(nd.left);
     r <- emit_expr(nd.right);
 
     if (nd.op = "+") {
         // String concatenation if either side is a string
-        if (l.type = "str" || r.type = "str") {
-            return emit_strcat(l, r);
+        if (l.type = "str" || r.type = "str" || has_str) {
+            return emit_strcat(l, r, has_str);
         }
         res <- fresh("%add");
         emit("  " + res + " = add i64 " + l.reg + ", " + r.reg);
@@ -508,8 +518,8 @@ fn emit_binop(nd) {
 
     if (cmp_op != "") {
         // String comparison: use strcmp if either operand is a string
-        if (l.type = "str" || r.type = "str") {
-            return emit_strcmp(l, r, cmp_op);
+        if (l.type = "str" || r.type = "str" || has_str) {
+            return emit_strcmp(l, r, cmp_op, has_str);
         }
         r1 <- fresh("%cmp");
         r2 <- fresh("%ext");
@@ -520,9 +530,31 @@ fn emit_binop(nd) {
     return tv_int("0");
 }
 
+// Check if an AST expression node is known to be a string
+fn is_str_expr(nd) {
+    if (nd.node = "StringLit") { return true; }
+    if (nd.node = "BinOp") {
+        if (nd.op = "+") {
+            return is_str_expr(nd.left) || is_str_expr(nd.right);
+        }
+    }
+    if (nd.node = "CallExpr") {
+        if (nd.callee.node = "Identifier") {
+            nm <- nd.callee.name;
+            if (nm = "char_at") { return true; }
+            if (nm = "from_char_code") { return true; }
+            if (nm = "substring") { return true; }
+            if (nm = "input") { return true; }
+            if (nm = "read_file") { return true; }
+        }
+    }
+    return false;
+}
+
 // ── String concatenation ────────────────
-fn emit_strcat(l, r) {
-    // Ensure both are string pointers (i8* as i64)
+fn emit_strcat(l, r, has_str) {
+    // For concat, convert ints to string representation (itoa) 
+    // unless both sides appear to be in string context
     ls <- ensure_str(l);
     rs <- ensure_str(r);
 
@@ -557,9 +589,10 @@ fn emit_strcat(l, r) {
 }
 
 // ── String comparison ───────────────────
-fn emit_strcmp(l, r, cmp_op) {
-    ls <- ensure_str(l);
-    rs <- ensure_str(r);
+fn emit_strcmp(l, r, cmp_op, has_str) {
+    // In strcmp context, both values must be string pointers
+    ls <- as_str_ptr(l);
+    rs <- as_str_ptr(r);
 
     lp <- fresh("%csl");
     rp <- fresh("%csr");
@@ -633,6 +666,9 @@ fn emit_call(nd) {
             }
             r <- fresh("%call");
             emit("  " + r + " = call i64 @" + nm + "(" + args_str + ")");
+            if (fi.ret_type = "struct") {
+                return {reg: r, type: "struct", fields: fi.ret_fields};
+            }
             return tv(r, fi.ret_type);
         }
 
@@ -886,10 +922,12 @@ fn emit_stmt(nd) {
         reg <- find_var(nd.name);
         if (reg = "") { reg <- add_var(nd.name); }
         emit("  store i64 " + vt.reg + ", ptr " + reg);
-        // Track type — structs become "int" for storage but we save layout
+        // Track type — structs become "int" for storage but we save layout if known
         if (vt.type = "struct") {
             set_var_type(nd.name, "int");
-            set_struct_layout(nd.name, vt.fields);
+            if (vt.fields != false) {
+                set_struct_layout(nd.name, vt.fields);
+            }
         } else {
             set_var_type(nd.name, vt.type);
         }
@@ -913,10 +951,10 @@ fn emit_stmt(nd) {
         } else {
             vt <- emit_expr(nd.expr);
             emit("  ret i64 " + vt.reg);
-            // Track return type for function
+            // Track return type and struct fields for function
             fn_name <- current_fn[0];
             if (fn_name != "") {
-                set_fn_ret_type(fn_name, vt.type);
+                set_fn_ret_type(fn_name, vt.type, vt.fields);
             }
         }
         return false;

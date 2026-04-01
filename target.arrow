@@ -1,7 +1,15 @@
-p <- {name: "Alice", age: 30};
-if (p.name = "Alice") {
-    print("found Alice!");
+fn mktok(t, v) {
+    return {type: t, value: v};
 }
-msg <- "Name: " + p.name;
-print(msg);
-print(p.age);
+
+tok <- mktok("NUMBER", "42");
+
+if (tok.type = "NUMBER") {
+    print("Got number: " + tok.value);
+}
+
+if (tok.type = "STRING") {
+    print("Got string");
+}
+
+print("done");
