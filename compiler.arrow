@@ -553,10 +553,25 @@ fn is_str_expr(nd) {
 
 // ── String concatenation ────────────────
 fn emit_strcat(l, r, has_str) {
-    // For concat, convert ints to string representation (itoa) 
-    // unless both sides appear to be in string context
-    ls <- ensure_str(l);
-    rs <- ensure_str(r);
+    // If AST indicates string context (has_str), treat "int" as string pointer
+    // Otherwise use ensure_str which itoa's genuine integers
+    if (has_str) {
+        // One side is a StringLit — the other "int" is likely a string pointer
+        if (l.type = "str") {
+            ls <- l.reg;
+            rs <- as_str_ptr(r);
+        } else if (r.type = "str") {
+            ls <- as_str_ptr(l);
+            rs <- r.reg;
+        } else {
+            // Both "int" but has_str — treat both as pointers
+            ls <- as_str_ptr(l);
+            rs <- as_str_ptr(r);
+        }
+    } else {
+        ls <- ensure_str(l);
+        rs <- ensure_str(r);
+    }
 
     // Convert i64 back to ptr
     lp <- fresh("%scl");
