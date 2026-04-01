@@ -278,6 +278,58 @@ fn get_field_type(fields, fname) {
     return "int"; // default
 }
 
+// Track array element types: var_name -> elem_type ("int" or "str")
+array_elem_types <- [[]]; // array_elem_types[0] is list of [{var_name, elem_type}]
+global_array_types <- []; // persistent list for globals [{var_name, elem_type}]
+
+fn set_array_elem_type(var_name, etype) {
+    types <- array_elem_types[0];
+    i <- 0;
+    while (i < len(types)) {
+        if (types[i].var_name = var_name) {
+            if (etype = "str") {
+                types[i] <- {var_name: var_name, elem_type: etype};
+            }
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(array_elem_types[0], {var_name: var_name, elem_type: etype});
+    return false;
+}
+
+fn set_global_array_type(var_name, etype) {
+    i <- 0;
+    while (i < len(global_array_types)) {
+        if (global_array_types[i].var_name = var_name) {
+            if (etype = "str") {
+                global_array_types[i] <- {var_name: var_name, elem_type: etype};
+            }
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(global_array_types, {var_name: var_name, elem_type: etype});
+    return false;
+}
+
+fn get_array_elem_type(var_name) {
+    // Check local scope first
+    types <- array_elem_types[0];
+    i <- len(types) - 1;
+    while (i >= 0) {
+        if (types[i].var_name = var_name) { return types[i].elem_type; }
+        i <- i - 1;
+    }
+    // Fall back to global array types
+    i <- 0;
+    while (i < len(global_array_types)) {
+        if (global_array_types[i].var_name = var_name) { return global_array_types[i].elem_type; }
+        i <- i + 1;
+    }
+    return "int";
+}
+
 // Function declarations we need to track
 declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
 
@@ -446,6 +498,16 @@ fn scan_globals(nd) {
     if (nd.node = "Assignment") {
         if (!var_exists(global_vars, nd.name)) {
             push(global_vars, nd.name);
+        }
+        // Detect string arrays: x <- ["..."]
+        if (nd.expr.node = "ArrayLit") {
+            i <- 0;
+            while (i < len(nd.expr.elements)) {
+                if (is_str_expr(nd.expr.elements[i])) {
+                    set_global_array_type(nd.name, "str");
+                }
+                i <- i + 1;
+            }
         }
     }
     else if (nd.node = "IfStmt") {
@@ -1085,8 +1147,12 @@ fn emit_index(nd) {
     emit("  " + off + " = add i64 " + vt_idx.reg + ", 2"); // skip len+cap
     emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
     emit("  " + ev + " = load i64, ptr " + ep);
-    // We don't know element type statically — default to int
-    return tv_int(ev);
+    // Check if we know the element type for this array variable
+    etype <- "int";
+    if (nd.obj.node = "Identifier") {
+        etype <- get_array_elem_type(nd.obj.name);
+    }
+    return tv(ev, etype);
 }
 
 // ── Emit statement ──────────────────────
@@ -1105,6 +1171,16 @@ fn emit_stmt(nd) {
             }
         } else {
             set_var_type(nd.name, vt.type);
+        }
+        // Track array element types from ArrayLit initializers
+        if (nd.expr.node = "ArrayLit") {
+            i <- 0;
+            while (i < len(nd.expr.elements)) {
+                if (is_str_expr(nd.expr.elements[i])) {
+                    set_array_elem_type(nd.name, "str");
+                }
+                i <- i + 1;
+            }
         }
         return false;
     }
@@ -1145,6 +1221,12 @@ fn emit_stmt(nd) {
         emit("  " + off + " = add i64 " + vt_idx.reg + ", 2");
         emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
         emit("  store i64 " + vt_val.reg + ", ptr " + ep);
+        // Track element type for this array
+        if (nd.obj.node = "Identifier") {
+            if (vt_val.type = "str") {
+                set_array_elem_type(nd.obj.name, "str");
+            }
+        }
         return false;
     }
     if (nd.node = "DotAssign") {
@@ -1587,9 +1669,11 @@ fn emit_function(nd) {
     old_vars <- alloc_vars[0];
     old_types <- var_types[0];
     old_layouts <- struct_layouts[0];
+    old_arr_types <- array_elem_types[0];
     alloc_vars[0] <- [];
     var_types[0] <- [];
     struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
     old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -1644,6 +1728,7 @@ fn emit_function(nd) {
     alloc_vars[0] <- old_vars;
     var_types[0] <- old_types;
     struct_layouts[0] <- old_layouts;
+    array_elem_types[0] <- old_arr_types;
     current_fn[0] <- old_fn;
 }
 
@@ -1825,6 +1910,7 @@ fn compile(stmts) {
     alloc_vars[0] <- [];
     var_types[0] <- [];
     struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
     j <- 0;
     while (j < len(vars)) {
         if (!is_global(vars[j])) {
