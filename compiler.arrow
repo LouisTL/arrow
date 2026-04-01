@@ -437,10 +437,15 @@ fn scan_call_sites_expr(nd) {
                             set_fn_param_type(fi.name, j, "str");
                         }
                     }
-                    scan_call_sites_expr(nd.args[j]);
                     j <- j + 1;
                 }
             }
+        }
+        // Always recurse into args (even for builtins)
+        j <- 0;
+        while (j < len(nd.args)) {
+            scan_call_sites_expr(nd.args[j]);
+            j <- j + 1;
         }
         return false;
     }
@@ -1274,10 +1279,12 @@ fn emit_print(expr) {
         sp <- fresh("%pp");
         emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
         emit("  call i32 @puts(ptr " + sp + ")");
-        return false;
+    } else {
+        // Default: print as integer
+        emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + vt.reg + ")");
     }
-    // Default: print as integer
-    emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + vt.reg + ")");
+    // Flush stdout
+    emit("  call i32 @fflush(ptr null)");
     return false;
 }
 
@@ -1853,6 +1860,7 @@ fn compile(stmts) {
     // External declarations
     emit("declare i32 @printf(ptr, ...)");
     emit("declare i32 @puts(ptr)");
+    emit("declare i32 @fflush(ptr)");
     emit("declare ptr @malloc(i64)");
     emit("declare void @free(ptr)");
     emit("declare i64 @strlen(ptr)");
