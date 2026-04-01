@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════
-//  Arrow Lang — Self-Hosted Compiler
+//  Arrow Lang -- Self-Hosted Compiler
 //  Emits LLVM IR text (.ll), then shells out
 //  to clang for AOT compilation.
 //
@@ -177,8 +177,25 @@ fn ir_escape(s) {
 }
 
 fn ir_str_len(s) {
-    // Count actual bytes (escaped chars count as 1)
-    return str_len(s) + 1; // +1 for null terminator
+    // Count actual bytes in the escaped string
+    // Each \XX escape = 1 byte, each regular char = check byte length
+    // Simple approach: iterate and count char_code > 127 as multi-byte
+    count <- 0;
+    i <- 0;
+    while (i < str_len(s)) {
+        ch <- char_code(char_at(s, i));
+        if (ch >= 128) {
+            // Multi-byte UTF-8: determine byte count from leading byte
+            if (ch >= 240) { count <- count + 4; }
+            else if (ch >= 224) { count <- count + 3; }
+            else if (ch >= 192) { count <- count + 2; }
+            else { count <- count + 1; } // continuation byte (shouldn't happen at start)
+        } else {
+            count <- count + 1;
+        }
+        i <- i + 1;
+    }
+    return count + 1; // +1 for null terminator
 }
 
 // Track allocated variables per function — boxed in array
@@ -1830,7 +1847,7 @@ fn emit_input_helper() {
 
 fn compile(stmts) {
     // Preamble
-    emit("; Arrow Lang — compiled by self-hosted compiler");
+    emit("; Arrow Lang -- compiled by self-hosted compiler");
     emit("");
 
     // External declarations
@@ -1947,7 +1964,7 @@ fn compile(stmts) {
     while (i < len(str_constants)) {
         sc <- str_constants[i];
         escaped <- ir_escape(sc.text);
-        slen <- str_len(sc.text) + 1;
+        slen <- ir_str_len(sc.text);
         emit("@" + sc.id + " = private constant [" + slen + " x i8] c\"" + escaped + "\\00\"");
         i <- i + 1;
     }

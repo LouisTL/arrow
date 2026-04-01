@@ -1,42 +1,2002 @@
-output <- [""];
-counter <- [0];
+// ═══════════════════════════════════════════
+//  Arrow Lang -- Self-Hosted Compiler
+//  Emits LLVM IR text (.ll), then shells out
+//  to clang for AOT compilation.
+//
+//  Usage: python lang.py compiler.arrow
+//  Reads target.arrow, writes target.ll,
+//  runs clang to produce target.exe
+//
+//  Type tracking: emit_expr returns {reg, type}
+//  where type is "int" or "str".
+// ═══════════════════════════════════════════
 
-fn fresh(prefix) {
-    counter[0] <- counter[0] + 1;
-    return prefix + counter[0];
+// ── Lexer ───────────────────────────────
+fn is_digit(c){return c>=48&&c<=57;}
+fn is_alpha(c){return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
+fn is_alnum(c){return is_digit(c)||is_alpha(c);}
+fn is_ws(c){return c=32||c=9||c=10||c=13;}
+fn mktok(t,v,l,c){return{type:t,value:v,line:l,col:c};}
+fn is_kw(w){if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}return false;}
+
+fn tokenize(src){
+    ts<-[];p<-0;ln<-1;cl<-1;sl<-str_len(src);
+    while(p<sl){ch<-char_code(char_at(src,p));
+        if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
+        else if(ch=47&&p+1<sl&&char_code(char_at(src,p+1))=47){while(p<sl&&char_code(char_at(src,p))!=10){p<-p+1;}}
+        else if(is_digit(ch)){s<-p;sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}
+        else if(ch=34){sc<-cl;p<-p+1;cl<-cl+1;sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
+        else if(is_alpha(ch)){s<-p;sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
+        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=45){push(ts,mktok("ARROW","<-",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=61&&p+1<sl&&char_code(char_at(src,p+1))=62){push(ts,mktok("FAT_ARROW","=>",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("LTE","<=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=62&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("GTE",">=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=33&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("NEQ","!=",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=38&&p+1<sl&&char_code(char_at(src,p+1))=38){push(ts,mktok("AND","&&",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=124&&p+1<sl&&char_code(char_at(src,p+1))=124){push(ts,mktok("OR","||",ln,cl));p<-p+2;cl<-cl+2;}
+        else if(ch=43){push(ts,mktok("PLUS","+",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=45){push(ts,mktok("MINUS","-",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=42){push(ts,mktok("STAR","*",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=47){push(ts,mktok("SLASH","/",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=37){push(ts,mktok("PERCENT","%",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=60){push(ts,mktok("LT","<",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=62){push(ts,mktok("GT",">",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=33){push(ts,mktok("NOT","!",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=61){push(ts,mktok("EQ","=",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=46){push(ts,mktok("DOT",".",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=58){push(ts,mktok("COLON",":",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=40){push(ts,mktok("LPAREN","(",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=41){push(ts,mktok("RPAREN",")",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=123){push(ts,mktok("LBRACE","{",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=125){push(ts,mktok("RBRACE","}",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=91){push(ts,mktok("LBRACKET","[",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=93){push(ts,mktok("RBRACKET","]",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=59){push(ts,mktok("SEMI",";",ln,cl));p<-p+1;cl<-cl+1;}
+        else if(ch=44){push(ts,mktok("COMMA",",",ln,cl));p<-p+1;cl<-cl+1;}
+        else{p<-p+1;cl<-cl+1;}
+    }
+    push(ts,mktok("EOF","",ln,cl));return ts;
 }
+
+// ── Parser ──────────────────────────────
+toks<-[];pos<-[0];
+fn ci(e){return toks[pos[0]].type=e;}
+fn pi(o,e){x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
+fn adv(){pos[0]<-pos[0]+1;}
+fn cv(){return toks[pos[0]].value;}
+fn eat(e){t<-toks[pos[0]];if(t.type!=e){print("Parse error: expected "+e+" got "+t.type+" at "+t.line+":"+t.col);}pos[0]<-pos[0]+1;return t;}
+fn ev(e){t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
+fn pp(){ss<-[];while(!ci("EOF")){push(ss,ps());}return ss;}
+fn ps(){
+    if(ci("fn")){return pfd();}if(ci("return")){return prt();}
+    if(ci("if")){return pif();}if(ci("while")){return pwh();}
+    if(ci("for")){return pfi();}if(ci("print")){return ppr();}
+    if(ci("LBRACE")){if(isl()){e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
+    if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
+    e<-pe();eat("SEMI");return e;
+}
+fn isl(){if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
+fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
+fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e};}
+fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
+fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
+fn prt(){eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e};}
+fn pfd(){eat("fn");n<-ev("IDENT");p<-ppl();b<-pb();return{node:"FnDecl",name:n,params:p,body:b};}
+fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));}}eat("RPAREN");return p;}
+fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
+fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
+fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
+fn iaf(){d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){if(i+1<len(toks)){return toks[i+1].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
+fn paf(){p<-ppl();eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:p,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:p,body:e,is_expr:true};}
+fn por(){l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
+fn pan(){l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
+fn peq(){l<-pcm();while(ci("EQ")||ci("NEQ")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
+fn pcm(){l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:ppad()};}return l;}
+fn ppad(){l<-pmu();while(ci("PLUS")||ci("MINUS")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
+fn pmu(){l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
+fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
+fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a};}
+    else if(ci("LBRACKET")){eat("LBRACKET");x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
+    else if(ci("DOT")){eat("DOT");f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
+    else{dn<-true;}}return e;}
+fn ppm(){
+    if(ci("NUMBER")){v<-cv();adv();return{node:"NumberLit",value:v};}
+    if(ci("STRING")){v<-cv();adv();return{node:"StringLit",value:v};}
+    if(ci("BOOL")){v<-cv();adv();return{node:"BoolLit",value:v};}
+    if(ci("IDENT")){v<-cv();adv();return{node:"Identifier",name:v};}
+    if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
+    if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
+    if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
+    print("Parse error");adv();return{node:"NumberLit",value:"0"};
+}
+
+
+// ═══════════════════════════════════════════
+//  LLVM IR EMITTER
+//  Strategy: everything is i64. Strings are
+//  i8* cast to i64. Simple and uniform.
+//
+//  Type tracking: emit_expr returns {reg, type}
+//  where type is "int" or "str".
+// ═══════════════════════════════════════════
+
+// Output buffer: array of lines
+ir <- [""]; // ir[0] holds current accumulated text
 
 fn emit(s) {
-    output[0] <- output[0] + s + from_char_code(10);
+    ir[0] <- ir[0] + s + from_char_code(10);
 }
 
-fn make_num(v) {
-    return {node: "Num", value: v};
+// Counter for unique names
+tmp_counter <- [0];
+fn fresh(prefix) {
+    tmp_counter[0] <- tmp_counter[0] + 1;
+    return prefix + tmp_counter[0];
 }
 
-fn make_binop(op, left, right) {
-    return {node: "BinOp", op: op, left: left, right: right};
+// Label counter
+lbl_counter <- [0];
+fn fresh_lbl(prefix) {
+    lbl_counter[0] <- lbl_counter[0] + 1;
+    return prefix + lbl_counter[0];
 }
 
-fn eval_node(nd) {
-    if (nd.node = "Num") {
-        r <- fresh("%t");
-        emit("  " + r + " = " + nd.value);
-        return r;
+// Track which variables have been allocated in current function
+fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
+current_fn <- [""]; // name of function being compiled
+
+// String constants
+str_constants <- []; // [{id, text}]
+str_counter <- [0];
+
+fn add_string(text) {
+    str_counter[0] <- str_counter[0] + 1;
+    id <- "str" + str_counter[0];
+    push(str_constants, {id: id, text: text});
+    return id;
+}
+
+// Escape string for LLVM IR constant
+fn ir_escape(s) {
+    result <- "";
+    i <- 0;
+    total_len <- 0;
+    while (i < str_len(s)) {
+        ch <- char_code(char_at(s, i));
+        if (ch = 10) { result <- result + "\\0A"; }
+        else if (ch = 9) { result <- result + "\\09"; }
+        else if (ch = 34) { result <- result + "\\22"; }
+        else if (ch = 92) { result <- result + "\\5C"; }
+        else if (ch = 0) { result <- result + "\\00"; }
+        else { result <- result + char_at(s, i); }
+        total_len <- total_len + 1;
+        i <- i + 1;
+    }
+    return result;
+}
+
+fn ir_str_len(s) {
+    // Count actual bytes in the escaped string
+    // Each \XX escape = 1 byte, each regular char = check byte length
+    // Simple approach: iterate and count char_code > 127 as multi-byte
+    count <- 0;
+    i <- 0;
+    while (i < str_len(s)) {
+        ch <- char_code(char_at(s, i));
+        if (ch >= 128) {
+            // Multi-byte UTF-8: determine byte count from leading byte
+            if (ch >= 240) { count <- count + 4; }
+            else if (ch >= 224) { count <- count + 3; }
+            else if (ch >= 192) { count <- count + 2; }
+            else { count <- count + 1; } // continuation byte (shouldn't happen at start)
+        } else {
+            count <- count + 1;
+        }
+        i <- i + 1;
+    }
+    return count + 1; // +1 for null terminator
+}
+
+// Track allocated variables per function — boxed in array
+alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
+
+// Track variable types: var_name -> "int" or "str"
+var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
+
+// Track global variables (top-level)
+global_vars <- []; // list of variable name strings
+
+fn is_global(name) {
+    i <- 0;
+    while (i < len(global_vars)) {
+        if (global_vars[i] = name) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn find_var(name) {
+    vars <- alloc_vars[0];
+    i <- len(vars) - 1;
+    while (i >= 0) {
+        if (vars[i].name = name) { return vars[i].reg; }
+        i <- i - 1;
+    }
+    // Fall back to global
+    if (is_global(name)) { return "@g_" + name; }
+    return "";
+}
+
+fn add_var(name) {
+    reg <- "%" + name;
+    if (find_var(name) != "") { return find_var(name); }
+    push(alloc_vars[0], {name: name, reg: reg});
+    return reg;
+}
+
+fn set_var_type(name, vtype) {
+    types <- var_types[0];
+    i <- 0;
+    while (i < len(types)) {
+        if (types[i].name = name) {
+            types[i] <- {name: name, vtype: vtype};
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(var_types[0], {name: name, vtype: vtype});
+    return false;
+}
+
+fn get_var_type(name) {
+    types <- var_types[0];
+    i <- len(types) - 1;
+    while (i >= 0) {
+        if (types[i].name = name) { return types[i].vtype; }
+        i <- i - 1;
+    }
+    return "int"; // default
+}
+
+// Track struct field layouts: var_name -> [{fname, ftype}]
+struct_layouts <- [[]]; // struct_layouts[0] is list of [{var_name, fields}]
+
+fn set_struct_layout(var_name, fields) {
+    layouts <- struct_layouts[0];
+    i <- 0;
+    while (i < len(layouts)) {
+        if (layouts[i].var_name = var_name) {
+            layouts[i] <- {var_name: var_name, fields: fields};
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(struct_layouts[0], {var_name: var_name, fields: fields});
+    return false;
+}
+
+fn get_struct_layout(var_name) {
+    layouts <- struct_layouts[0];
+    i <- len(layouts) - 1;
+    while (i >= 0) {
+        if (layouts[i].var_name = var_name) { return layouts[i].fields; }
+        i <- i - 1;
+    }
+    return false;
+}
+
+fn get_field_type(fields, fname) {
+    i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].fname = fname) { return fields[i].ftype; }
+        i <- i + 1;
+    }
+    return "int"; // default
+}
+
+// Track array element types: var_name -> elem_type ("int" or "str")
+array_elem_types <- [[]]; // array_elem_types[0] is list of [{var_name, elem_type}]
+global_array_types <- []; // persistent list for globals [{var_name, elem_type}]
+
+fn set_array_elem_type(var_name, etype) {
+    types <- array_elem_types[0];
+    i <- 0;
+    while (i < len(types)) {
+        if (types[i].var_name = var_name) {
+            if (etype = "str") {
+                types[i] <- {var_name: var_name, elem_type: etype};
+            }
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(array_elem_types[0], {var_name: var_name, elem_type: etype});
+    return false;
+}
+
+fn set_global_array_type(var_name, etype) {
+    i <- 0;
+    while (i < len(global_array_types)) {
+        if (global_array_types[i].var_name = var_name) {
+            if (etype = "str") {
+                global_array_types[i] <- {var_name: var_name, elem_type: etype};
+            }
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(global_array_types, {var_name: var_name, elem_type: etype});
+    return false;
+}
+
+fn get_array_elem_type(var_name) {
+    // Check local scope first
+    types <- array_elem_types[0];
+    i <- len(types) - 1;
+    while (i >= 0) {
+        if (types[i].var_name = var_name) { return types[i].elem_type; }
+        i <- i - 1;
+    }
+    // Fall back to global array types
+    i <- 0;
+    while (i < len(global_array_types)) {
+        if (global_array_types[i].var_name = var_name) { return global_array_types[i].elem_type; }
+        i <- i + 1;
+    }
+    return "int";
+}
+
+// Function declarations we need to track
+declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
+
+fn find_fn(name) {
+    i <- 0;
+    while (i < len(declared_fns)) {
+        if (declared_fns[i].name = name) { return declared_fns[i]; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn set_fn_ret_type(name, rtype, rfields) {
+    i <- 0;
+    while (i < len(declared_fns)) {
+        if (declared_fns[i].name = name) {
+            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types};
+            return false;
+        }
+        i <- i + 1;
+    }
+    return false;
+}
+
+// Set a parameter type for a function (from call-site analysis)
+fn set_fn_param_type(fn_name, param_idx, ptype) {
+    fi <- find_fn(fn_name);
+    if (fi = false) { return false; }
+    if (param_idx < len(fi.param_types)) {
+        // Only upgrade from "int" to "str", never downgrade
+        if (fi.param_types[param_idx] = "int") {
+            fi.param_types[param_idx] <- ptype;
+        }
+    }
+    return false;
+}
+
+// Scan all statements for call sites to infer parameter types
+fn scan_call_sites(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        scan_call_sites_stmt(stmts[i]);
+        i <- i + 1;
+    }
+}
+
+fn scan_call_sites_stmt(nd) {
+    if (nd.node = "Assignment") { scan_call_sites_expr(nd.expr); }
+    else if (nd.node = "PrintStmt") { scan_call_sites_expr(nd.expr); }
+    else if (nd.node = "ReturnStmt") { if (nd.expr != false) { scan_call_sites_expr(nd.expr); } }
+    else if (nd.node = "IfStmt") {
+        scan_call_sites_expr(nd.cond);
+        scan_call_sites(nd.then_body);
+        scan_call_sites(nd.else_body);
+    }
+    else if (nd.node = "WhileStmt") {
+        scan_call_sites_expr(nd.cond);
+        scan_call_sites(nd.body);
+    }
+    else if (nd.node = "ForInStmt") {
+        scan_call_sites_expr(nd.iterable);
+        scan_call_sites(nd.body);
+    }
+    else if (nd.node = "IndexAssign") {
+        scan_call_sites_expr(nd.obj);
+        scan_call_sites_expr(nd.index);
+        scan_call_sites_expr(nd.value);
+    }
+    else if (nd.node = "DotAssign") {
+        scan_call_sites_expr(nd.obj);
+        scan_call_sites_expr(nd.value);
+    }
+    else if (nd.node = "Block") { scan_call_sites(nd.stmts); }
+    else if (nd.node = "FnDecl") { scan_call_sites(nd.body); }
+    else { scan_call_sites_expr(nd); }
+}
+
+fn scan_call_sites_expr(nd) {
+    if (nd.node = "CallExpr") {
+        // Check if callee is a known function
+        if (nd.callee.node = "Identifier") {
+            fi <- find_fn(nd.callee.name);
+            if (fi != false) {
+                j <- 0;
+                while (j < len(nd.args)) {
+                    if (j < fi.param_count) {
+                        if (is_str_expr(nd.args[j])) {
+                            set_fn_param_type(fi.name, j, "str");
+                        }
+                    }
+                    scan_call_sites_expr(nd.args[j]);
+                    j <- j + 1;
+                }
+            }
+        }
+        return false;
+    }
+    if (nd.node = "BinOp") { scan_call_sites_expr(nd.left); scan_call_sites_expr(nd.right); }
+    else if (nd.node = "UnaryOp") { scan_call_sites_expr(nd.operand); }
+    else if (nd.node = "ArrayLit") {
+        j <- 0;
+        while (j < len(nd.elements)) { scan_call_sites_expr(nd.elements[j]); j <- j + 1; }
+    }
+    else if (nd.node = "IndexExpr") { scan_call_sites_expr(nd.obj); scan_call_sites_expr(nd.index); }
+    else if (nd.node = "DotExpr") { scan_call_sites_expr(nd.obj); }
+    else if (nd.node = "StructLit") {
+        j <- 0;
+        while (j < len(nd.fields)) { scan_call_sites_expr(nd.fields[j].val); j <- j + 1; }
+    }
+    return false;
+}
+
+// ── Typed result helpers ────────────────
+fn tv(reg, vtype) { return {reg: reg, type: vtype, fields: false}; }
+fn tv_int(reg) { return {reg: reg, type: "int", fields: false}; }
+fn tv_str(reg) { return {reg: reg, type: "str", fields: false}; }
+
+// Convert a typed value to i64 (for storing, passing as arg, etc.)
+// Strings are already i8*-as-i64 via ptrtoint, so no conversion needed.
+// This just returns the reg — all values are i64 in our IR.
+fn to_i64(t) { return t.reg; }
+
+// Convert an i64 value to a string (for string concat with non-strings)
+// Calls our own arrow_itoa helper (no sprintf dependency)
+fn int_to_str(reg) {
+    r <- fresh("%i2s");
+    rp <- fresh("%i2sp");
+    emit("  " + r + " = call ptr @arrow_itoa(i64 " + reg + ")");
+    emit("  " + rp + " = ptrtoint ptr " + r + " to i64");
+    return rp;
+}
+
+// Ensure a typed value is a string (i8* as i64)
+// If it's already a string, return as-is; if int, convert via itoa
+fn ensure_str(t) {
+    if (t.type = "str") { return t.reg; }
+    return int_to_str(t.reg);
+}
+
+// Like ensure_str, but when we know the context is string-heavy,
+// treat "int" as a string pointer (don't itoa it)
+fn as_str_ptr(t) {
+    return t.reg; // i64 is already the right value — just use it as-is
+}
+
+// ── Pre-scan: collect all fn declarations ──
+fn scan_fns(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            // Build default param_types array (all "int")
+            pt <- [];
+            j <- 0;
+            while (j < len(stmts[i].params)) {
+                push(pt, "int");
+                j <- j + 1;
+            }
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: "int", ret_fields: false, param_types: pt});
+        }
+        i <- i + 1;
+    }
+}
+
+// ── Pre-scan: collect top-level variable names as globals ──
+fn scan_globals(nd) {
+    if (nd.node = "Assignment") {
+        if (!var_exists(global_vars, nd.name)) {
+            push(global_vars, nd.name);
+        }
+        // Detect string arrays: x <- ["..."]
+        if (nd.expr.node = "ArrayLit") {
+            i <- 0;
+            while (i < len(nd.expr.elements)) {
+                if (is_str_expr(nd.expr.elements[i])) {
+                    set_global_array_type(nd.name, "str");
+                }
+                i <- i + 1;
+            }
+        }
+    }
+    else if (nd.node = "IfStmt") {
+        scan_globals_list(nd.then_body);
+        scan_globals_list(nd.else_body);
+    }
+    else if (nd.node = "WhileStmt") {
+        scan_globals_list(nd.body);
+    }
+    else if (nd.node = "ForInStmt") {
+        if (!var_exists(global_vars, nd.var_name)) {
+            push(global_vars, nd.var_name);
+        }
+        scan_globals_list(nd.body);
+    }
+    else if (nd.node = "Block") {
+        scan_globals_list(nd.stmts);
+    }
+}
+
+fn scan_globals_list(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        scan_globals(stmts[i]);
+        i <- i + 1;
+    }
+}
+
+// ── Collect all variables used in a function body ──
+fn collect_vars(stmts, vars) {
+    i <- 0;
+    while (i < len(stmts)) {
+        collect_vars_stmt(stmts[i], vars);
+        i <- i + 1;
+    }
+}
+
+fn var_exists(vars, name) {
+    i <- 0;
+    while (i < len(vars)) {
+        if (vars[i] = name) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn collect_vars_stmt(nd, vars) {
+    if (nd.node = "Assignment") {
+        if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
+        collect_vars_expr(nd.expr, vars);
+    }
+    else if (nd.node = "PrintStmt") { collect_vars_expr(nd.expr, vars); }
+    else if (nd.node = "IfStmt") {
+        collect_vars_expr(nd.cond, vars);
+        collect_vars(nd.then_body, vars);
+        collect_vars(nd.else_body, vars);
+    }
+    else if (nd.node = "WhileStmt") {
+        collect_vars_expr(nd.cond, vars);
+        collect_vars(nd.body, vars);
+    }
+    else if (nd.node = "ForInStmt") {
+        if (!var_exists(vars, nd.var_name)) { push(vars, nd.var_name); }
+        collect_vars_expr(nd.iterable, vars);
+        collect_vars(nd.body, vars);
+    }
+    else if (nd.node = "ReturnStmt") {
+        if (nd.expr != false) { collect_vars_expr(nd.expr, vars); }
+    }
+    else if (nd.node = "Block") { collect_vars(nd.stmts, vars); }
+    else if (nd.node = "IndexAssign") {
+        collect_vars_expr(nd.obj, vars);
+        collect_vars_expr(nd.index, vars);
+        collect_vars_expr(nd.value, vars);
+    }
+    else if (nd.node = "DotAssign") {
+        collect_vars_expr(nd.obj, vars);
+        collect_vars_expr(nd.value, vars);
+    }
+    else { collect_vars_expr(nd, vars); }
+}
+
+fn collect_vars_expr(nd, vars) {
+    if (nd.node = "BinOp") { collect_vars_expr(nd.left, vars); collect_vars_expr(nd.right, vars); }
+    else if (nd.node = "UnaryOp") { collect_vars_expr(nd.operand, vars); }
+    else if (nd.node = "CallExpr") {
+        collect_vars_expr(nd.callee, vars);
+        i <- 0;
+        while (i < len(nd.args)) { collect_vars_expr(nd.args[i], vars); i <- i + 1; }
+    }
+    else if (nd.node = "ArrayLit") {
+        i <- 0;
+        while (i < len(nd.elements)) { collect_vars_expr(nd.elements[i], vars); i <- i + 1; }
+    }
+    else if (nd.node = "IndexExpr") { collect_vars_expr(nd.obj, vars); collect_vars_expr(nd.index, vars); }
+    else if (nd.node = "DotExpr") { collect_vars_expr(nd.obj, vars); }
+    else if (nd.node = "StructLit") {
+        i <- 0;
+        while (i < len(nd.fields)) { collect_vars_expr(nd.fields[i].val, vars); i <- i + 1; }
+    }
+}
+
+// ── Emit LLVM IR for expression ─────────
+// Returns {reg, type} where type is "int" or "str"
+
+fn emit_expr(nd) {
+    if (nd.node = "NumberLit") {
+        return tv_int(nd.value); // literal integer
+    }
+    if (nd.node = "StringLit") {
+        id <- add_string(nd.value);
+        r <- fresh("%s");
+        emit("  " + r + " = ptrtoint ptr @" + id + " to i64");
+        return tv_str(r);
+    }
+    if (nd.node = "BoolLit") {
+        if (nd.value = "true") { return tv_int("1"); }
+        return tv_int("0");
+    }
+    if (nd.node = "Identifier") {
+        reg <- find_var(nd.name);
+        if (reg = "") {
+            // Might be a function reference
+            fi <- find_fn(nd.name);
+            if (fi != false) {
+                r <- fresh("%fref");
+                emit("  " + r + " = ptrtoint ptr @" + nd.name + " to i64");
+                return tv_int(r);
+            }
+            print("Error: undefined var " + nd.name);
+            return tv_int("0");
+        }
+        r <- fresh("%ld");
+        emit("  " + r + " = load i64, ptr " + reg);
+        return tv(r, get_var_type(nd.name));
     }
     if (nd.node = "BinOp") {
-        l <- eval_node(nd.left);
-        r <- eval_node(nd.right);
-        res <- fresh("%t");
-        emit("  " + res + " = " + nd.op + " " + l + " " + r);
-        return res;
+        return emit_binop(nd);
     }
-    return "?";
+    if (nd.node = "UnaryOp") {
+        vt <- emit_expr(nd.operand);
+        if (nd.op = "-") {
+            r <- fresh("%neg");
+            emit("  " + r + " = sub i64 0, " + vt.reg);
+            return tv_int(r);
+        }
+        if (nd.op = "!") {
+            r1 <- fresh("%cmp");
+            r2 <- fresh("%not");
+            emit("  " + r1 + " = icmp eq i64 " + vt.reg + ", 0");
+            emit("  " + r2 + " = zext i1 " + r1 + " to i64");
+            return tv_int(r2);
+        }
+        return tv_int("0");
+    }
+    if (nd.node = "CallExpr") {
+        return emit_call(nd);
+    }
+    if (nd.node = "ArrayLit") {
+        return tv_int(emit_array_lit(nd));
+    }
+    if (nd.node = "IndexExpr") {
+        return emit_index(nd);
+    }
+    if (nd.node = "StructLit") {
+        return emit_struct_lit(nd);
+    }
+    if (nd.node = "DotExpr") {
+        return emit_dot_expr(nd);
+    }
+    print("Emit error: unsupported expr " + nd.node);
+    return tv_int("0");
 }
 
-ast <- make_binop("mul", make_binop("add", make_num("3"), make_num("5")), make_num("2"));
+fn emit_binop(nd) {
+    if (nd.op = "&&") {
+        return emit_and(nd);
+    }
+    if (nd.op = "||") {
+        return emit_or(nd);
+    }
 
-result <- eval_node(ast);
-emit("  result = " + result);
+    // Check AST for string context — catches cases where type tracking
+    // loses string info (e.g. struct fields from function returns)
+    has_str <- is_str_expr(nd.left) || is_str_expr(nd.right);
 
-print(output[0]);
+    l <- emit_expr(nd.left);
+    r <- emit_expr(nd.right);
+
+    if (nd.op = "+") {
+        // String concatenation if either side is a string
+        if (l.type = "str" || r.type = "str" || has_str) {
+            return emit_strcat(l, r, has_str);
+        }
+        res <- fresh("%add");
+        emit("  " + res + " = add i64 " + l.reg + ", " + r.reg);
+        return tv_int(res);
+    }
+    if (nd.op = "-") { res <- fresh("%sub"); emit("  " + res + " = sub i64 " + l.reg + ", " + r.reg); return tv_int(res); }
+    if (nd.op = "*") { res <- fresh("%mul"); emit("  " + res + " = mul i64 " + l.reg + ", " + r.reg); return tv_int(res); }
+    if (nd.op = "/") { res <- fresh("%div"); emit("  " + res + " = sdiv i64 " + l.reg + ", " + r.reg); return tv_int(res); }
+    if (nd.op = "%") { res <- fresh("%rem"); emit("  " + res + " = srem i64 " + l.reg + ", " + r.reg); return tv_int(res); }
+
+    // Comparisons — always return int (0 or 1)
+    cmp_op <- "";
+    if (nd.op = "=") { cmp_op <- "eq"; }
+    else if (nd.op = "!=") { cmp_op <- "ne"; }
+    else if (nd.op = "<") { cmp_op <- "slt"; }
+    else if (nd.op = ">") { cmp_op <- "sgt"; }
+    else if (nd.op = "<=") { cmp_op <- "sle"; }
+    else if (nd.op = ">=") { cmp_op <- "sge"; }
+
+    if (cmp_op != "") {
+        // String comparison: use strcmp if either operand is a string
+        if (l.type = "str" || r.type = "str" || has_str) {
+            return emit_strcmp(l, r, cmp_op, has_str);
+        }
+        r1 <- fresh("%cmp");
+        r2 <- fresh("%ext");
+        emit("  " + r1 + " = icmp " + cmp_op + " i64 " + l.reg + ", " + r.reg);
+        emit("  " + r2 + " = zext i1 " + r1 + " to i64");
+        return tv_int(r2);
+    }
+    return tv_int("0");
+}
+
+// Check if an AST expression node is known to be a string
+fn is_str_expr(nd) {
+    if (nd.node = "StringLit") { return true; }
+    if (nd.node = "BinOp") {
+        if (nd.op = "+") {
+            return is_str_expr(nd.left) || is_str_expr(nd.right);
+        }
+    }
+    if (nd.node = "CallExpr") {
+        if (nd.callee.node = "Identifier") {
+            nm <- nd.callee.name;
+            if (nm = "char_at") { return true; }
+            if (nm = "from_char_code") { return true; }
+            if (nm = "substring") { return true; }
+            if (nm = "input") { return true; }
+            if (nm = "read_file") { return true; }
+        }
+    }
+    return false;
+}
+
+// ── String concatenation ────────────────
+fn emit_strcat(l, r, has_str) {
+    // If AST indicates string context (has_str), treat "int" as string pointer
+    // Otherwise use ensure_str which itoa's genuine integers
+    if (has_str) {
+        // One side is a StringLit — the other "int" is likely a string pointer
+        if (l.type = "str") {
+            ls <- l.reg;
+            rs <- as_str_ptr(r);
+        } else if (r.type = "str") {
+            ls <- as_str_ptr(l);
+            rs <- r.reg;
+        } else {
+            // Both "int" but has_str — treat both as pointers
+            ls <- as_str_ptr(l);
+            rs <- as_str_ptr(r);
+        }
+    } else {
+        ls <- ensure_str(l);
+        rs <- ensure_str(r);
+    }
+
+    // Convert i64 back to ptr
+    lp <- fresh("%scl");
+    rp <- fresh("%scr");
+    emit("  " + lp + " = inttoptr i64 " + ls + " to ptr");
+    emit("  " + rp + " = inttoptr i64 " + rs + " to ptr");
+
+    // Get lengths
+    ll <- fresh("%sll");
+    rl <- fresh("%srl");
+    emit("  " + ll + " = call i64 @strlen(ptr " + lp + ")");
+    emit("  " + rl + " = call i64 @strlen(ptr " + rp + ")");
+
+    // Allocate buffer: len_l + len_r + 1
+    tl <- fresh("%stl");
+    bs <- fresh("%sbs");
+    buf <- fresh("%sbuf");
+    emit("  " + tl + " = add i64 " + ll + ", " + rl);
+    emit("  " + bs + " = add i64 " + tl + ", 1");
+    emit("  " + buf + " = call ptr @malloc(i64 " + bs + ")");
+
+    // strcpy + strcat
+    emit("  call ptr @strcpy(ptr " + buf + ", ptr " + lp + ")");
+    emit("  call ptr @strcat(ptr " + buf + ", ptr " + rp + ")");
+
+    // Return as i64
+    res <- fresh("%scres");
+    emit("  " + res + " = ptrtoint ptr " + buf + " to i64");
+    return tv_str(res);
+}
+
+// ── String comparison ───────────────────
+fn emit_strcmp(l, r, cmp_op, has_str) {
+    // In strcmp context, both values must be string pointers
+    ls <- as_str_ptr(l);
+    rs <- as_str_ptr(r);
+
+    lp <- fresh("%csl");
+    rp <- fresh("%csr");
+    emit("  " + lp + " = inttoptr i64 " + ls + " to ptr");
+    emit("  " + rp + " = inttoptr i64 " + rs + " to ptr");
+
+    sc <- fresh("%scmp");
+    emit("  " + sc + " = call i32 @strcmp(ptr " + lp + ", ptr " + rp + ")");
+
+    // strcmp returns <0, 0, >0 — compare against 0
+    // Map our cmp_op to the right icmp on i32
+    r1 <- fresh("%scr");
+    r2 <- fresh("%sce");
+    emit("  " + r1 + " = icmp " + cmp_op + " i32 " + sc + ", 0");
+    emit("  " + r2 + " = zext i1 " + r1 + " to i64");
+    return tv_int(r2);
+}
+
+fn emit_and(nd) {
+    // Use alloca approach to avoid phi block tracking issues
+    res_ptr <- fresh("%and_res");
+    emit("  " + res_ptr + " = alloca i64");
+    emit("  store i64 0, ptr " + res_ptr);
+    l <- emit_expr(nd.left);
+    lbl_right <- fresh_lbl("and_r");
+    lbl_end <- fresh_lbl("and_e");
+    lc <- fresh("%ac");
+    emit("  " + lc + " = icmp ne i64 " + l.reg + ", 0");
+    emit("  br i1 " + lc + ", label %" + lbl_right + ", label %" + lbl_end);
+    emit(lbl_right + ":");
+    r <- emit_expr(nd.right);
+    rc <- fresh("%arc");
+    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
+    rext <- fresh("%arext");
+    emit("  " + rext + " = zext i1 " + rc + " to i64");
+    emit("  store i64 " + rext + ", ptr " + res_ptr);
+    emit("  br label %" + lbl_end);
+    emit(lbl_end + ":");
+    res <- fresh("%aphi");
+    emit("  " + res + " = load i64, ptr " + res_ptr);
+    return tv_int(res);
+}
+
+fn emit_or(nd) {
+    // Use alloca approach to avoid phi block tracking issues
+    res_ptr <- fresh("%or_res");
+    emit("  " + res_ptr + " = alloca i64");
+    emit("  store i64 1, ptr " + res_ptr); // default true
+    l <- emit_expr(nd.left);
+    lbl_right <- fresh_lbl("or_r");
+    lbl_end <- fresh_lbl("or_e");
+    lc <- fresh("%oc");
+    emit("  " + lc + " = icmp ne i64 " + l.reg + ", 0");
+    emit("  br i1 " + lc + ", label %" + lbl_end + ", label %" + lbl_right);
+    emit(lbl_right + ":");
+    r <- emit_expr(nd.right);
+    rc <- fresh("%orc");
+    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
+    rext <- fresh("%orext");
+    emit("  " + rext + " = zext i1 " + rc + " to i64");
+    emit("  store i64 " + rext + ", ptr " + res_ptr);
+    emit("  br label %" + lbl_end);
+    emit(lbl_end + ":");
+    res <- fresh("%ophi");
+    emit("  " + res + " = load i64, ptr " + res_ptr);
+    return tv_int(res);
+}
+
+fn emit_call(nd) {
+    // Builtins
+    if (nd.callee.node = "Identifier") {
+        nm <- nd.callee.name;
+
+        if (nm = "print") {
+            // Should not get here — print is a statement
+            return tv_int("0");
+        }
+
+        // User function call
+        fi <- find_fn(nm);
+        if (fi != false) {
+            args_str <- "";
+            i <- 0;
+            while (i < len(nd.args)) {
+                if (i > 0) { args_str <- args_str + ", "; }
+                vt <- emit_expr(nd.args[i]);
+                args_str <- args_str + "i64 " + vt.reg;
+                i <- i + 1;
+            }
+            r <- fresh("%call");
+            emit("  " + r + " = call i64 @" + nm + "(" + args_str + ")");
+            if (fi.ret_type = "struct") {
+                return {reg: r, type: "struct", fields: fi.ret_fields};
+            }
+            return tv(r, fi.ret_type);
+        }
+
+        // Builtin len
+        if (nm = "len") {
+            vt <- emit_expr(nd.args[0]);
+            ap <- fresh("%ap");
+            lp <- fresh("%lp");
+            lv <- fresh("%lv");
+            emit("  " + ap + " = inttoptr i64 " + vt.reg + " to ptr");
+            emit("  " + lp + " = getelementptr i64, ptr " + ap + ", i64 0");
+            emit("  " + lv + " = load i64, ptr " + lp);
+            return tv_int(lv);
+        }
+
+        // Builtin push
+        if (nm = "push") {
+            vt_arr <- emit_expr(nd.args[0]);
+            vt_val <- emit_expr(nd.args[1]);
+            emit("  call void @arrow_push(i64 " + vt_arr.reg + ", i64 " + vt_val.reg + ")");
+            return tv(vt_val.reg, vt_val.type);
+        }
+
+        // Builtin str_len
+        if (nm = "str_len") {
+            vt <- emit_expr(nd.args[0]);
+            sp <- fresh("%slp");
+            sl <- fresh("%slr");
+            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+            emit("  " + sl + " = call i64 @strlen(ptr " + sp + ")");
+            return tv_int(sl);
+        }
+
+        // Builtin char_code
+        if (nm = "char_code") {
+            vt <- emit_expr(nd.args[0]);
+            sp <- fresh("%ccp");
+            ch <- fresh("%ccv");
+            r <- fresh("%ccr");
+            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+            emit("  " + ch + " = load i8, ptr " + sp);
+            emit("  " + r + " = zext i8 " + ch + " to i64");
+            return tv_int(r);
+        }
+
+        // Builtin from_char_code
+        if (nm = "from_char_code") {
+            vt <- emit_expr(nd.args[0]);
+            buf <- fresh("%fcc");
+            ch <- fresh("%fcch");
+            r <- fresh("%fccr");
+            np <- fresh("%fccn");
+            emit("  " + buf + " = call ptr @malloc(i64 2)");
+            emit("  " + ch + " = trunc i64 " + vt.reg + " to i8");
+            emit("  store i8 " + ch + ", ptr " + buf);
+            emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
+            emit("  store i8 0, ptr " + np);
+            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
+            return tv_str(r);
+        }
+
+        // Builtin char_at
+        if (nm = "char_at") {
+            vt_s <- emit_expr(nd.args[0]);
+            vt_i <- emit_expr(nd.args[1]);
+            sp <- fresh("%cap");
+            ep <- fresh("%caep");
+            ch <- fresh("%cach");
+            buf <- fresh("%cabuf");
+            np <- fresh("%canp");
+            r <- fresh("%car");
+            emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
+            emit("  " + ep + " = getelementptr i8, ptr " + sp + ", i64 " + vt_i.reg);
+            emit("  " + ch + " = load i8, ptr " + ep);
+            emit("  " + buf + " = call ptr @malloc(i64 2)");
+            emit("  store i8 " + ch + ", ptr " + buf);
+            emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
+            emit("  store i8 0, ptr " + np);
+            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
+            return tv_str(r);
+        }
+
+        // Builtin substring
+        if (nm = "substring") {
+            vt_s <- emit_expr(nd.args[0]);
+            vt_start <- emit_expr(nd.args[1]);
+            vt_end <- emit_expr(nd.args[2]);
+            sp <- fresh("%ssp");
+            sl <- fresh("%ssl");
+            bs <- fresh("%sbs");
+            buf <- fresh("%sbf");
+            src <- fresh("%ssrc");
+            emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
+            emit("  " + sl + " = sub i64 " + vt_end.reg + ", " + vt_start.reg);
+            emit("  " + bs + " = add i64 " + sl + ", 1");
+            emit("  " + buf + " = call ptr @malloc(i64 " + bs + ")");
+            emit("  " + src + " = getelementptr i8, ptr " + sp + ", i64 " + vt_start.reg);
+            // Copy loop
+            idx_r <- fresh("%ssi");
+            emit("  " + idx_r + " = alloca i64");
+            emit("  store i64 0, ptr " + idx_r);
+            lbl_c <- fresh_lbl("ssc");
+            lbl_b <- fresh_lbl("ssb");
+            lbl_e <- fresh_lbl("sse");
+            emit("  br label %" + lbl_c);
+            emit(lbl_c + ":");
+            ci2 <- fresh("%ssci");
+            cmp <- fresh("%sscmp");
+            emit("  " + ci2 + " = load i64, ptr " + idx_r);
+            emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + sl);
+            emit("  br i1 " + cmp + ", label %" + lbl_b + ", label %" + lbl_e);
+            emit(lbl_b + ":");
+            ci3 <- fresh("%ssci2");
+            sep2 <- fresh("%ssep");
+            sch <- fresh("%ssch");
+            dep <- fresh("%ssdep");
+            emit("  " + ci3 + " = load i64, ptr " + idx_r);
+            emit("  " + sep2 + " = getelementptr i8, ptr " + src + ", i64 " + ci3);
+            emit("  " + sch + " = load i8, ptr " + sep2);
+            emit("  " + dep + " = getelementptr i8, ptr " + buf + ", i64 " + ci3);
+            emit("  store i8 " + sch + ", ptr " + dep);
+            ci4 <- fresh("%ssinc");
+            emit("  " + ci4 + " = add i64 " + ci3 + ", 1");
+            emit("  store i64 " + ci4 + ", ptr " + idx_r);
+            emit("  br label %" + lbl_c);
+            emit(lbl_e + ":");
+            // Null terminate
+            ntp <- fresh("%ssnt");
+            emit("  " + ntp + " = getelementptr i8, ptr " + buf + ", i64 " + sl);
+            emit("  store i8 0, ptr " + ntp);
+            r <- fresh("%ssr");
+            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
+            return tv_str(r);
+        }
+
+        // Builtin read_file
+        if (nm = "read_file") {
+            vt <- emit_expr(nd.args[0]);
+            sp <- fresh("%rfp");
+            r <- fresh("%rfr");
+            ri <- fresh("%rfi");
+            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+            emit("  " + r + " = call ptr @arrow_read_file(ptr " + sp + ")");
+            emit("  " + ri + " = ptrtoint ptr " + r + " to i64");
+            return tv_str(ri);
+        }
+
+        // Builtin write_file
+        if (nm = "write_file") {
+            vt_path <- emit_expr(nd.args[0]);
+            vt_content <- emit_expr(nd.args[1]);
+            pp <- fresh("%wfp");
+            cp <- fresh("%wfc");
+            r <- fresh("%wfr");
+            emit("  " + pp + " = inttoptr i64 " + vt_path.reg + " to ptr");
+            emit("  " + cp + " = inttoptr i64 " + vt_content.reg + " to ptr");
+            emit("  " + r + " = call i64 @arrow_write_file(ptr " + pp + ", ptr " + cp + ")");
+            return tv_int(r);
+        }
+
+        // Builtin exec_cmd
+        if (nm = "exec_cmd") {
+            vt <- emit_expr(nd.args[0]);
+            sp <- fresh("%ecp");
+            r <- fresh("%ecr");
+            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+            emit("  " + r + " = call i32 @system(ptr " + sp + ")");
+            ri <- fresh("%ecri");
+            emit("  " + ri + " = sext i32 " + r + " to i64");
+            return tv_int(ri);
+        }
+
+        // Builtin input
+        if (nm = "input") {
+            if (len(nd.args) >= 1) {
+                vt <- emit_expr(nd.args[0]);
+                sp <- fresh("%inp");
+                emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+                emit("  call i32 (ptr, ...) @printf(ptr " + sp + ")");
+            }
+            r <- fresh("%inr");
+            ri <- fresh("%inri");
+            emit("  " + r + " = call ptr @arrow_input()");
+            emit("  " + ri + " = ptrtoint ptr " + r + " to i64");
+            return tv_str(ri);
+        }
+
+        print("Error: unknown function " + nm);
+        return tv_int("0");
+    }
+
+    print("Error: indirect calls not yet supported in compiler");
+    return tv_int("0");
+}
+
+fn emit_array_lit(nd) {
+    // Allocate: [len, cap, elem0, elem1, ...]
+    // Layout: i64* with [length, capacity, elements...]
+    n <- len(nd.elements);
+    cap <- n;
+    if (cap < 4) { cap <- 4; }
+    total <- 2 + cap; // len + cap + elements
+    sz <- fresh("%asz");
+    ap <- fresh("%aptr");
+    ai <- fresh("%aint");
+    emit("  " + sz + " = mul i64 " + total + ", 8");
+    emit("  " + ap + " = call ptr @malloc(i64 " + sz + ")");
+
+    // Store length
+    emit("  store i64 " + n + ", ptr " + ap);
+    // Store capacity
+    cp <- fresh("%cp");
+    emit("  " + cp + " = getelementptr i64, ptr " + ap + ", i64 1");
+    emit("  store i64 " + cap + ", ptr " + cp);
+
+    // Store elements
+    i <- 0;
+    while (i < n) {
+        vt <- emit_expr(nd.elements[i]);
+        ep <- fresh("%ep");
+        idx <- i + 2;
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + idx);
+        emit("  store i64 " + vt.reg + ", ptr " + ep);
+        i <- i + 1;
+    }
+
+    emit("  " + ai + " = ptrtoint ptr " + ap + " to i64");
+    return ai;
+}
+
+fn emit_index(nd) {
+    vt_obj <- emit_expr(nd.obj);
+    vt_idx <- emit_expr(nd.index);
+    ap <- fresh("%ip");
+    off <- fresh("%ioff");
+    ep <- fresh("%iep");
+    ev <- fresh("%iev");
+    emit("  " + ap + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+    emit("  " + off + " = add i64 " + vt_idx.reg + ", 2"); // skip len+cap
+    emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+    emit("  " + ev + " = load i64, ptr " + ep);
+    // Check if we know the element type for this array variable
+    etype <- "int";
+    if (nd.obj.node = "Identifier") {
+        etype <- get_array_elem_type(nd.obj.name);
+    }
+    return tv(ev, etype);
+}
+
+// ── Emit statement ──────────────────────
+
+fn emit_stmt(nd) {
+    if (nd.node = "Assignment") {
+        vt <- emit_expr(nd.expr);
+        reg <- find_var(nd.name);
+        if (reg = "") { reg <- add_var(nd.name); }
+        emit("  store i64 " + vt.reg + ", ptr " + reg);
+        // Track type — structs become "int" for storage but we save layout if known
+        if (vt.type = "struct") {
+            set_var_type(nd.name, "int");
+            if (vt.fields != false) {
+                set_struct_layout(nd.name, vt.fields);
+            }
+        } else {
+            set_var_type(nd.name, vt.type);
+        }
+        // Track array element types from ArrayLit initializers
+        if (nd.expr.node = "ArrayLit") {
+            i <- 0;
+            while (i < len(nd.expr.elements)) {
+                if (is_str_expr(nd.expr.elements[i])) {
+                    set_array_elem_type(nd.name, "str");
+                }
+                i <- i + 1;
+            }
+        }
+        return false;
+    }
+    if (nd.node = "PrintStmt") {
+        return emit_print(nd.expr);
+    }
+    if (nd.node = "IfStmt") {
+        return emit_if(nd);
+    }
+    if (nd.node = "WhileStmt") {
+        return emit_while(nd);
+    }
+    if (nd.node = "ForInStmt") {
+        return emit_for_in(nd);
+    }
+    if (nd.node = "ReturnStmt") {
+        if (nd.expr = false) {
+            emit("  ret i64 0");
+        } else {
+            vt <- emit_expr(nd.expr);
+            emit("  ret i64 " + vt.reg);
+            // Track return type and struct fields for function
+            fn_name <- current_fn[0];
+            if (fn_name != "") {
+                set_fn_ret_type(fn_name, vt.type, vt.fields);
+            }
+        }
+        return false;
+    }
+    if (nd.node = "IndexAssign") {
+        vt_obj <- emit_expr(nd.obj);
+        vt_idx <- emit_expr(nd.index);
+        vt_val <- emit_expr(nd.value);
+        ap <- fresh("%iap");
+        off <- fresh("%iaoff");
+        ep <- fresh("%iaep");
+        emit("  " + ap + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+        emit("  " + off + " = add i64 " + vt_idx.reg + ", 2");
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+        emit("  store i64 " + vt_val.reg + ", ptr " + ep);
+        // Track element type for this array
+        if (nd.obj.node = "Identifier") {
+            if (vt_val.type = "str") {
+                set_array_elem_type(nd.obj.name, "str");
+            }
+        }
+        return false;
+    }
+    if (nd.node = "DotAssign") {
+        return emit_dot_assign(nd);
+    }
+    if (nd.node = "Block") {
+        emit_block(nd.stmts);
+        return false;
+    }
+    // Expression statement
+    emit_expr(nd);
+    return false;
+}
+
+fn emit_block(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        emit_stmt(stmts[i]);
+        i <- i + 1;
+    }
+}
+
+fn emit_print(expr) {
+    // Use type info to decide format
+    vt <- emit_expr(expr);
+    if (vt.type = "str") {
+        // Print as string with puts-style: printf("%s\n", ptr)
+        sp <- fresh("%pp");
+        emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+        emit("  call i32 @puts(ptr " + sp + ")");
+        return false;
+    }
+    // Default: print as integer
+    emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + vt.reg + ")");
+    return false;
+}
+
+fn emit_if(nd) {
+    vt <- emit_expr(nd.cond);
+    cmp <- fresh("%ifc");
+    lbl_then <- fresh_lbl("then");
+    lbl_else <- fresh_lbl("else");
+    lbl_end <- fresh_lbl("ifend");
+
+    emit("  " + cmp + " = icmp ne i64 " + vt.reg + ", 0");
+
+    if (len(nd.else_body) > 0) {
+        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_else);
+    } else {
+        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_end);
+    }
+
+    emit(lbl_then + ":");
+    emit_block(nd.then_body);
+    emit("  br label %" + lbl_end);
+
+    if (len(nd.else_body) > 0) {
+        emit(lbl_else + ":");
+        emit_block(nd.else_body);
+        emit("  br label %" + lbl_end);
+    }
+
+    emit(lbl_end + ":");
+    return false;
+}
+
+fn emit_while(nd) {
+    lbl_cond <- fresh_lbl("wc");
+    lbl_body <- fresh_lbl("wb");
+    lbl_end <- fresh_lbl("we");
+
+    emit("  br label %" + lbl_cond);
+    emit(lbl_cond + ":");
+    vt <- emit_expr(nd.cond);
+    cmp <- fresh("%wcc");
+    emit("  " + cmp + " = icmp ne i64 " + vt.reg + ", 0");
+    emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+    emit(lbl_body + ":");
+    emit_block(nd.body);
+    emit("  br label %" + lbl_cond);
+
+    emit(lbl_end + ":");
+    return false;
+}
+
+// ── Struct support ──────────────────────
+
+// Struct layout: [count, val0, val1, ..., name_ptr0, name_ptr1, ...]
+// Total slots = 1 + 2*N.  All i64.
+
+fn emit_struct_lit(nd) {
+    n <- len(nd.fields);
+    total <- 1 + n * 2; // count + N values + N name ptrs
+    sz <- fresh("%ssz");
+    sp <- fresh("%sptr");
+    emit("  " + sz + " = mul i64 " + total + ", 8");
+    emit("  " + sp + " = call ptr @malloc(i64 " + sz + ")");
+
+    // Store count
+    emit("  store i64 " + n + ", ptr " + sp);
+
+    // Store values at slots [1..N] and track field types
+    field_info <- [];
+    i <- 0;
+    while (i < n) {
+        vt <- emit_expr(nd.fields[i].val);
+        slot <- i + 1;
+        vp <- fresh("%svp");
+        emit("  " + vp + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
+        emit("  store i64 " + vt.reg + ", ptr " + vp);
+        push(field_info, {fname: nd.fields[i].key, ftype: vt.type});
+        i <- i + 1;
+    }
+
+    // Store name pointers at slots [N+1..2N]
+    i <- 0;
+    while (i < n) {
+        fname <- nd.fields[i].key;
+        fid <- add_string(fname);
+        np <- fresh("%snp");
+        ni <- fresh("%sni");
+        slot <- 1 + n + i;
+        emit("  " + ni + " = ptrtoint ptr @" + fid + " to i64");
+        emit("  " + np + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
+        emit("  store i64 " + ni + ", ptr " + np);
+        i <- i + 1;
+    }
+
+    // Return struct pointer as i64, with field info attached
+    ri <- fresh("%sri");
+    emit("  " + ri + " = ptrtoint ptr " + sp + " to i64");
+    return {reg: ri, type: "struct", fields: field_info};
+}
+
+fn emit_dot_expr(nd) {
+    vt_obj <- emit_expr(nd.obj);
+
+    // Field name as string constant
+    fid <- add_string(nd.field);
+
+    // Object pointer
+    op <- fresh("%dop");
+    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+
+    // Call struct_find helper to get field index
+    idx <- fresh("%didx");
+    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
+
+    // Load value at slot [1 + idx]
+    slot <- fresh("%dslot");
+    vp <- fresh("%dvp");
+    val <- fresh("%dval");
+    emit("  " + slot + " = add i64 " + idx + ", 1");
+    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
+    emit("  " + val + " = load i64, ptr " + vp);
+
+    // Try to determine field type from struct layout
+    ftype <- "int"; // default
+    if (nd.obj.node = "Identifier") {
+        layout <- get_struct_layout(nd.obj.name);
+        if (layout != false) {
+            ftype <- get_field_type(layout, nd.field);
+        }
+    }
+    return tv(val, ftype);
+}
+
+fn emit_dot_assign(nd) {
+    vt_obj <- emit_expr(nd.obj);
+    vt_val <- emit_expr(nd.value);
+
+    // Field name as string constant
+    fid <- add_string(nd.field);
+
+    // Object pointer
+    op <- fresh("%daop");
+    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+
+    // Find field index
+    idx <- fresh("%daidx");
+    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
+
+    slot <- fresh("%daslot");
+    vp <- fresh("%davp");
+    emit("  " + slot + " = add i64 " + idx + ", 1");
+    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
+    emit("  store i64 " + vt_val.reg + ", ptr " + vp);
+    return false;
+}
+
+// Emit the struct_find helper function
+// arrow_struct_find(ptr %sptr, ptr %name) -> i64 index (or -1)
+fn emit_struct_find_helper() {
+    emit("define i64 @arrow_struct_find(ptr %sptr, ptr %name) {");
+    emit("entry:");
+    emit("  %count = load i64, ptr %sptr");
+    emit("  %idx = alloca i64");
+    emit("  store i64 0, ptr %idx");
+    emit("  br label %cond");
+    emit("cond:");
+    emit("  %i = load i64, ptr %idx");
+    emit("  %done = icmp slt i64 %i, %count");
+    emit("  br i1 %done, label %body, label %notfound");
+    emit("body:");
+    emit("  %i2 = load i64, ptr %idx");
+    // name slot = 1 + count + i
+    emit("  %ns1 = add i64 1, %count");
+    emit("  %ns2 = add i64 %ns1, %i2");
+    emit("  %nsp = getelementptr i64, ptr %sptr, i64 %ns2");
+    emit("  %ni = load i64, ptr %nsp");
+    emit("  %np = inttoptr i64 %ni to ptr");
+    emit("  %cmp = call i32 @strcmp(ptr %np, ptr %name)");
+    emit("  %eq = icmp eq i32 %cmp, 0");
+    emit("  br i1 %eq, label %found, label %next");
+    emit("found:");
+    emit("  %fi = load i64, ptr %idx");
+    emit("  ret i64 %fi");
+    emit("next:");
+    emit("  %i3 = load i64, ptr %idx");
+    emit("  %i4 = add i64 %i3, 1");
+    emit("  store i64 %i4, ptr %idx");
+    emit("  br label %cond");
+    emit("notfound:");
+    emit("  ret i64 -1");
+    emit("}");
+    emit("");
+}
+
+// Emit integer-to-string helper (no sprintf dependency)
+// arrow_itoa(i64 %val) -> ptr
+fn emit_itoa_helper() {
+    emit("define ptr @arrow_itoa(i64 %val) {");
+    emit("entry:");
+    emit("  %buf = call ptr @malloc(i64 24)");
+    emit("  %tmp = call ptr @malloc(i64 24)");
+    emit("  %pos = alloca i64");
+    emit("  %cur = alloca i64");
+    emit("  %wp = alloca i64");
+    emit("  store i64 0, ptr %wp");
+    // Handle zero
+    emit("  %is_zero = icmp eq i64 %val, 0");
+    emit("  br i1 %is_zero, label %zero, label %check_neg");
+    emit("zero:");
+    emit("  store i8 48, ptr %buf");
+    emit("  %zp = getelementptr i8, ptr %buf, i64 1");
+    emit("  store i8 0, ptr %zp");
+    emit("  ret ptr %buf");
+    // Handle negative
+    emit("check_neg:");
+    emit("  %is_neg = icmp slt i64 %val, 0");
+    emit("  br i1 %is_neg, label %neg, label %start");
+    emit("neg:");
+    emit("  store i8 45, ptr %buf");
+    emit("  store i64 1, ptr %wp");
+    emit("  %abs = sub i64 0, %val");
+    emit("  store i64 %abs, ptr %cur");
+    emit("  store i64 0, ptr %pos");
+    emit("  br label %dloop");
+    emit("start:");
+    emit("  store i64 %val, ptr %cur");
+    emit("  store i64 0, ptr %pos");
+    emit("  br label %dloop");
+    // Extract digits into tmp (reversed)
+    emit("dloop:");
+    emit("  %c = load i64, ptr %cur");
+    emit("  %d = srem i64 %c, 10");
+    emit("  %ch = add i64 %d, 48");
+    emit("  %ch8 = trunc i64 %ch to i8");
+    emit("  %p = load i64, ptr %pos");
+    emit("  %tp = getelementptr i8, ptr %tmp, i64 %p");
+    emit("  store i8 %ch8, ptr %tp");
+    emit("  %p1 = add i64 %p, 1");
+    emit("  store i64 %p1, ptr %pos");
+    emit("  %nc = sdiv i64 %c, 10");
+    emit("  store i64 %nc, ptr %cur");
+    emit("  %more = icmp sgt i64 %nc, 0");
+    emit("  br i1 %more, label %dloop, label %rev");
+    // Reverse copy from tmp into buf (after optional '-')
+    emit("rev:");
+    emit("  %len = load i64, ptr %pos");
+    emit("  %ri = alloca i64");
+    emit("  store i64 0, ptr %ri");
+    emit("  br label %rcond");
+    emit("rcond:");
+    emit("  %r = load i64, ptr %ri");
+    emit("  %rdone = icmp slt i64 %r, %len");
+    emit("  br i1 %rdone, label %rbody, label %rend");
+    emit("rbody:");
+    emit("  %r2 = load i64, ptr %ri");
+    emit("  %src_idx = sub i64 %len, %r2");
+    emit("  %src_idx2 = sub i64 %src_idx, 1");
+    emit("  %sp = getelementptr i8, ptr %tmp, i64 %src_idx2");
+    emit("  %sc = load i8, ptr %sp");
+    emit("  %w = load i64, ptr %wp");
+    emit("  %dst_idx = add i64 %w, %r2");
+    emit("  %dp = getelementptr i8, ptr %buf, i64 %dst_idx");
+    emit("  store i8 %sc, ptr %dp");
+    emit("  %r3 = add i64 %r2, 1");
+    emit("  store i64 %r3, ptr %ri");
+    emit("  br label %rcond");
+    emit("rend:");
+    // Null terminate
+    emit("  %w2 = load i64, ptr %wp");
+    emit("  %total = add i64 %w2, %len");
+    emit("  %ep = getelementptr i8, ptr %buf, i64 %total");
+    emit("  store i8 0, ptr %ep");
+    emit("  call void @free(ptr %tmp)");
+    emit("  ret ptr %buf");
+    emit("}");
+    emit("");
+}
+
+fn emit_for_in(nd) {
+    // Compile iterable
+    vt_coll <- emit_expr(nd.iterable);
+
+    // Index variable
+    idx_reg <- find_var("_for_idx");
+    if (idx_reg = "") { idx_reg <- add_var("_for_idx"); }
+    emit("  store i64 0, ptr " + idx_reg);
+
+    // Loop var
+    var_reg <- find_var(nd.var_name);
+    if (var_reg = "") { var_reg <- add_var(nd.var_name); }
+
+    if (vt_coll.type = "str") {
+        // String iteration: iterate over characters
+        sp <- fresh("%fsp");
+        emit("  " + sp + " = inttoptr i64 " + vt_coll.reg + " to ptr");
+        flen <- fresh("%flen");
+        emit("  " + flen + " = call i64 @strlen(ptr " + sp + ")");
+
+        lbl_cond <- fresh_lbl("fc");
+        lbl_body <- fresh_lbl("fb");
+        lbl_end <- fresh_lbl("fe");
+
+        emit("  br label %" + lbl_cond);
+        emit(lbl_cond + ":");
+        ci2 <- fresh("%fi");
+        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
+        cmp <- fresh("%fcmp");
+        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
+        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+        emit(lbl_body + ":");
+        ci3 <- fresh("%fi2");
+        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
+
+        // Extract single char as a 2-byte string [ch, 0]
+        chp <- fresh("%fchp");
+        chv <- fresh("%fchv");
+        buf <- fresh("%fbuf");
+        np <- fresh("%fnp");
+        ri <- fresh("%fri");
+        emit("  " + chp + " = getelementptr i8, ptr " + sp + ", i64 " + ci3);
+        emit("  " + chv + " = load i8, ptr " + chp);
+        emit("  " + buf + " = call ptr @malloc(i64 2)");
+        emit("  store i8 " + chv + ", ptr " + buf);
+        emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
+        emit("  store i8 0, ptr " + np);
+        emit("  " + ri + " = ptrtoint ptr " + buf + " to i64");
+        emit("  store i64 " + ri + ", ptr " + var_reg);
+
+        // Set loop var type to string
+        set_var_type(nd.var_name, "str");
+
+        emit_block(nd.body);
+
+        // Increment
+        ci4 <- fresh("%fi3");
+        ci5 <- fresh("%fi4");
+        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
+        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
+        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
+        emit("  br label %" + lbl_cond);
+
+        emit(lbl_end + ":");
+    } else {
+        // Array iteration (existing logic)
+        ap <- fresh("%fap");
+        flen <- fresh("%flen");
+        emit("  " + ap + " = inttoptr i64 " + vt_coll.reg + " to ptr");
+        emit("  " + flen + " = load i64, ptr " + ap);
+
+        lbl_cond <- fresh_lbl("fc");
+        lbl_body <- fresh_lbl("fb");
+        lbl_end <- fresh_lbl("fe");
+
+        emit("  br label %" + lbl_cond);
+        emit(lbl_cond + ":");
+        ci2 <- fresh("%fi");
+        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
+        cmp <- fresh("%fcmp");
+        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
+        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
+
+        emit(lbl_body + ":");
+        ci3 <- fresh("%fi2");
+        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
+        off <- fresh("%foff");
+        ep <- fresh("%fep");
+        ev <- fresh("%fev");
+        emit("  " + off + " = add i64 " + ci3 + ", 2");
+        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
+        emit("  " + ev + " = load i64, ptr " + ep);
+        emit("  store i64 " + ev + ", ptr " + var_reg);
+
+        emit_block(nd.body);
+
+        // Increment
+        ci4 <- fresh("%fi3");
+        ci5 <- fresh("%fi4");
+        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
+        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
+        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
+        emit("  br label %" + lbl_cond);
+
+        emit(lbl_end + ":");
+    }
+    return false;
+}
+
+// ── Emit function ───────────────────────
+
+fn emit_function(nd) {
+    // Build param list
+    params_str <- "";
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (i > 0) { params_str <- params_str + ", "; }
+        params_str <- params_str + "i64 %" + nd.params[i] + ".arg";
+        i <- i + 1;
+    }
+
+    emit("define i64 @" + nd.name + "(" + params_str + ") {");
+    emit("entry:");
+
+    // Save old vars and types, start fresh for this function
+    old_vars <- alloc_vars[0];
+    old_types <- var_types[0];
+    old_layouts <- struct_layouts[0];
+    old_arr_types <- array_elem_types[0];
+    alloc_vars[0] <- [];
+    var_types[0] <- [];
+    struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
+    old_fn <- current_fn[0];
+    current_fn[0] <- nd.name;
+
+    // Collect all variables used in body
+    vars <- [];
+    collect_vars(nd.body, vars);
+
+    // Add params as vars
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (!var_exists(vars, nd.params[i])) {
+            push(vars, nd.params[i]);
+        }
+        i <- i + 1;
+    }
+
+    // Alloca all variables
+    i <- 0;
+    while (i < len(vars)) {
+        reg <- "%" + vars[i];
+        push(alloc_vars[0], {name: vars[i], reg: reg});
+        emit("  " + reg + " = alloca i64");
+        i <- i + 1;
+    }
+
+    // Also alloca _for_idx if any for-in loops
+    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
+    emit("  %_for_idx = alloca i64");
+
+    // Store params into allocas with types from call-site analysis
+    fi_info <- find_fn(nd.name);
+    i <- 0;
+    while (i < len(nd.params)) {
+        emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
+        if (fi_info != false && i < len(fi_info.param_types)) {
+            set_var_type(nd.params[i], fi_info.param_types[i]);
+        } else {
+            set_var_type(nd.params[i], "int");
+        }
+        i <- i + 1;
+    }
+
+    // Emit body
+    emit_block(nd.body);
+
+    // Default return
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // Restore vars and types
+    alloc_vars[0] <- old_vars;
+    var_types[0] <- old_types;
+    struct_layouts[0] <- old_layouts;
+    array_elem_types[0] <- old_arr_types;
+    current_fn[0] <- old_fn;
+}
+
+// ── Emit push helper ────────────────────
+
+fn emit_push_helper() {
+    emit("define void @arrow_push(i64 %arr.i, i64 %val) {");
+    emit("entry:");
+    emit("  %arr = inttoptr i64 %arr.i to ptr");
+    emit("  %lenp = getelementptr i64, ptr %arr, i64 0");
+    emit("  %len = load i64, ptr %lenp");
+    emit("  %capp = getelementptr i64, ptr %arr, i64 1");
+    emit("  %cap = load i64, ptr %capp");
+    // For simplicity, assume capacity is enough (no realloc)
+    emit("  %off = add i64 %len, 2");
+    emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
+    emit("  store i64 %val, ptr %ep");
+    emit("  %nlen = add i64 %len, 1");
+    emit("  store i64 %nlen, ptr %lenp");
+    emit("  ret void");
+    emit("}");
+    emit("");
+}
+
+// ── Emit read_file helper ───────────────
+
+fn emit_read_file_helper() {
+    emit("define ptr @arrow_read_file(ptr %path) {");
+    emit("entry:");
+    emit("  %fp = call ptr @fopen(ptr %path, ptr @.str.rb)");
+    emit("  %fpv = ptrtoint ptr %fp to i64");
+    emit("  %is_null = icmp eq i64 %fpv, 0");
+    emit("  br i1 %is_null, label %fail, label %ok");
+    emit("fail:");
+    emit("  %empty = call ptr @malloc(i64 1)");
+    emit("  store i8 0, ptr %empty");
+    emit("  ret ptr %empty");
+    emit("ok:");
+    emit("  call i32 @fseek(ptr %fp, i64 0, i32 2)");
+    emit("  %size = call i64 @ftell(ptr %fp)");
+    emit("  call i32 @fseek(ptr %fp, i64 0, i32 0)");
+    emit("  %bufsz = add i64 %size, 1");
+    emit("  %buf = call ptr @malloc(i64 %bufsz)");
+    emit("  call i64 @fread(ptr %buf, i64 1, i64 %size, ptr %fp)");
+    emit("  %endp = getelementptr i8, ptr %buf, i64 %size");
+    emit("  store i8 0, ptr %endp");
+    emit("  call i32 @fclose(ptr %fp)");
+    emit("  ret ptr %buf");
+    emit("}");
+    emit("");
+}
+
+// ── Emit write_file helper ──────────────
+
+fn emit_write_file_helper() {
+    emit("define i64 @arrow_write_file(ptr %path, ptr %content) {");
+    emit("entry:");
+    emit("  %fp = call ptr @fopen(ptr %path, ptr @.str.wb)");
+    emit("  %fpv = ptrtoint ptr %fp to i64");
+    emit("  %is_null = icmp eq i64 %fpv, 0");
+    emit("  br i1 %is_null, label %fail, label %ok");
+    emit("fail:");
+    emit("  ret i64 0");
+    emit("ok:");
+    emit("  %slen = call i64 @strlen(ptr %content)");
+    emit("  %written = call i64 @fwrite(ptr %content, i64 1, i64 %slen, ptr %fp)");
+    emit("  call i32 @fclose(ptr %fp)");
+    emit("  ret i64 %written");
+    emit("}");
+    emit("");
+}
+
+// ── Emit input helper ───────────────────
+
+fn emit_input_helper() {
+    emit("define ptr @arrow_input() {");
+    emit("entry:");
+    emit("  %buf = call ptr @malloc(i64 4096)");
+    emit("  %stdin = call ptr @__acrt_iob_func(i32 0)");
+    emit("  %result = call ptr @fgets(ptr %buf, i32 4096, ptr %stdin)");
+    emit("  %slen = call i64 @strlen(ptr %buf)");
+    emit("  %has = icmp sgt i64 %slen, 0");
+    emit("  br i1 %has, label %strip, label %done");
+    emit("strip:");
+    emit("  %li = sub i64 %slen, 1");
+    emit("  %lp = getelementptr i8, ptr %buf, i64 %li");
+    emit("  %lc = load i8, ptr %lp");
+    emit("  %is_nl = icmp eq i8 %lc, 10");
+    emit("  %nv = select i1 %is_nl, i8 0, i8 %lc");
+    emit("  store i8 %nv, ptr %lp");
+    emit("  br label %done");
+    emit("done:");
+    emit("  ret ptr %buf");
+    emit("}");
+    emit("");
+}
+
+// ── Main compilation ────────────────────
+
+fn compile(stmts) {
+    // Preamble
+    emit("; Arrow Lang -- compiled by self-hosted compiler");
+    emit("");
+
+    // External declarations
+    emit("declare i32 @printf(ptr, ...)");
+    emit("declare i32 @puts(ptr)");
+    emit("declare ptr @malloc(i64)");
+    emit("declare void @free(ptr)");
+    emit("declare i64 @strlen(ptr)");
+    emit("declare ptr @strcpy(ptr, ptr)");
+    emit("declare ptr @strcat(ptr, ptr)");
+    emit("declare i32 @strcmp(ptr, ptr)");
+    emit("declare i32 @system(ptr)");
+    emit("declare ptr @fopen(ptr, ptr)");
+    emit("declare i32 @fclose(ptr)");
+    emit("declare i64 @fread(ptr, i64, i64, ptr)");
+    emit("declare i64 @fwrite(ptr, i64, i64, ptr)");
+    emit("declare i32 @fseek(ptr, i64, i32)");
+    emit("declare i64 @ftell(ptr)");
+    emit("declare ptr @fgets(ptr, i32, ptr)");
+    emit("declare ptr @__acrt_iob_func(i32)");
+    emit("");
+
+    // Pre-scan functions
+    scan_fns(stmts);
+
+    // Scan call sites to infer parameter types
+    scan_call_sites(stmts);
+
+    // Pre-scan top-level variables → emit as globals
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            scan_globals(stmts[i]);
+        }
+        i <- i + 1;
+    }
+    // Emit global variable declarations
+    i <- 0;
+    while (i < len(global_vars)) {
+        emit("@g_" + global_vars[i] + " = global i64 0");
+        i <- i + 1;
+    }
+    emit("");
+
+    // Emit user functions first
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            emit_function(stmts[i]);
+        }
+        i <- i + 1;
+    }
+
+    // Emit helpers
+    emit_push_helper();
+    emit_struct_find_helper();
+    emit_itoa_helper();
+    emit_read_file_helper();
+    emit_write_file_helper();
+    emit_input_helper();
+
+    // Emit main
+    emit("define i64 @main() {");
+    emit("entry:");
+
+    // Collect all top-level vars
+    vars <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            collect_vars_stmt(stmts[i], vars);
+        }
+        i <- i + 1;
+    }
+
+    // Alloca all (skip globals — they're already emitted)
+    alloc_vars[0] <- [];
+    var_types[0] <- [];
+    struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
+    j <- 0;
+    while (j < len(vars)) {
+        if (!is_global(vars[j])) {
+            reg <- "%" + vars[j];
+            push(alloc_vars[0], {name: vars[j], reg: reg});
+            emit("  " + reg + " = alloca i64");
+        }
+        j <- j + 1;
+    }
+    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
+    emit("  %_for_idx = alloca i64");
+
+    // Emit top-level statements (skip fn decls)
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            emit_stmt(stmts[i]);
+        }
+        i <- i + 1;
+    }
+
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // Emit string constants
+    // Format string for integers (with newline)
+    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
+    // File mode strings
+    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
+    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+
+    i <- 0;
+    while (i < len(str_constants)) {
+        sc <- str_constants[i];
+        escaped <- ir_escape(sc.text);
+        slen <- ir_str_len(sc.text);
+        emit("@" + sc.id + " = private constant [" + slen + " x i8] c\"" + escaped + "\\00\"");
+        i <- i + 1;
+    }
+}
+
+
+// ═══════════════════════════════════════════
+//  MAIN — Read, lex, parse, compile, write, run clang
+// ═══════════════════════════════════════════
+
+source <- read_file("target.arrow");
+
+// Lex & parse
+toks <- tokenize(source);
+pos[0] <- 0;
+ast <- pp();
+
+// Compile to IR
+compile(ast);
+
+// Write .ll file
+write_file("target.ll", ir[0]);
+print("Wrote target.ll (" + len(str_constants) + " string constants)");
+
+// Run clang
+print("Running clang...");
+rc <- exec_cmd("clang target.ll -o target.exe -O2 -Wno-override-module");
+if (rc = 0) {
+    print("Compiled target.exe successfully!");
+    print("");
+    print("--- Running target.exe ---");
+    exec_cmd("target.exe");
+} else {
+    print("Clang failed with exit code " + rc);
+}
