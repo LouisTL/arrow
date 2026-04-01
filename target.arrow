@@ -1,15 +1,10 @@
-fn mktok(t, v) {
-    return {type: t, value: v};
+counter <- [0];
+
+fn fresh(prefix) {
+    counter[0] <- counter[0] + 1;
+    return prefix + counter[0];
 }
 
-tok <- mktok("NUMBER", "42");
-
-if (tok.type = "NUMBER") {
-    print("Got number: " + tok.value);
-}
-
-if (tok.type = "STRING") {
-    print("Got string");
-}
-
-print("done");
+print(fresh("tmp"));
+print(fresh("tmp"));
+print(fresh("var"));
