@@ -769,6 +769,10 @@ fn emit_strcmp(l, r, cmp_op, has_str) {
 }
 
 fn emit_and(nd) {
+    // Use alloca approach to avoid phi block tracking issues
+    res_ptr <- fresh("%and_res");
+    emit("  " + res_ptr + " = alloca i64");
+    emit("  store i64 0, ptr " + res_ptr);
     l <- emit_expr(nd.left);
     lbl_right <- fresh_lbl("and_r");
     lbl_end <- fresh_lbl("and_e");
@@ -777,14 +781,23 @@ fn emit_and(nd) {
     emit("  br i1 " + lc + ", label %" + lbl_right + ", label %" + lbl_end);
     emit(lbl_right + ":");
     r <- emit_expr(nd.right);
+    rc <- fresh("%arc");
+    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
+    rext <- fresh("%arext");
+    emit("  " + rext + " = zext i1 " + rc + " to i64");
+    emit("  store i64 " + rext + ", ptr " + res_ptr);
     emit("  br label %" + lbl_end);
     emit(lbl_end + ":");
     res <- fresh("%aphi");
-    emit("  " + res + " = phi i64 [0, %" + lbl_right + "], [" + r.reg + ", %" + lbl_right + "]");
+    emit("  " + res + " = load i64, ptr " + res_ptr);
     return tv_int(res);
 }
 
 fn emit_or(nd) {
+    // Use alloca approach to avoid phi block tracking issues
+    res_ptr <- fresh("%or_res");
+    emit("  " + res_ptr + " = alloca i64");
+    emit("  store i64 1, ptr " + res_ptr); // default true
     l <- emit_expr(nd.left);
     lbl_right <- fresh_lbl("or_r");
     lbl_end <- fresh_lbl("or_e");
@@ -793,10 +806,15 @@ fn emit_or(nd) {
     emit("  br i1 " + lc + ", label %" + lbl_end + ", label %" + lbl_right);
     emit(lbl_right + ":");
     r <- emit_expr(nd.right);
+    rc <- fresh("%orc");
+    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
+    rext <- fresh("%orext");
+    emit("  " + rext + " = zext i1 " + rc + " to i64");
+    emit("  store i64 " + rext + ", ptr " + res_ptr);
     emit("  br label %" + lbl_end);
     emit(lbl_end + ":");
     res <- fresh("%ophi");
-    emit("  " + res + " = phi i64 [" + l.reg + ", %" + lbl_right + "], [" + r.reg + ", %" + lbl_right + "]");
+    emit("  " + res + " = load i64, ptr " + res_ptr);
     return tv_int(res);
 }
 

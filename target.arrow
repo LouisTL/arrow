@@ -1,10 +1,40 @@
-counter <- [0];
-
-fn fresh(prefix) {
-    counter[0] <- counter[0] + 1;
-    return prefix + counter[0];
+fn mktok(t, v) {
+    return {type: t, value: v};
 }
 
-print(fresh("tmp"));
-print(fresh("tmp"));
-print(fresh("var"));
+fn is_digit(c) {
+    return c >= 48 && c <= 57;
+}
+
+fn tokenize(src) {
+    ts <- [];
+    p <- 0;
+    sl <- str_len(src);
+    while (p < sl) {
+        ch <- char_code(char_at(src, p));
+        if (ch = 32) {
+            p <- p + 1;
+        } else if (is_digit(ch)) {
+            s <- p;
+            while (p < sl && is_digit(char_code(char_at(src, p)))) {
+                p <- p + 1;
+            }
+            push(ts, mktok("NUMBER", substring(src, s, p)));
+        } else if (ch = 43) {
+            push(ts, mktok("PLUS", "+"));
+            p <- p + 1;
+        } else {
+            p <- p + 1;
+        }
+    }
+    return ts;
+}
+
+tokens <- tokenize("3 + 42");
+
+i <- 0;
+while (i < len(tokens)) {
+    tok <- tokens[i];
+    print(tok.type + ": " + tok.value);
+    i <- i + 1;
+}
