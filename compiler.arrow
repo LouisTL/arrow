@@ -3,9 +3,9 @@
 //  Emits LLVM IR text (.ll), then shells out
 //  to clang for AOT compilation.
 //
-//  Usage: python lang.py compiler.arrow
-//  Reads target.arrow, writes target.ll,
-//  runs clang to produce target.exe
+//  Usage: python lang.py compiler.arrow <file.arrow>
+//  Or:    compiler.exe <file.arrow>
+//  Compiles <file.arrow> to <file>.ll and <file>.exe
 //
 //  Type tracking: emit_expr returns {reg, type}
 //  where type is "int" or "str".
@@ -714,7 +714,9 @@ fn emit_binop(nd) {
 
     // Check AST for string context — catches cases where type tracking
     // loses string info (e.g. struct fields from function returns)
-    has_str <- is_str_expr(nd.left) || is_str_expr(nd.right);
+    l_is_str <- is_str_expr(nd.left);
+    r_is_str <- is_str_expr(nd.right);
+    has_str <- l_is_str || r_is_str;
 
     l <- emit_expr(nd.left);
     r <- emit_expr(nd.right);
@@ -722,7 +724,7 @@ fn emit_binop(nd) {
     if (nd.op = "+") {
         // String concatenation if either side is a string
         if (l.type = "str" || r.type = "str" || has_str) {
-            return emit_strcat(l, r, has_str);
+            return emit_strcat(l, r, l_is_str, r_is_str);
         }
         res <- fresh("%add");
         emit("  " + res + " = add i64 " + l.reg + ", " + r.reg);
@@ -759,6 +761,7 @@ fn emit_binop(nd) {
 // Check if an AST expression node is known to be a string
 fn is_str_expr(nd) {
     if (nd.node = "StringLit") { return true; }
+    if (nd.node = "DotExpr") { return true; }  // struct fields are usually strings in Arrow
     if (nd.node = "BinOp") {
         if (nd.op = "+") {
             return is_str_expr(nd.left) || is_str_expr(nd.right);
@@ -778,24 +781,19 @@ fn is_str_expr(nd) {
 }
 
 // ── String concatenation ────────────────
-fn emit_strcat(l, r, has_str) {
-    // If AST indicates string context (has_str), treat "int" as string pointer
-    // Otherwise use ensure_str which itoa's genuine integers
-    if (has_str) {
-        // One side is a StringLit — the other "int" is likely a string pointer
-        if (l.type = "str") {
-            ls <- l.reg;
-            rs <- as_str_ptr(r);
-        } else if (r.type = "str") {
-            ls <- as_str_ptr(l);
-            rs <- r.reg;
-        } else {
-            // Both "int" but has_str — treat both as pointers
-            ls <- as_str_ptr(l);
-            rs <- as_str_ptr(r);
-        }
+fn emit_strcat(l, r, l_is_str_ast, r_is_str_ast) {
+    // For each side:
+    // - If type tracked as "str" → use as-is (it's a string pointer)
+    // - If AST says it's a string expr → treat as string pointer (struct field etc.)
+    // - Otherwise → convert via itoa (genuine integer)
+    if (l.type = "str" || l_is_str_ast) {
+        ls <- l.reg;
     } else {
         ls <- ensure_str(l);
+    }
+    if (r.type = "str" || r_is_str_ast) {
+        rs <- r.reg;
+    } else {
         rs <- ensure_str(r);
     }
 
@@ -947,7 +945,15 @@ fn emit_call(nd) {
         if (nm = "push") {
             vt_arr <- emit_expr(nd.args[0]);
             vt_val <- emit_expr(nd.args[1]);
-            emit("  call void @arrow_push(i64 " + vt_arr.reg + ", i64 " + vt_val.reg + ")");
+            rp <- fresh("%push_r");
+            emit("  " + rp + " = call i64 @arrow_push(i64 " + vt_arr.reg + ", i64 " + vt_val.reg + ")");
+            // Store the (possibly reallocated) array pointer back
+            if (nd.args[0].node = "Identifier") {
+                arr_reg <- find_var(nd.args[0].name);
+                if (arr_reg != "") {
+                    emit("  store i64 " + rp + ", ptr " + arr_reg);
+                }
+            }
             return tv(vt_val.reg, vt_val.type);
         }
 
@@ -1115,6 +1121,33 @@ fn emit_call(nd) {
             return tv_str(ri);
         }
 
+        // Builtin args — access command line arguments
+        if (nm = "args") {
+            if (len(nd.args) = 0) {
+                // args() with no arguments — return argc - 1 (number of script args)
+                ac <- fresh("%argc");
+                ar <- fresh("%argr");
+                emit("  " + ac + " = load i64, ptr @g_argc");
+                emit("  " + ar + " = sub i64 " + ac + ", 1");
+                return tv_int(ar);
+            }
+            // args(N) — return argv[N+1] as string
+            vt <- emit_expr(nd.args[0]);
+            ai <- fresh("%argi");
+            emit("  " + ai + " = add i64 " + vt.reg + ", 1"); // skip program name
+            av <- fresh("%argv");
+            emit("  " + av + " = load i64, ptr @g_argv");
+            avp <- fresh("%argvp");
+            emit("  " + avp + " = inttoptr i64 " + av + " to ptr");
+            ep <- fresh("%argep");
+            emit("  " + ep + " = getelementptr ptr, ptr " + avp + ", i64 " + ai);
+            sp <- fresh("%argsp");
+            emit("  " + sp + " = load ptr, ptr " + ep);
+            ri <- fresh("%argri");
+            emit("  " + ri + " = ptrtoint ptr " + sp + " to i64");
+            return tv_str(ri);
+        }
+
         print("Error: unknown function " + nm);
         return tv_int("0");
     }
@@ -1128,7 +1161,7 @@ fn emit_array_lit(nd) {
     // Layout: i64* with [length, capacity, elements...]
     n <- len(nd.elements);
     cap <- n;
-    if (cap < 4) { cap <- 4; }
+    if (cap < 256) { cap <- 256; }
     total <- 2 + cap; // len + cap + elements
     sz <- fresh("%asz");
     ap <- fresh("%aptr");
@@ -1759,20 +1792,43 @@ fn emit_function(nd) {
 // ── Emit push helper ────────────────────
 
 fn emit_push_helper() {
-    emit("define void @arrow_push(i64 %arr.i, i64 %val) {");
+    // arrow_push returns the (possibly reallocated) array pointer as i64
+    emit("define i64 @arrow_push(i64 %arr.i, i64 %val) {");
     emit("entry:");
     emit("  %arr = inttoptr i64 %arr.i to ptr");
     emit("  %lenp = getelementptr i64, ptr %arr, i64 0");
     emit("  %len = load i64, ptr %lenp");
     emit("  %capp = getelementptr i64, ptr %arr, i64 1");
     emit("  %cap = load i64, ptr %capp");
-    // For simplicity, assume capacity is enough (no realloc)
+    // Check if we need to grow
+    emit("  %full = icmp sge i64 %len, %cap");
+    emit("  br i1 %full, label %grow, label %store");
+    emit("grow:");
+    // Double capacity, realloc entire block
+    emit("  %newcap = mul i64 %cap, 2");
+    emit("  %newtotal = add i64 %newcap, 2");
+    emit("  %newbytes = mul i64 %newtotal, 8");
+    emit("  %newptr = call ptr @realloc(ptr %arr, i64 %newbytes)");
+    // Update cap
+    emit("  %ncapp = getelementptr i64, ptr %newptr, i64 1");
+    emit("  store i64 %newcap, ptr %ncapp");
+    // Store element
+    emit("  %nlenp = getelementptr i64, ptr %newptr, i64 0");
+    emit("  %nlen = load i64, ptr %nlenp");
+    emit("  %noff = add i64 %nlen, 2");
+    emit("  %nep = getelementptr i64, ptr %newptr, i64 %noff");
+    emit("  store i64 %val, ptr %nep");
+    emit("  %nlen2 = add i64 %nlen, 1");
+    emit("  store i64 %nlen2, ptr %nlenp");
+    emit("  %ri = ptrtoint ptr %newptr to i64");
+    emit("  ret i64 %ri");
+    emit("store:");
     emit("  %off = add i64 %len, 2");
     emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
     emit("  store i64 %val, ptr %ep");
-    emit("  %nlen = add i64 %len, 1");
-    emit("  store i64 %nlen, ptr %lenp");
-    emit("  ret void");
+    emit("  %nlen3 = add i64 %len, 1");
+    emit("  store i64 %nlen3, ptr %lenp");
+    emit("  ret i64 %arr.i");
     emit("}");
     emit("");
 }
@@ -1862,6 +1918,7 @@ fn compile(stmts) {
     emit("declare i32 @puts(ptr)");
     emit("declare i32 @fflush(ptr)");
     emit("declare ptr @malloc(i64)");
+    emit("declare ptr @realloc(ptr, i64)");
     emit("declare void @free(ptr)");
     emit("declare i64 @strlen(ptr)");
     emit("declare ptr @strcpy(ptr, ptr)");
@@ -1878,11 +1935,14 @@ fn compile(stmts) {
     emit("declare ptr @__acrt_iob_func(i32)");
     emit("");
 
+
     // Pre-scan functions
     scan_fns(stmts);
 
+
     // Scan call sites to infer parameter types
     scan_call_sites(stmts);
+
 
     // Pre-scan top-level variables → emit as globals
     i <- 0;
@@ -1892,6 +1952,8 @@ fn compile(stmts) {
         }
         i <- i + 1;
     }
+
+
     // Emit global variable declarations
     i <- 0;
     while (i < len(global_vars)) {
@@ -1899,6 +1961,7 @@ fn compile(stmts) {
         i <- i + 1;
     }
     emit("");
+
 
     // Emit user functions first
     i <- 0;
@@ -1909,6 +1972,7 @@ fn compile(stmts) {
         i <- i + 1;
     }
 
+
     // Emit helpers
     emit_push_helper();
     emit_struct_find_helper();
@@ -1917,9 +1981,17 @@ fn compile(stmts) {
     emit_write_file_helper();
     emit_input_helper();
 
-    // Emit main
-    emit("define i64 @main() {");
+    // Emit main with argc/argv for command line arg support
+    emit("@g_argc = global i64 0");
+    emit("@g_argv = global i64 0");
+    emit("define i64 @main(i32 %argc, ptr %argv) {");
     emit("entry:");
+    // Store argc and argv as globals
+    emit("  %argc64 = sext i32 %argc to i64");
+    emit("  store i64 %argc64, ptr @g_argc");
+    emit("  %argv64 = ptrtoint ptr %argv to i64");
+    emit("  store i64 %argv64, ptr @g_argv");
+
 
     // Collect all top-level vars
     vars <- [];
@@ -1930,6 +2002,7 @@ fn compile(stmts) {
         }
         i <- i + 1;
     }
+
 
     // Alloca all (skip globals — they're already emitted)
     alloc_vars[0] <- [];
@@ -1948,6 +2021,7 @@ fn compile(stmts) {
     push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
     emit("  %_for_idx = alloca i64");
 
+
     // Emit top-level statements (skip fn decls)
     i <- 0;
     while (i < len(stmts)) {
@@ -1956,6 +2030,7 @@ fn compile(stmts) {
         }
         i <- i + 1;
     }
+
 
     emit("  ret i64 0");
     emit("}");
@@ -1983,28 +2058,47 @@ fn compile(stmts) {
 //  MAIN — Read, lex, parse, compile, write, run clang
 // ═══════════════════════════════════════════
 
-source <- read_file("target.arrow");
+// Get input filename from command line args
+if (args() < 1) {
+    print("Usage: arrow <file.arrow>");
+    print("  Compiles an Arrow Lang source file to a native executable.");
+}
 
-// Lex & parse
-toks <- tokenize(source);
-pos[0] <- 0;
-ast <- pp();
+if (args() > 0) {
+    input_file <- args(0);
 
-// Compile to IR
-compile(ast);
+    // Derive output filenames: foo.arrow -> foo.ll, foo.exe
+    base_name <- input_file;
+    // Strip .arrow extension if present
+    if (str_len(input_file) > 6) {
+        suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
+        if (suffix = ".arrow") {
+            base_name <- substring(input_file, 0, str_len(input_file) - 6);
+        }
+    }
+    ll_file <- base_name + ".ll";
+    exe_file <- base_name + ".exe";
 
-// Write .ll file
-write_file("target.ll", ir[0]);
-print("Wrote target.ll (" + len(str_constants) + " string constants)");
+    source <- read_file(input_file);
 
-// Run clang
-print("Running clang...");
-rc <- exec_cmd("clang target.ll -o target.exe -O2 -Wno-override-module");
-if (rc = 0) {
-    print("Compiled target.exe successfully!");
-    print("");
-    print("--- Running target.exe ---");
-    exec_cmd("target.exe");
-} else {
-    print("Clang failed with exit code " + rc);
+    // Lex & parse
+    toks <- tokenize(source);
+    pos[0] <- 0;
+    ast <- pp();
+
+    // Compile to IR
+    compile(ast);
+
+    // Write .ll file
+    write_file(ll_file, ir[0]);
+    print("Wrote " + ll_file + " (" + len(str_constants) + " string constants)");
+
+    // Run clang
+    print("Running clang...");
+    rc <- exec_cmd("clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module");
+    if (rc = 0) {
+        print("Compiled " + exe_file + " successfully!");
+    } else {
+        print("Clang failed with exit code " + rc);
+    }
 }

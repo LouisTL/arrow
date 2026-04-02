@@ -781,7 +781,7 @@ class Struct:
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
-            "exec_cmd"}
+            "exec_cmd", "args"}
 
 
 class Interpreter:
@@ -1028,6 +1028,21 @@ class Interpreter:
             if result.stderr:
                 print(result.stderr, end='', file=__import__('sys').stderr)
             return result.returncode
+
+        elif name == "args":
+            import sys
+            if len(args) == 0:
+                # Return number of script arguments (excluding interpreter and script file)
+                # sys.argv = ['lang.py', 'compiler.arrow', arg1, arg2, ...]
+                return len(sys.argv) - 2
+            idx = self._eval(args[0])
+            if not isinstance(idx, int):
+                raise RuntimeError_("args() index must be an integer")
+            # args(0) = first argument after the script file
+            actual_idx = idx + 2  # skip 'lang.py' and the script filename
+            if actual_idx < 0 or actual_idx >= len(sys.argv):
+                return ""
+            return sys.argv[actual_idx]
 
         elif name == "char_code":
             if len(args) != 1:
