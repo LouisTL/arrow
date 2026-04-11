@@ -2268,24 +2268,46 @@ fn compile(stmts) {
 
 // Get input filename from command line args
 if (args() < 1) {
-    print("Usage: arrow <file.arrow>");
+    print("Usage: arrow <file.arrow> [-o output]");
     print("  Compiles an Arrow Lang source file to a native executable.");
 }
 
 if (args() > 0) {
     input_file <- args(0);
 
-    // Derive output filenames: foo.arrow -> foo.ll, foo.exe
+    // Parse -o flag
+    out_name <- "";
+    if (args() > 2) {
+        if (args(1) = "-o") {
+            out_name <- args(2);
+        }
+    }
+
+    // Derive base name from input: foo.arrow -> foo
     base_name <- input_file;
-    // Strip .arrow extension if present
     if (str_len(input_file) > 6) {
         suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
         if (suffix = ".arrow") {
             base_name <- substring(input_file, 0, str_len(input_file) - 6);
         }
     }
-    ll_file <- base_name + ".ll";
-    exe_file <- base_name + ".exe";
+
+    // Set output filenames
+    if (out_name != "") {
+        exe_file <- out_name;
+        // Derive .ll base from output name (strip .exe if present)
+        ll_base <- out_name;
+        if (str_len(out_name) > 4) {
+            ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
+            if (ext = ".exe") {
+                ll_base <- substring(out_name, 0, str_len(out_name) - 4);
+            }
+        }
+        ll_file <- ll_base + ".ll";
+    } else {
+        ll_file <- base_name + ".ll";
+        exe_file <- base_name + ".exe";
+    }
 
 
     source <- read_file(input_file);
@@ -2300,17 +2322,18 @@ if (args() > 0) {
     // Compile to IR
     compile(ast);
 
-    // Write .ll file in chunks (avoids building one huge string)
+    // Write .ll file
     write_ir_lines(ll_file);
-    print("Wrote " + ll_file);
 
     // Run clang
-    print("Running clang...");
     clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
     rc <- exec_cmd(clang_cmd);
     if (rc = 0) {
         print("Compiled " + exe_file + " successfully!");
+        // Clean up intermediate .ll file
+        exec_cmd("del " + ll_file);
     } else {
         print("Clang failed with exit code " + rc);
+        print("IR written to " + ll_file);
     }
 }
