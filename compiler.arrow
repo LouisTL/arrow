@@ -124,6 +124,9 @@ fn ppm(){
 // Output buffer: array of lines
 ir_lines <- [""];  // init with "" so global type tracking knows it holds strings
 
+// Platform detection: 1 = Windows, 0 = Unix (Linux/Mac)
+is_win <- [1]; // default Windows, overridden at startup
+
 fn emit(s) {
     push(ir_lines, s);
 }
@@ -2088,7 +2091,11 @@ fn emit_input_helper() {
     emit("define ptr @arrow_input() {");
     emit("entry:");
     emit("  %buf = call ptr @malloc(i64 4096)");
-    emit("  %stdin = call ptr @__acrt_iob_func(i32 0)");
+    if (is_win[0] = 1) {
+        emit("  %stdin = call ptr @__acrt_iob_func(i32 0)");
+    } else {
+        emit("  %stdin = load ptr, ptr @stdin");
+    }
     emit("  %result = call ptr @fgets(ptr %buf, i32 4096, ptr %stdin)");
     emit("  %slen = call i64 @strlen(ptr %buf)");
     emit("  %has = icmp sgt i64 %slen, 0");
@@ -2133,7 +2140,11 @@ fn compile(stmts) {
     emit("declare i32 @fseek(ptr, i64, i32)");
     emit("declare i64 @ftell(ptr)");
     emit("declare ptr @fgets(ptr, i32, ptr)");
-    emit("declare ptr @__acrt_iob_func(i32)");
+    if (is_win[0] = 1) {
+        emit("declare ptr @__acrt_iob_func(i32)");
+    } else {
+        emit("@stdin = external global ptr");
+    }
     emit("");
 
 
@@ -2266,10 +2277,19 @@ fn compile(stmts) {
 //  MAIN — Read, lex, parse, compile, write, run clang
 // ═══════════════════════════════════════════
 
-// Get input filename from command line args
+// Detect platform: try "cmd /c exit 0" which only works on Windows
+is_win[0] <- 0;
+rc_detect <- exec_cmd("cmd /c exit 0 2>nul");
+if (rc_detect = 0) {
+    is_win[0] <- 1;
+} else {
+    // Clean up "nul" file created by redirect on Unix
+    exec_cmd("rm -f nul 2>/dev/null");
+}
+
 if (args() < 1) {
     print("Usage: arrow <file.arrow> [-o output]");
-    print("  Compiles an Arrow Lang source file to a native executable.");
+    print("  Compiles Arrow Lang source to a native executable.");
 }
 
 if (args() > 0) {
@@ -2292,11 +2312,11 @@ if (args() > 0) {
         }
     }
 
-    // Set output filenames
+    // Set output filenames (platform-dependent extension)
     if (out_name != "") {
         exe_file <- out_name;
-        // Derive .ll base from output name (strip .exe if present)
         ll_base <- out_name;
+        // Strip .exe if present
         if (str_len(out_name) > 4) {
             ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
             if (ext = ".exe") {
@@ -2306,32 +2326,36 @@ if (args() > 0) {
         ll_file <- ll_base + ".ll";
     } else {
         ll_file <- base_name + ".ll";
-        exe_file <- base_name + ".exe";
+        if (is_win[0] = 1) {
+            exe_file <- base_name + ".exe";
+        } else {
+            exe_file <- base_name;
+        }
     }
-
 
     source <- read_file(input_file);
 
-
-    // Lex & parse
     toks <- tokenize(source);
-
     pos[0] <- 0;
     ast <- pp();
-
-    // Compile to IR
     compile(ast);
-
-    // Write .ll file
     write_ir_lines(ll_file);
 
-    // Run clang
-    clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+    // Build clang command (platform-dependent flags)
+    if (is_win[0] = 1) {
+        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+    } else {
+        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
+    }
     rc <- exec_cmd(clang_cmd);
     if (rc = 0) {
         print("Compiled " + exe_file + " successfully!");
-        // Clean up intermediate .ll file
-        exec_cmd("del " + ll_file);
+        // Clean up .ll file (platform-dependent delete command)
+        if (is_win[0] = 1) {
+            exec_cmd("del " + ll_file);
+        } else {
+            exec_cmd("rm " + ll_file);
+        }
     } else {
         print("Clang failed with exit code " + rc);
         print("IR written to " + ll_file);
