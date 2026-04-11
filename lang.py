@@ -779,7 +779,7 @@ class Struct:
         return "{" + ", ".join(f"{k}: ..." for k in self._fields) + "}"
 
 
-BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input",
+BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
             "exec_cmd", "args"}
 
@@ -1006,6 +1006,21 @@ class Interpreter:
                     return f.write(content)
             except Exception as e:
                 raise RuntimeError_(f"Error writing file: {e}")
+
+        elif name == "append_file":
+            if len(args) != 2:
+                raise RuntimeError_("append_file() takes exactly 2 arguments")
+            path = self._eval(args[0])
+            content = self._eval(args[1])
+            if not isinstance(path, str):
+                raise RuntimeError_("append_file() requires a string path")
+            if not isinstance(content, str):
+                content = self._format(content)
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    return f.write(content)
+            except Exception as e:
+                raise RuntimeError_(f"Error appending to file: {e}")
 
         elif name == "input":
             if len(args) > 1:

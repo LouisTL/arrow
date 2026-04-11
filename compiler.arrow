@@ -122,10 +122,43 @@ fn ppm(){
 // ═══════════════════════════════════════════
 
 // Output buffer: array of lines
-ir <- [""]; // ir[0] holds current accumulated text
+ir_lines <- [""];  // init with "" so global type tracking knows it holds strings
 
 fn emit(s) {
-    ir[0] <- ir[0] + s + from_char_code(10);
+    push(ir_lines, s);
+}
+
+fn write_ir_lines(path) {
+    // Write IR directly to file in chunks without building one huge string
+    // First write truncates (wb), subsequent writes append (ab)
+    chunk <- "";
+    count <- 0;
+    first <- 1;
+    i <- 0;
+    while (i < len(ir_lines)) {
+        if (str_len(ir_lines[i]) > 0) {
+            chunk <- chunk + ir_lines[i] + from_char_code(10);
+            count <- count + 1;
+        }
+        if (count >= 200) {
+            if (first = 1) {
+                write_file(path, chunk);
+                first <- 0;
+            } else {
+                append_file(path, chunk);
+            }
+            chunk <- "";
+            count <- 0;
+        }
+        i <- i + 1;
+    }
+    if (str_len(chunk) > 0) {
+        if (first = 1) {
+            write_file(path, chunk);
+        } else {
+            append_file(path, chunk);
+        }
+    }
 }
 
 // Counter for unique names
@@ -386,47 +419,67 @@ fn set_fn_param_type(fn_name, param_idx, ptype) {
 
 // Scan all statements for call sites to infer parameter types
 fn scan_call_sites(stmts) {
+    work <- [];
     i <- 0;
     while (i < len(stmts)) {
-        scan_call_sites_stmt(stmts[i]);
+        push(work, stmts[i]);
         i <- i + 1;
     }
+    wi <- 0;
+    while (wi < len(work)) {
+        nd <- work[wi];
+        wi <- wi + 1;
+        scs_handle(nd, work);
+    }
 }
 
-fn scan_call_sites_stmt(nd) {
-    if (nd.node = "Assignment") { scan_call_sites_expr(nd.expr); }
-    else if (nd.node = "PrintStmt") { scan_call_sites_expr(nd.expr); }
-    else if (nd.node = "ReturnStmt") { if (nd.expr != false) { scan_call_sites_expr(nd.expr); } }
-    else if (nd.node = "IfStmt") {
-        scan_call_sites_expr(nd.cond);
-        scan_call_sites(nd.then_body);
-        scan_call_sites(nd.else_body);
-    }
-    else if (nd.node = "WhileStmt") {
-        scan_call_sites_expr(nd.cond);
-        scan_call_sites(nd.body);
-    }
-    else if (nd.node = "ForInStmt") {
-        scan_call_sites_expr(nd.iterable);
-        scan_call_sites(nd.body);
-    }
-    else if (nd.node = "IndexAssign") {
-        scan_call_sites_expr(nd.obj);
-        scan_call_sites_expr(nd.index);
-        scan_call_sites_expr(nd.value);
-    }
-    else if (nd.node = "DotAssign") {
-        scan_call_sites_expr(nd.obj);
-        scan_call_sites_expr(nd.value);
-    }
-    else if (nd.node = "Block") { scan_call_sites(nd.stmts); }
-    else if (nd.node = "FnDecl") { scan_call_sites(nd.body); }
-    else { scan_call_sites_expr(nd); }
+fn scs_handle(nd, work) {
+    scs_stmt(nd, work);
+    scs_expr(nd, work);
 }
 
-fn scan_call_sites_expr(nd) {
+fn scs_stmt(nd, work) {
+    if (nd.node = "Assignment") { push(work, nd.expr); }
+    if (nd.node = "PrintStmt") { push(work, nd.expr); }
+    if (nd.node = "ReturnStmt") { if (nd.expr != false) { push(work, nd.expr); } }
+    if (nd.node = "IfStmt") {
+        push(work, nd.cond);
+        i <- 0;
+        while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
+        i <- 0;
+        while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
+    }
+    if (nd.node = "WhileStmt") {
+        push(work, nd.cond);
+        i <- 0;
+        while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+    }
+    if (nd.node = "ForInStmt") {
+        push(work, nd.iterable);
+        i <- 0;
+        while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+    }
+    if (nd.node = "IndexAssign") {
+        push(work, nd.obj);
+        push(work, nd.index);
+        push(work, nd.value);
+    }
+    if (nd.node = "DotAssign") {
+        push(work, nd.obj);
+        push(work, nd.value);
+    }
+    if (nd.node = "Block") {
+        i <- 0;
+        while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
+    }
+    if (nd.node = "FnDecl") {
+        i <- 0;
+        while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+    }
+}
+
+fn scs_expr(nd, work) {
     if (nd.node = "CallExpr") {
-        // Check if callee is a known function
         if (nd.callee.node = "Identifier") {
             fi <- find_fn(nd.callee.name);
             if (fi != false) {
@@ -441,27 +494,21 @@ fn scan_call_sites_expr(nd) {
                 }
             }
         }
-        // Always recurse into args (even for builtins)
         j <- 0;
-        while (j < len(nd.args)) {
-            scan_call_sites_expr(nd.args[j]);
-            j <- j + 1;
-        }
-        return false;
+        while (j < len(nd.args)) { push(work, nd.args[j]); j <- j + 1; }
     }
-    if (nd.node = "BinOp") { scan_call_sites_expr(nd.left); scan_call_sites_expr(nd.right); }
-    else if (nd.node = "UnaryOp") { scan_call_sites_expr(nd.operand); }
-    else if (nd.node = "ArrayLit") {
+    if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
+    if (nd.node = "UnaryOp") { push(work, nd.operand); }
+    if (nd.node = "ArrayLit") {
         j <- 0;
-        while (j < len(nd.elements)) { scan_call_sites_expr(nd.elements[j]); j <- j + 1; }
+        while (j < len(nd.elements)) { push(work, nd.elements[j]); j <- j + 1; }
     }
-    else if (nd.node = "IndexExpr") { scan_call_sites_expr(nd.obj); scan_call_sites_expr(nd.index); }
-    else if (nd.node = "DotExpr") { scan_call_sites_expr(nd.obj); }
-    else if (nd.node = "StructLit") {
+    if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
+    if (nd.node = "DotExpr") { push(work, nd.obj); }
+    if (nd.node = "StructLit") {
         j <- 0;
-        while (j < len(nd.fields)) { scan_call_sites_expr(nd.fields[j].val); j <- j + 1; }
+        while (j < len(nd.fields)) { push(work, nd.fields[j].val); j <- j + 1; }
     }
-    return false;
 }
 
 // ── Typed result helpers ────────────────
@@ -558,15 +605,6 @@ fn scan_globals_list(stmts) {
     }
 }
 
-// ── Collect all variables used in a function body ──
-fn collect_vars(stmts, vars) {
-    i <- 0;
-    while (i < len(stmts)) {
-        collect_vars_stmt(stmts[i], vars);
-        i <- i + 1;
-    }
-}
-
 fn var_exists(vars, name) {
     i <- 0;
     while (i < len(vars)) {
@@ -576,59 +614,87 @@ fn var_exists(vars, name) {
     return false;
 }
 
-fn collect_vars_stmt(nd, vars) {
-    if (nd.node = "Assignment") {
-        if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
-        collect_vars_expr(nd.expr, vars);
+// ── Collect all variables used in a function body ──
+// Split into small handler functions to avoid large-function crashes
+fn collect_vars(stmts, vars) {
+    work <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        push(work, stmts[i]);
+        i <- i + 1;
     }
-    else if (nd.node = "PrintStmt") { collect_vars_expr(nd.expr, vars); }
-    else if (nd.node = "IfStmt") {
-        collect_vars_expr(nd.cond, vars);
-        collect_vars(nd.then_body, vars);
-        collect_vars(nd.else_body, vars);
+    wi <- 0;
+    while (wi < len(work)) {
+        nd <- work[wi];
+        wi <- wi + 1;
+        cv_handle(nd, work, vars);
     }
-    else if (nd.node = "WhileStmt") {
-        collect_vars_expr(nd.cond, vars);
-        collect_vars(nd.body, vars);
-    }
-    else if (nd.node = "ForInStmt") {
-        if (!var_exists(vars, nd.var_name)) { push(vars, nd.var_name); }
-        collect_vars_expr(nd.iterable, vars);
-        collect_vars(nd.body, vars);
-    }
-    else if (nd.node = "ReturnStmt") {
-        if (nd.expr != false) { collect_vars_expr(nd.expr, vars); }
-    }
-    else if (nd.node = "Block") { collect_vars(nd.stmts, vars); }
-    else if (nd.node = "IndexAssign") {
-        collect_vars_expr(nd.obj, vars);
-        collect_vars_expr(nd.index, vars);
-        collect_vars_expr(nd.value, vars);
-    }
-    else if (nd.node = "DotAssign") {
-        collect_vars_expr(nd.obj, vars);
-        collect_vars_expr(nd.value, vars);
-    }
-    else { collect_vars_expr(nd, vars); }
 }
 
-fn collect_vars_expr(nd, vars) {
-    if (nd.node = "BinOp") { collect_vars_expr(nd.left, vars); collect_vars_expr(nd.right, vars); }
-    else if (nd.node = "UnaryOp") { collect_vars_expr(nd.operand, vars); }
-    else if (nd.node = "CallExpr") {
-        collect_vars_expr(nd.callee, vars);
-        i <- 0;
-        while (i < len(nd.args)) { collect_vars_expr(nd.args[i], vars); i <- i + 1; }
+fn cv_handle(nd, work, vars) {
+    cv_stmt(nd, work, vars);
+    cv_expr(nd, work, vars);
+}
+
+fn cv_stmt(nd, work, vars) {
+    if (nd.node = "Assignment") {
+        if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
+        push(work, nd.expr);
     }
-    else if (nd.node = "ArrayLit") {
-        i <- 0;
-        while (i < len(nd.elements)) { collect_vars_expr(nd.elements[i], vars); i <- i + 1; }
+    if (nd.node = "PrintStmt") { push(work, nd.expr); }
+    if (nd.node = "ReturnStmt") {
+        if (nd.expr != false) { push(work, nd.expr); }
     }
-    else if (nd.node = "IndexExpr") { collect_vars_expr(nd.obj, vars); collect_vars_expr(nd.index, vars); }
-    else if (nd.node = "DotExpr") { collect_vars_expr(nd.obj, vars); }
-    else if (nd.node = "StructLit") {
+    if (nd.node = "IfStmt") {
+        push(work, nd.cond);
         i <- 0;
-        while (i < len(nd.fields)) { collect_vars_expr(nd.fields[i].val, vars); i <- i + 1; }
+        while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
+        i <- 0;
+        while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
+    }
+    if (nd.node = "WhileStmt") {
+        push(work, nd.cond);
+        i <- 0;
+        while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+    }
+    if (nd.node = "ForInStmt") {
+        if (!var_exists(vars, nd.var_name)) { push(vars, nd.var_name); }
+        push(work, nd.iterable);
+        i <- 0;
+        while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+    }
+    if (nd.node = "Block") {
+        i <- 0;
+        while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
+    }
+    if (nd.node = "IndexAssign") {
+        push(work, nd.obj);
+        push(work, nd.index);
+        push(work, nd.value);
+    }
+    if (nd.node = "DotAssign") {
+        push(work, nd.obj);
+        push(work, nd.value);
+    }
+}
+
+fn cv_expr(nd, work, vars) {
+    if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
+    if (nd.node = "UnaryOp") { push(work, nd.operand); }
+    if (nd.node = "CallExpr") {
+        push(work, nd.callee);
+        i <- 0;
+        while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
+    }
+    if (nd.node = "ArrayLit") {
+        i <- 0;
+        while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
+    }
+    if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
+    if (nd.node = "DotExpr") { push(work, nd.obj); }
+    if (nd.node = "StructLit") {
+        i <- 0;
+        while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
     }
 }
 
@@ -1094,6 +1160,19 @@ fn emit_call(nd) {
             return tv_int(r);
         }
 
+        // Builtin append_file
+        if (nm = "append_file") {
+            vt_path <- emit_expr(nd.args[0]);
+            vt_content <- emit_expr(nd.args[1]);
+            pp <- fresh("%afp");
+            cp <- fresh("%afc");
+            r <- fresh("%afr");
+            emit("  " + pp + " = inttoptr i64 " + vt_path.reg + " to ptr");
+            emit("  " + cp + " = inttoptr i64 " + vt_content.reg + " to ptr");
+            emit("  " + r + " = call i64 @arrow_append_file(ptr " + pp + ", ptr " + cp + ")");
+            return tv_int(r);
+        }
+
         // Builtin exec_cmd
         if (nm = "exec_cmd") {
             vt <- emit_expr(nd.args[0]);
@@ -1161,7 +1240,7 @@ fn emit_array_lit(nd) {
     // Layout: i64* with [length, capacity, elements...]
     n <- len(nd.elements);
     cap <- n;
-    if (cap < 256) { cap <- 256; }
+    if (cap < 4096) { cap <- 4096; }
     total <- 2 + cap; // len + cap + elements
     sz <- fresh("%asz");
     ap <- fresh("%aptr");
@@ -1881,6 +1960,24 @@ fn emit_write_file_helper() {
     emit("");
 }
 
+fn emit_append_file_helper() {
+    emit("define i64 @arrow_append_file(ptr %path, ptr %content) {");
+    emit("entry:");
+    emit("  %fp = call ptr @fopen(ptr %path, ptr @.str.ab)");
+    emit("  %fpv = ptrtoint ptr %fp to i64");
+    emit("  %is_null = icmp eq i64 %fpv, 0");
+    emit("  br i1 %is_null, label %fail, label %ok");
+    emit("fail:");
+    emit("  ret i64 0");
+    emit("ok:");
+    emit("  %slen = call i64 @strlen(ptr %content)");
+    emit("  %written = call i64 @fwrite(ptr %content, i64 1, i64 %slen, ptr %fp)");
+    emit("  call i32 @fclose(ptr %fp)");
+    emit("  ret i64 %written");
+    emit("}");
+    emit("");
+}
+
 // ── Emit input helper ───────────────────
 
 fn emit_input_helper() {
@@ -1979,6 +2076,7 @@ fn compile(stmts) {
     emit_itoa_helper();
     emit_read_file_helper();
     emit_write_file_helper();
+    emit_append_file_helper();
     emit_input_helper();
 
     // Emit main with argc/argv for command line arg support
@@ -1995,13 +2093,15 @@ fn compile(stmts) {
 
     // Collect all top-level vars
     vars <- [];
+    top_stmts <- [];
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node != "FnDecl") {
-            collect_vars_stmt(stmts[i], vars);
+            push(top_stmts, stmts[i]);
         }
         i <- i + 1;
     }
+    collect_vars(top_stmts, vars);
 
 
     // Alloca all (skip globals — they're already emitted)
@@ -2042,6 +2142,7 @@ fn compile(stmts) {
     // File mode strings
     emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
     emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
 
     i <- 0;
     while (i < len(str_constants)) {
@@ -2079,23 +2180,27 @@ if (args() > 0) {
     ll_file <- base_name + ".ll";
     exe_file <- base_name + ".exe";
 
+
     source <- read_file(input_file);
+
 
     // Lex & parse
     toks <- tokenize(source);
+
     pos[0] <- 0;
     ast <- pp();
 
     // Compile to IR
     compile(ast);
 
-    // Write .ll file
-    write_file(ll_file, ir[0]);
-    print("Wrote " + ll_file + " (" + len(str_constants) + " string constants)");
+    // Write .ll file in chunks (avoids building one huge string)
+    write_ir_lines(ll_file);
+    print("Wrote " + ll_file);
 
     // Run clang
     print("Running clang...");
-    rc <- exec_cmd("clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module");
+    clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+    rc <- exec_cmd(clang_cmd);
     if (rc = 0) {
         print("Compiled " + exe_file + " successfully!");
     } else {
