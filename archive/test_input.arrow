@@ -1,0 +1,17 @@
+// Test program for the self-hosted lexer
+x <- 42;
+name <- "Arrow";
+nums <- [1, 2, 3];
+
+fn add(a, b) {
+    return a + b;
+}
+
+if (x > 10) {
+    print("big: " + x);
+} else {
+    print("small");
+}
+
+result <- add(x, 8);
+print(result);

@@ -1163,7 +1163,7 @@ def compile_to_executable(llvm_ir, output_path):
     with tempfile.NamedTemporaryFile(suffix=".ll", mode="w", delete=False) as f:
         f.write(llvm_ir); ir_path = f.name
     try:
-        subprocess.run(["clang", ir_path, "-o", output_path, "-O2"],
+        subprocess.run(["clang", ir_path, "-o", output_path, "-O2", "-Wno-override-module"],
                        check=True, capture_output=True, text=True)
         print(f"Compiled to: {output_path}")
     except FileNotFoundError: print("Error: 'clang' not found."); sys.exit(1)

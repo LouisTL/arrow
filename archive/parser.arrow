@@ -1,0 +1,689 @@
+// ═══════════════════════════════════════════
+//  Arrow Lang — Self-Hosted Parser
+//  Uses array-boxed globals for mutable state.
+// ═══════════════════════════════════════════
+
+// ── Lexer (compact) ─────────────────────
+
+fn is_digit(c) { return c >= 48 && c <= 57; }
+fn is_alpha(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c = 95; }
+fn is_alnum(c) { return is_digit(c) || is_alpha(c); }
+fn is_ws(c) { return c = 32 || c = 9 || c = 10 || c = 13; }
+
+fn make_token(type, value, line, col) {
+    return {type: type, value: value, line: line, col: col};
+}
+
+fn is_keyword(word) {
+    if (word = "if") { return true; } if (word = "else") { return true; }
+    if (word = "while") { return true; } if (word = "for") { return true; }
+    if (word = "in") { return true; } if (word = "print") { return true; }
+    if (word = "fn") { return true; } if (word = "return") { return true; }
+    if (word = "true") { return true; } if (word = "false") { return true; }
+    return false;
+}
+
+fn tokenize(source) {
+    tokens <- [];
+    pos <- 0; line <- 1; col <- 1;
+    slen <- str_len(source);
+    while (pos < slen) {
+        ch <- char_code(char_at(source, pos));
+        if (is_ws(ch)) {
+            if (ch = 10) { line <- line + 1; col <- 1; } else { col <- col + 1; }
+            pos <- pos + 1;
+        } else if (ch = 47 && pos + 1 < slen && char_code(char_at(source, pos + 1)) = 47) {
+            while (pos < slen && char_code(char_at(source, pos)) != 10) { pos <- pos + 1; }
+        } else if (is_digit(ch)) {
+            start <- pos; sc <- col;
+            while (pos < slen && is_digit(char_code(char_at(source, pos)))) { pos <- pos + 1; col <- col + 1; }
+            push(tokens, make_token("NUMBER", substring(source, start, pos), line, sc));
+        } else if (ch = 34) {
+            sc <- col; pos <- pos + 1; col <- col + 1; sv <- "";
+            while (pos < slen && char_code(char_at(source, pos)) != 34) {
+                c <- char_at(source, pos);
+                if (c = "\\") {
+                    pos <- pos + 1; col <- col + 1; nxt <- char_at(source, pos);
+                    if (nxt = "n") { sv <- sv + from_char_code(10); }
+                    else if (nxt = "t") { sv <- sv + from_char_code(9); }
+                    else if (nxt = "\\") { sv <- sv + "\\"; }
+                    else if (nxt = from_char_code(34)) { sv <- sv + from_char_code(34); }
+                    else { sv <- sv + nxt; }
+                } else { sv <- sv + c; }
+                pos <- pos + 1; col <- col + 1;
+            }
+            pos <- pos + 1; col <- col + 1;
+            push(tokens, make_token("STRING", sv, line, sc));
+        } else if (is_alpha(ch)) {
+            start <- pos; sc <- col;
+            while (pos < slen && is_alnum(char_code(char_at(source, pos)))) { pos <- pos + 1; col <- col + 1; }
+            word <- substring(source, start, pos);
+            if (word = "true" || word = "false") { push(tokens, make_token("BOOL", word, line, sc)); }
+            else if (is_keyword(word)) { push(tokens, make_token(word, word, line, sc)); }
+            else { push(tokens, make_token("IDENT", word, line, sc)); }
+        }
+        else if (ch=60 && pos+1<slen && char_code(char_at(source,pos+1))=45) { push(tokens, make_token("ARROW","<-",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=61 && pos+1<slen && char_code(char_at(source,pos+1))=62) { push(tokens, make_token("FAT_ARROW","=>",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=60 && pos+1<slen && char_code(char_at(source,pos+1))=61) { push(tokens, make_token("LTE","<=",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=62 && pos+1<slen && char_code(char_at(source,pos+1))=61) { push(tokens, make_token("GTE",">=",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=33 && pos+1<slen && char_code(char_at(source,pos+1))=61) { push(tokens, make_token("NEQ","!=",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=38 && pos+1<slen && char_code(char_at(source,pos+1))=38) { push(tokens, make_token("AND","&&",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=124 && pos+1<slen && char_code(char_at(source,pos+1))=124) { push(tokens, make_token("OR","||",line,col)); pos<-pos+2; col<-col+2; }
+        else if (ch=43) { push(tokens, make_token("PLUS","+",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=45) { push(tokens, make_token("MINUS","-",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=42) { push(tokens, make_token("STAR","*",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=47) { push(tokens, make_token("SLASH","/",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=37) { push(tokens, make_token("PERCENT","%",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=60) { push(tokens, make_token("LT","<",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=62) { push(tokens, make_token("GT",">",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=33) { push(tokens, make_token("NOT","!",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=61) { push(tokens, make_token("EQ","=",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=46) { push(tokens, make_token("DOT",".",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=58) { push(tokens, make_token("COLON",":",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=40) { push(tokens, make_token("LPAREN","(",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=41) { push(tokens, make_token("RPAREN",")",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=123) { push(tokens, make_token("LBRACE","{",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=125) { push(tokens, make_token("RBRACE","}",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=91) { push(tokens, make_token("LBRACKET","[",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=93) { push(tokens, make_token("RBRACKET","]",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=59) { push(tokens, make_token("SEMI",";",line,col)); pos<-pos+1; col<-col+1; }
+        else if (ch=44) { push(tokens, make_token("COMMA",",",line,col)); pos<-pos+1; col<-col+1; }
+        else { print("Lex error: '" + from_char_code(ch) + "'"); pos<-pos+1; col<-col+1; }
+    }
+    push(tokens, make_token("EOF", "", line, col));
+    return tokens;
+}
+
+
+// ═══════════════════════════════════════════
+//  PARSER — uses boxed globals (arrays of 1)
+//  so functions can mutate shared state.
+// ═══════════════════════════════════════════
+
+// Boxed globals: use toks[0], pos[0]
+toks <- [];    // will hold the token array
+pos <- [0];    // parser position boxed in array
+
+fn cur_type() {
+    return toks[pos[0]].type;
+}
+
+fn cur_val() {
+    return toks[pos[0]].value;
+}
+
+fn cur_is(expected) {
+    return toks[pos[0]].type = expected;
+}
+
+fn peek_is(offset, expected) {
+    idx <- pos[0] + offset;
+    if (idx < len(toks)) {
+        return toks[idx].type = expected;
+    }
+    return false;
+}
+
+fn advance() {
+    pos[0] <- pos[0] + 1;
+}
+
+fn eat(expected) {
+    tok <- toks[pos[0]];
+    if (tok.type != expected) {
+        print("Parse error: expected " + expected + ", got " + tok.type + " at " + tok.line + ":" + tok.col);
+        return tok;
+    }
+    pos[0] <- pos[0] + 1;
+    return tok;
+}
+
+fn eat_val(expected) {
+    tok <- toks[pos[0]];
+    if (tok.type != expected) {
+        print("Parse error: expected " + expected + ", got " + tok.type);
+    }
+    pos[0] <- pos[0] + 1;
+    return tok.value;
+}
+
+// ── AST constructors ────────────────────
+
+fn num_lit(v) { return {node: "NumberLit", value: v}; }
+fn str_lit(v) { return {node: "StringLit", value: v}; }
+fn bool_lit(v) { return {node: "BoolLit", value: v}; }
+fn ident_node(n) { return {node: "Identifier", name: n}; }
+fn binop(op, l, r) { return {node: "BinOp", op: op, left: l, right: r}; }
+fn unaryop(op, e) { return {node: "UnaryOp", op: op, operand: e}; }
+fn call_node(c, a) { return {node: "CallExpr", callee: c, args: a}; }
+fn idx_node(o, i) { return {node: "IndexExpr", obj: o, index: i}; }
+fn dot_node(o, f) { return {node: "DotExpr", obj: o, field: f}; }
+fn arr_node(e) { return {node: "ArrayLit", elements: e}; }
+fn struct_node(f) { return {node: "StructLit", fields: f}; }
+fn arrow_node(p, b) { return {node: "ArrowFn", params: p, body: b}; }
+fn assign_node(n, e) { return {node: "Assignment", name: n, expr: e}; }
+fn print_node(e) { return {node: "PrintStmt", expr: e}; }
+fn ret_node(e) { return {node: "ReturnStmt", expr: e}; }
+fn if_node(c, t, e) { return {node: "IfStmt", cond: c, then_body: t, else_body: e}; }
+fn while_node(c, b) { return {node: "WhileStmt", cond: c, body: b}; }
+fn forin_node(v, it, b) { return {node: "ForInStmt", var_name: v, iterable: it, body: b}; }
+fn fn_node(n, p, b) { return {node: "FnDecl", name: n, params: p, body: b}; }
+fn idxassign_node(o, i, v) { return {node: "IndexAssign", obj: o, index: i, value: v}; }
+fn dotassign_node(o, f, v) { return {node: "DotAssign", obj: o, field: f, value: v}; }
+
+// ── Statement parsing ───────────────────
+
+fn parse_program() {
+    stmts <- [];
+    while (!cur_is("EOF")) {
+        push(stmts, parse_statement());
+    }
+    return stmts;
+}
+
+fn parse_statement() {
+    if (cur_is("fn"))     { return parse_fn_decl(); }
+    if (cur_is("return")) { return parse_return(); }
+    if (cur_is("if"))     { return parse_if(); }
+    if (cur_is("while"))  { return parse_while(); }
+    if (cur_is("for"))    { return parse_for_in(); }
+    if (cur_is("print"))  { return parse_print(); }
+
+    if (cur_is("LBRACE")) {
+        if (is_struct_lit()) {
+            expr <- parse_expression();
+            eat("SEMI");
+            return expr;
+        }
+        return parse_block();
+    }
+
+    if (cur_is("IDENT")) {
+        if (peek_is(1, "ARROW")) {
+            return parse_assignment();
+        }
+        if (peek_is(1, "LBRACKET") || peek_is(1, "DOT")) {
+            return parse_postfix_assign();
+        }
+    }
+
+    expr <- parse_expression();
+    eat("SEMI");
+    return expr;
+}
+
+fn is_struct_lit() {
+    if (peek_is(1, "RBRACE")) { return true; }
+    if (peek_is(1, "IDENT") && peek_is(2, "COLON")) { return true; }
+    if (peek_is(1, "STRING") && peek_is(2, "COLON")) { return true; }
+    return false;
+}
+
+fn parse_block() {
+    eat("LBRACE");
+    stmts <- [];
+    while (!cur_is("RBRACE")) {
+        push(stmts, parse_statement());
+    }
+    eat("RBRACE");
+    return stmts;
+}
+
+fn parse_assignment() {
+    name <- eat_val("IDENT");
+    eat("ARROW");
+    expr <- parse_expression();
+    eat("SEMI");
+    return assign_node(name, expr);
+}
+
+fn parse_postfix_assign() {
+    expr <- parse_expression();
+    if (cur_is("ARROW")) {
+        eat("ARROW");
+        val <- parse_expression();
+        eat("SEMI");
+        if (expr.node = "IndexExpr") {
+            return idxassign_node(expr.obj, expr.index, val);
+        }
+        if (expr.node = "DotExpr") {
+            return dotassign_node(expr.obj, expr.field, val);
+        }
+        print("Parse error: bad assignment target");
+        return expr;
+    }
+    eat("SEMI");
+    return expr;
+}
+
+fn parse_print() {
+    eat("print");
+    eat("LPAREN");
+    expr <- parse_expression();
+    eat("RPAREN");
+    eat("SEMI");
+    return print_node(expr);
+}
+
+fn parse_return() {
+    eat("return");
+    if (cur_is("SEMI")) {
+        eat("SEMI");
+        return ret_node(false);
+    }
+    expr <- parse_expression();
+    eat("SEMI");
+    return ret_node(expr);
+}
+
+fn parse_fn_decl() {
+    eat("fn");
+    name <- eat_val("IDENT");
+    params <- parse_params();
+    body <- parse_block();
+    return fn_node(name, params, body);
+}
+
+fn parse_params() {
+    eat("LPAREN");
+    params <- [];
+    if (!cur_is("RPAREN")) {
+        push(params, eat_val("IDENT"));
+        while (cur_is("COMMA")) {
+            eat("COMMA");
+            push(params, eat_val("IDENT"));
+        }
+    }
+    eat("RPAREN");
+    return params;
+}
+
+fn parse_if() {
+    eat("if");
+    eat("LPAREN");
+    cond <- parse_expression();
+    eat("RPAREN");
+    then_b <- parse_block();
+    else_b <- [];
+    if (cur_is("else")) {
+        eat("else");
+        if (cur_is("if")) {
+            else_b <- [parse_if()];
+        } else {
+            else_b <- parse_block();
+        }
+    }
+    return if_node(cond, then_b, else_b);
+}
+
+fn parse_while() {
+    eat("while");
+    eat("LPAREN");
+    cond <- parse_expression();
+    eat("RPAREN");
+    body <- parse_block();
+    return while_node(cond, body);
+}
+
+fn parse_for_in() {
+    eat("for");
+    eat("LPAREN");
+    vname <- eat_val("IDENT");
+    eat("in");
+    iter <- parse_expression();
+    eat("RPAREN");
+    body <- parse_block();
+    return forin_node(vname, iter, body);
+}
+
+// ── Expression parsing ──────────────────
+
+fn parse_expression() {
+    if (cur_is("LPAREN") && is_arrow_fn()) {
+        return parse_arrow_fn();
+    }
+    return parse_or();
+}
+
+fn is_arrow_fn() {
+    depth <- 0;
+    i <- pos[0];
+    while (i < len(toks)) {
+        t <- toks[i].type;
+        if (t = "LPAREN") { depth <- depth + 1; }
+        else if (t = "RPAREN") {
+            depth <- depth - 1;
+            if (depth = 0) {
+                if (i + 1 < len(toks)) {
+                    return toks[i + 1].type = "FAT_ARROW";
+                }
+                return false;
+            }
+        }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn parse_arrow_fn() {
+    params <- parse_params();
+    eat("FAT_ARROW");
+    if (cur_is("LBRACE") && !is_struct_lit()) {
+        body <- parse_block();
+        return arrow_node(params, body);
+    }
+    expr <- parse_expression();
+    return arrow_node(params, expr);
+}
+
+fn parse_or() {
+    left <- parse_and();
+    while (cur_is("OR")) {
+        eat("OR");
+        left <- binop("||", left, parse_and());
+    }
+    return left;
+}
+
+fn parse_and() {
+    left <- parse_equality();
+    while (cur_is("AND")) {
+        eat("AND");
+        left <- binop("&&", left, parse_equality());
+    }
+    return left;
+}
+
+fn parse_equality() {
+    left <- parse_comparison();
+    while (cur_is("EQ") || cur_is("NEQ")) {
+        op <- cur_val();
+        advance();
+        left <- binop(op, left, parse_comparison());
+    }
+    return left;
+}
+
+fn parse_comparison() {
+    left <- parse_addition();
+    while (cur_is("LT") || cur_is("GT") || cur_is("LTE") || cur_is("GTE")) {
+        op <- cur_val();
+        advance();
+        left <- binop(op, left, parse_addition());
+    }
+    return left;
+}
+
+fn parse_addition() {
+    left <- parse_multiplication();
+    while (cur_is("PLUS") || cur_is("MINUS")) {
+        op <- cur_val();
+        advance();
+        left <- binop(op, left, parse_multiplication());
+    }
+    return left;
+}
+
+fn parse_multiplication() {
+    left <- parse_unary();
+    while (cur_is("STAR") || cur_is("SLASH") || cur_is("PERCENT")) {
+        op <- cur_val();
+        advance();
+        left <- binop(op, left, parse_unary());
+    }
+    return left;
+}
+
+fn parse_unary() {
+    if (cur_is("MINUS")) {
+        advance();
+        return unaryop("-", parse_unary());
+    }
+    if (cur_is("NOT")) {
+        advance();
+        return unaryop("!", parse_unary());
+    }
+    return parse_postfix();
+}
+
+fn parse_postfix() {
+    expr <- parse_primary();
+    done <- false;
+    while (!done) {
+        if (cur_is("LPAREN")) {
+            eat("LPAREN");
+            args <- [];
+            if (!cur_is("RPAREN")) {
+                push(args, parse_expression());
+                while (cur_is("COMMA")) {
+                    eat("COMMA");
+                    push(args, parse_expression());
+                }
+            }
+            eat("RPAREN");
+            expr <- call_node(expr, args);
+        } else if (cur_is("LBRACKET")) {
+            eat("LBRACKET");
+            idx <- parse_expression();
+            eat("RBRACKET");
+            expr <- idx_node(expr, idx);
+        } else if (cur_is("DOT")) {
+            eat("DOT");
+            field <- eat_val("IDENT");
+            expr <- dot_node(expr, field);
+        } else {
+            done <- true;
+        }
+    }
+    return expr;
+}
+
+fn parse_primary() {
+    if (cur_is("NUMBER")) {
+        v <- cur_val();
+        advance();
+        return num_lit(v);
+    }
+    if (cur_is("STRING")) {
+        v <- cur_val();
+        advance();
+        return str_lit(v);
+    }
+    if (cur_is("BOOL")) {
+        v <- cur_val();
+        advance();
+        return bool_lit(v);
+    }
+    if (cur_is("IDENT")) {
+        v <- cur_val();
+        advance();
+        return ident_node(v);
+    }
+    if (cur_is("LBRACKET")) {
+        return parse_array_lit();
+    }
+    if (cur_is("LBRACE")) {
+        return parse_struct_lit();
+    }
+    if (cur_is("LPAREN")) {
+        eat("LPAREN");
+        expr <- parse_expression();
+        eat("RPAREN");
+        return expr;
+    }
+
+    print("Parse error: unexpected " + cur_type() + " at " + toks[pos[0]].line + ":" + toks[pos[0]].col);
+    advance();
+    return num_lit("0");
+}
+
+fn parse_array_lit() {
+    eat("LBRACKET");
+    elems <- [];
+    if (!cur_is("RBRACKET")) {
+        push(elems, parse_expression());
+        while (cur_is("COMMA")) {
+            eat("COMMA");
+            push(elems, parse_expression());
+        }
+    }
+    eat("RBRACKET");
+    return arr_node(elems);
+}
+
+fn parse_struct_lit() {
+    eat("LBRACE");
+    fields <- [];
+    if (!cur_is("RBRACE")) {
+        key <- "";
+        if (cur_is("STRING")) { key <- eat_val("STRING"); }
+        else { key <- eat_val("IDENT"); }
+        eat("COLON");
+        val <- parse_expression();
+        push(fields, {key: key, val: val});
+        while (cur_is("COMMA")) {
+            eat("COMMA");
+            if (cur_is("RBRACE")) { eat("RBRACE"); return struct_node(fields); }
+            if (cur_is("STRING")) { key <- eat_val("STRING"); }
+            else { key <- eat_val("IDENT"); }
+            eat("COLON");
+            val <- parse_expression();
+            push(fields, {key: key, val: val});
+        }
+    }
+    eat("RBRACE");
+    return struct_node(fields);
+}
+
+
+// ═══════════════════════════════════════════
+//  AST PRINTER
+// ═══════════════════════════════════════════
+
+fn pad(d) {
+    s <- "";
+    i <- 0;
+    while (i < d) { s <- s + "  "; i <- i + 1; }
+    return s;
+}
+
+fn print_ast(n, d) {
+    p <- pad(d);
+    if (n.node = "NumberLit") { print(p + "Num(" + n.value + ")"); }
+    else if (n.node = "StringLit") { print(p + "Str(\"" + n.value + "\")"); }
+    else if (n.node = "BoolLit") { print(p + "Bool(" + n.value + ")"); }
+    else if (n.node = "Identifier") { print(p + "Id(" + n.name + ")"); }
+    else if (n.node = "BinOp") {
+        print(p + "BinOp(" + n.op + ")");
+        print_ast(n.left, d + 1);
+        print_ast(n.right, d + 1);
+    }
+    else if (n.node = "UnaryOp") {
+        print(p + "Unary(" + n.op + ")");
+        print_ast(n.operand, d + 1);
+    }
+    else if (n.node = "CallExpr") {
+        print(p + "Call");
+        print_ast(n.callee, d + 1);
+        i <- 0;
+        while (i < len(n.args)) { print_ast(n.args[i], d + 1); i <- i + 1; }
+    }
+    else if (n.node = "IndexExpr") {
+        print(p + "Index");
+        print_ast(n.obj, d + 1);
+        print_ast(n.index, d + 1);
+    }
+    else if (n.node = "DotExpr") {
+        print(p + "Dot(." + n.field + ")");
+        print_ast(n.obj, d + 1);
+    }
+    else if (n.node = "ArrayLit") {
+        print(p + "Array");
+        i <- 0;
+        while (i < len(n.elements)) { print_ast(n.elements[i], d + 1); i <- i + 1; }
+    }
+    else if (n.node = "StructLit") {
+        print(p + "Struct");
+        i <- 0;
+        while (i < len(n.fields)) {
+            f <- n.fields[i];
+            print(p + "  " + f.key + ":");
+            print_ast(f.val, d + 2);
+            i <- i + 1;
+        }
+    }
+    else if (n.node = "Assignment") {
+        print(p + "Assign(" + n.name + ")");
+        print_ast(n.expr, d + 1);
+    }
+    else if (n.node = "PrintStmt") {
+        print(p + "Print");
+        print_ast(n.expr, d + 1);
+    }
+    else if (n.node = "ReturnStmt") {
+        print(p + "Return");
+        if (n.expr != false) { print_ast(n.expr, d + 1); }
+    }
+    else if (n.node = "IfStmt") {
+        print(p + "If");
+        print_ast(n.cond, d + 1);
+        print(p + "  then:");
+        i <- 0;
+        while (i < len(n.then_body)) { print_ast(n.then_body[i], d + 2); i <- i + 1; }
+        if (len(n.else_body) > 0) {
+            print(p + "  else:");
+            i <- 0;
+            while (i < len(n.else_body)) { print_ast(n.else_body[i], d + 2); i <- i + 1; }
+        }
+    }
+    else if (n.node = "WhileStmt") {
+        print(p + "While");
+        print_ast(n.cond, d + 1);
+        i <- 0;
+        while (i < len(n.body)) { print_ast(n.body[i], d + 1); i <- i + 1; }
+    }
+    else if (n.node = "ForInStmt") {
+        print(p + "ForIn(" + n.var_name + ")");
+        print_ast(n.iterable, d + 1);
+        i <- 0;
+        while (i < len(n.body)) { print_ast(n.body[i], d + 1); i <- i + 1; }
+    }
+    else if (n.node = "FnDecl") {
+        print(p + "Fn(" + n.name + ")");
+        i <- 0;
+        while (i < len(n.body)) { print_ast(n.body[i], d + 1); i <- i + 1; }
+    }
+    else if (n.node = "ArrowFn") {
+        print(p + "ArrowFn");
+    }
+    else if (n.node = "IndexAssign") {
+        print(p + "IdxAssign");
+        print_ast(n.obj, d + 1);
+        print_ast(n.index, d + 1);
+        print_ast(n.value, d + 1);
+    }
+    else if (n.node = "DotAssign") {
+        print(p + "DotAssign(." + n.field + ")");
+        print_ast(n.obj, d + 1);
+        print_ast(n.value, d + 1);
+    }
+    else { print(p + "?(" + n.node + ")"); }
+}
+
+
+// ═══════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════
+
+source <- read_file("test_input.arrow");
+toks <- tokenize(source);
+pos[0] <- 0;
+ast <- parse_program();
+
+print("=== AST ===");
+i <- 0;
+while (i < len(ast)) {
+    print_ast(ast[i], 0);
+    i <- i + 1;
+}
+print("=== " + len(ast) + " statements ===");

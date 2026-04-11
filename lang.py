@@ -779,8 +779,9 @@ class Struct:
         return "{" + ", ".join(f"{k}: ..." for k in self._fields) + "}"
 
 
-BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "input",
-            "char_code", "from_char_code", "substring", "char_at", "str_len"}
+BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
+            "char_code", "from_char_code", "substring", "char_at", "str_len",
+            "exec_cmd", "args"}
 
 
 class Interpreter:
@@ -1006,6 +1007,21 @@ class Interpreter:
             except Exception as e:
                 raise RuntimeError_(f"Error writing file: {e}")
 
+        elif name == "append_file":
+            if len(args) != 2:
+                raise RuntimeError_("append_file() takes exactly 2 arguments")
+            path = self._eval(args[0])
+            content = self._eval(args[1])
+            if not isinstance(path, str):
+                raise RuntimeError_("append_file() requires a string path")
+            if not isinstance(content, str):
+                content = self._format(content)
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    return f.write(content)
+            except Exception as e:
+                raise RuntimeError_(f"Error appending to file: {e}")
+
         elif name == "input":
             if len(args) > 1:
                 raise RuntimeError_("input() takes 0 or 1 arguments")
@@ -1013,6 +1029,35 @@ class Interpreter:
                 prompt = self._eval(args[0])
                 return input(self._format(prompt))
             return input()
+
+        elif name == "exec_cmd":
+            if len(args) != 1:
+                raise RuntimeError_("exec_cmd() takes exactly 1 argument")
+            cmd = self._eval(args[0])
+            if not isinstance(cmd, str):
+                raise RuntimeError_("exec_cmd() requires a string command")
+            import subprocess
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.stdout:
+                print(result.stdout, end='')
+            if result.stderr:
+                print(result.stderr, end='', file=__import__('sys').stderr)
+            return result.returncode
+
+        elif name == "args":
+            import sys
+            if len(args) == 0:
+                # Return number of script arguments (excluding interpreter and script file)
+                # sys.argv = ['lang.py', 'compiler.arrow', arg1, arg2, ...]
+                return len(sys.argv) - 2
+            idx = self._eval(args[0])
+            if not isinstance(idx, int):
+                raise RuntimeError_("args() index must be an integer")
+            # args(0) = first argument after the script file
+            actual_idx = idx + 2  # skip 'lang.py' and the script filename
+            if actual_idx < 0 or actual_idx >= len(sys.argv):
+                return ""
+            return sys.argv[actual_idx]
 
         elif name == "char_code":
             if len(args) != 1:
@@ -1066,6 +1111,17 @@ class Interpreter:
         raise RuntimeError_(f"Unknown builtin: {name}")
 
     def _eval_binop(self, op: str, left, right) -> Any:
+        # Short-circuit && and || — must not evaluate right side eagerly
+        if op == '&&':
+            lv = self._eval(left)
+            if not self._truthy(lv):
+                return False
+            return self._truthy(self._eval(right))
+        if op == '||':
+            lv = self._eval(left)
+            if self._truthy(lv):
+                return lv
+            return self._eval(right)
         lv = self._eval(left)
         rv = self._eval(right)
         match op:
@@ -1089,8 +1145,6 @@ class Interpreter:
             case '>=': return lv >= rv
             case '=':  return lv == rv
             case '!=': return lv != rv
-            case '&&': return self._truthy(lv) and self._truthy(rv)
-            case '||': return self._truthy(lv) or self._truthy(rv)
             case _: raise RuntimeError_(f"Unknown operator: {op}")
 
     def _truthy(self, val) -> bool:
