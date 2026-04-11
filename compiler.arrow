@@ -429,13 +429,14 @@ fn scan_call_sites(stmts) {
     while (wi < len(work)) {
         nd <- work[wi];
         wi <- wi + 1;
-        scs_handle(nd, work);
+        work <- scs_handle(nd, work);
     }
 }
 
 fn scs_handle(nd, work) {
-    scs_stmt(nd, work);
-    scs_expr(nd, work);
+    work <- scs_stmt(nd, work);
+    work <- scs_expr(nd, work);
+    return work;
 }
 
 fn scs_stmt(nd, work) {
@@ -476,6 +477,7 @@ fn scs_stmt(nd, work) {
         i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
+    return work;
 }
 
 fn scs_expr(nd, work) {
@@ -509,6 +511,7 @@ fn scs_expr(nd, work) {
         j <- 0;
         while (j < len(nd.fields)) { push(work, nd.fields[j].val); j <- j + 1; }
     }
+    return work;
 }
 
 // ── Typed result helpers ────────────────
@@ -811,8 +814,18 @@ fn emit_binop(nd) {
     else if (nd.op = ">=") { cmp_op <- "sge"; }
 
     if (cmp_op != "") {
-        // String comparison: use strcmp if either operand is a string
-        if (l.type = "str" || r.type = "str" || has_str) {
+        // Use strcmp when we're confident both sides are strings:
+        // 1. At least one side has tracked type "str" (from emit_expr), OR
+        // 2. Both sides are string expressions (DotExpr=DotExpr, DotExpr=StringLit, etc.)
+        // This avoids strcmp when one side might be an integer (false, 0, loop counter)
+        use_strcmp <- false;
+        if (l.type = "str" || r.type = "str") {
+            use_strcmp <- true;
+        }
+        if (l_is_str && r_is_str) {
+            use_strcmp <- true;
+        }
+        if (use_strcmp) {
             return emit_strcmp(l, r, cmp_op, has_str);
         }
         r1 <- fresh("%cmp");
@@ -881,7 +894,7 @@ fn emit_strcat(l, r, l_is_str_ast, r_is_str_ast) {
     buf <- fresh("%sbuf");
     emit("  " + tl + " = add i64 " + ll + ", " + rl);
     emit("  " + bs + " = add i64 " + tl + ", 1");
-    emit("  " + buf + " = call ptr @malloc(i64 " + bs + ")");
+    emit("  " + buf + " = call ptr @arena_alloc(i64 " + bs + ")");
 
     // strcpy + strcat
     emit("  call ptr @strcpy(ptr " + buf + ", ptr " + lp + ")");
@@ -1052,7 +1065,7 @@ fn emit_call(nd) {
             ch <- fresh("%fcch");
             r <- fresh("%fccr");
             np <- fresh("%fccn");
-            emit("  " + buf + " = call ptr @malloc(i64 2)");
+            emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
             emit("  " + ch + " = trunc i64 " + vt.reg + " to i8");
             emit("  store i8 " + ch + ", ptr " + buf);
             emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
@@ -1074,7 +1087,7 @@ fn emit_call(nd) {
             emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
             emit("  " + ep + " = getelementptr i8, ptr " + sp + ", i64 " + vt_i.reg);
             emit("  " + ch + " = load i8, ptr " + ep);
-            emit("  " + buf + " = call ptr @malloc(i64 2)");
+            emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
             emit("  store i8 " + ch + ", ptr " + buf);
             emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
             emit("  store i8 0, ptr " + np);
@@ -1095,7 +1108,7 @@ fn emit_call(nd) {
             emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
             emit("  " + sl + " = sub i64 " + vt_end.reg + ", " + vt_start.reg);
             emit("  " + bs + " = add i64 " + sl + ", 1");
-            emit("  " + buf + " = call ptr @malloc(i64 " + bs + ")");
+            emit("  " + buf + " = call ptr @arena_alloc(i64 " + bs + ")");
             emit("  " + src + " = getelementptr i8, ptr " + sp + ", i64 " + vt_start.reg);
             // Copy loop
             idx_r <- fresh("%ssi");
@@ -1460,7 +1473,7 @@ fn emit_struct_lit(nd) {
     sz <- fresh("%ssz");
     sp <- fresh("%sptr");
     emit("  " + sz + " = mul i64 " + total + ", 8");
-    emit("  " + sp + " = call ptr @malloc(i64 " + sz + ")");
+    emit("  " + sp + " = call ptr @arena_alloc(i64 " + sz + ")");
 
     // Store count
     emit("  store i64 " + n + ", ptr " + sp);
@@ -1597,8 +1610,8 @@ fn emit_struct_find_helper() {
 fn emit_itoa_helper() {
     emit("define ptr @arrow_itoa(i64 %val) {");
     emit("entry:");
-    emit("  %buf = call ptr @malloc(i64 24)");
-    emit("  %tmp = call ptr @malloc(i64 24)");
+    emit("  %buf = call ptr @arena_alloc(i64 24)");
+    emit("  %tmp = call ptr @arena_alloc(i64 24)");
     emit("  %pos = alloca i64");
     emit("  %cur = alloca i64");
     emit("  %wp = alloca i64");
@@ -1670,7 +1683,6 @@ fn emit_itoa_helper() {
     emit("  %total = add i64 %w2, %len");
     emit("  %ep = getelementptr i8, ptr %buf, i64 %total");
     emit("  store i8 0, ptr %ep");
-    emit("  call void @free(ptr %tmp)");
     emit("  ret ptr %buf");
     emit("}");
     emit("");
@@ -1720,7 +1732,7 @@ fn emit_for_in(nd) {
         ri <- fresh("%fri");
         emit("  " + chp + " = getelementptr i8, ptr " + sp + ", i64 " + ci3);
         emit("  " + chv + " = load i8, ptr " + chp);
-        emit("  " + buf + " = call ptr @malloc(i64 2)");
+        emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
         emit("  store i8 " + chv + ", ptr " + buf);
         emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
         emit("  store i8 0, ptr " + np);
@@ -1868,6 +1880,43 @@ fn emit_function(nd) {
     current_fn[0] <- old_fn;
 }
 
+// ── Emit arena allocator helper ─────────
+
+fn emit_arena_helper() {
+    emit("@arena_base = global ptr null");
+    emit("@arena_offset = global i64 0");
+    emit("@arena_cap = global i64 0");
+    emit("");
+    emit("define void @arena_init(i64 %size) {");
+    emit("entry:");
+    emit("  %p = call ptr @malloc(i64 %size)");
+    emit("  store ptr %p, ptr @arena_base");
+    emit("  store i64 0, ptr @arena_offset");
+    emit("  store i64 %size, ptr @arena_cap");
+    emit("  ret void");
+    emit("}");
+    emit("");
+    emit("define ptr @arena_alloc(i64 %size) {");
+    emit("entry:");
+    emit("  %off = load i64, ptr @arena_offset");
+    emit("  %cap = load i64, ptr @arena_cap");
+    emit("  %s1 = add i64 %size, 7");
+    emit("  %aligned = and i64 %s1, -8");
+    emit("  %new_off = add i64 %off, %aligned");
+    emit("  %fits = icmp sle i64 %new_off, %cap");
+    emit("  br i1 %fits, label %bump, label %fallback");
+    emit("fallback:");
+    emit("  %fb = call ptr @malloc(i64 %aligned)");
+    emit("  ret ptr %fb");
+    emit("bump:");
+    emit("  %base = load ptr, ptr @arena_base");
+    emit("  %ptr = getelementptr i8, ptr %base, i64 %off");
+    emit("  store i64 %new_off, ptr @arena_offset");
+    emit("  ret ptr %ptr");
+    emit("}");
+    emit("");
+}
+
 // ── Emit push helper ────────────────────
 
 fn emit_push_helper() {
@@ -1922,7 +1971,7 @@ fn emit_read_file_helper() {
     emit("  %is_null = icmp eq i64 %fpv, 0");
     emit("  br i1 %is_null, label %fail, label %ok");
     emit("fail:");
-    emit("  %empty = call ptr @malloc(i64 1)");
+    emit("  %empty = call ptr @arena_alloc(i64 1)");
     emit("  store i8 0, ptr %empty");
     emit("  ret ptr %empty");
     emit("ok:");
@@ -2036,10 +2085,8 @@ fn compile(stmts) {
     // Pre-scan functions
     scan_fns(stmts);
 
-
     // Scan call sites to infer parameter types
     scan_call_sites(stmts);
-
 
     // Pre-scan top-level variables → emit as globals
     i <- 0;
@@ -2071,6 +2118,7 @@ fn compile(stmts) {
 
 
     // Emit helpers
+    emit_arena_helper();
     emit_push_helper();
     emit_struct_find_helper();
     emit_itoa_helper();
@@ -2089,6 +2137,7 @@ fn compile(stmts) {
     emit("  store i64 %argc64, ptr @g_argc");
     emit("  %argv64 = ptrtoint ptr %argv to i64");
     emit("  store i64 %argv64, ptr @g_argv");
+    emit("  call void @arena_init(i64 268435456)");
 
 
     // Collect all top-level vars
