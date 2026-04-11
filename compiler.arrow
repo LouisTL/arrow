@@ -238,7 +238,7 @@ alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
 var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 
 // Track global variables (top-level)
-global_vars <- []; // list of variable name strings
+global_vars <- [""]; // list of variable name strings (init with "" for type tracking)
 
 fn is_global(name) {
     i <- 0;
@@ -841,6 +841,10 @@ fn emit_binop(nd) {
 fn is_str_expr(nd) {
     if (nd.node = "StringLit") { return true; }
     if (nd.node = "DotExpr") { return true; }  // struct fields are usually strings in Arrow
+    if (nd.node = "IndexExpr") {
+        // Array element from a struct field (nd.params[i], nd.args[i], etc.)
+        if (nd.obj.node = "DotExpr") { return true; }
+    }
     if (nd.node = "BinOp") {
         if (nd.op = "+") {
             return is_str_expr(nd.left) || is_str_expr(nd.right);
@@ -921,10 +925,27 @@ fn emit_strcmp(l, r, cmp_op, has_str) {
     emit("  " + sc + " = call i32 @strcmp(ptr " + lp + ", ptr " + rp + ")");
 
     // strcmp returns <0, 0, >0 — compare against 0
-    // Map our cmp_op to the right icmp on i32
     r1 <- fresh("%scr");
     r2 <- fresh("%sce");
-    emit("  " + r1 + " = icmp " + cmp_op + " i32 " + sc + ", 0");
+    // Use if/else to avoid cmp_op string concat (param type not tracked as str)
+    if (cmp_op = "eq") {
+        emit("  " + r1 + " = icmp eq i32 " + sc + ", 0");
+    }
+    if (cmp_op = "ne") {
+        emit("  " + r1 + " = icmp ne i32 " + sc + ", 0");
+    }
+    if (cmp_op = "slt") {
+        emit("  " + r1 + " = icmp slt i32 " + sc + ", 0");
+    }
+    if (cmp_op = "sgt") {
+        emit("  " + r1 + " = icmp sgt i32 " + sc + ", 0");
+    }
+    if (cmp_op = "sle") {
+        emit("  " + r1 + " = icmp sle i32 " + sc + ", 0");
+    }
+    if (cmp_op = "sge") {
+        emit("  " + r1 + " = icmp sge i32 " + sc + ", 0");
+    }
     emit("  " + r2 + " = zext i1 " + r1 + " to i64");
     return tv_int(r2);
 }
@@ -1316,6 +1337,9 @@ fn emit_stmt(nd) {
             if (vt.fields != false) {
                 set_struct_layout(nd.name, vt.fields);
             }
+        } else if (vt.type = "int" && is_str_expr(nd.expr)) {
+            // DotExpr and IndexExpr-on-DotExpr return "int" but are usually string pointers
+            set_var_type(nd.name, "str");
         } else {
             set_var_type(nd.name, vt.type);
         }
@@ -1826,7 +1850,7 @@ fn emit_function(nd) {
     current_fn[0] <- nd.name;
 
     // Collect all variables used in body
-    vars <- [];
+    vars <- [""];  // init with "" for string element type tracking
     collect_vars(nd.body, vars);
 
     // Add params as vars
@@ -1838,12 +1862,14 @@ fn emit_function(nd) {
         i <- i + 1;
     }
 
-    // Alloca all variables
+    // Alloca all variables (skip empty sentinel)
     i <- 0;
     while (i < len(vars)) {
-        reg <- "%" + vars[i];
-        push(alloc_vars[0], {name: vars[i], reg: reg});
-        emit("  " + reg + " = alloca i64");
+        if (vars[i] != "") {
+            reg <- "%" + vars[i];
+            push(alloc_vars[0], {name: vars[i], reg: reg});
+            emit("  " + reg + " = alloca i64");
+        }
         i <- i + 1;
     }
 
@@ -2085,8 +2111,10 @@ fn compile(stmts) {
     // Pre-scan functions
     scan_fns(stmts);
 
+
     // Scan call sites to infer parameter types
     scan_call_sites(stmts);
+
 
     // Pre-scan top-level variables → emit as globals
     i <- 0;
@@ -2141,7 +2169,7 @@ fn compile(stmts) {
 
 
     // Collect all top-level vars
-    vars <- [];
+    vars <- [""];  // init with "" for string element type tracking
     top_stmts <- [];
     i <- 0;
     while (i < len(stmts)) {
@@ -2153,14 +2181,14 @@ fn compile(stmts) {
     collect_vars(top_stmts, vars);
 
 
-    // Alloca all (skip globals — they're already emitted)
+    // Alloca all (skip globals and empty sentinel)
     alloc_vars[0] <- [];
     var_types[0] <- [];
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
     j <- 0;
     while (j < len(vars)) {
-        if (!is_global(vars[j])) {
+        if (vars[j] != "" && !is_global(vars[j])) {
             reg <- "%" + vars[j];
             push(alloc_vars[0], {name: vars[j], reg: reg});
             emit("  " + reg + " = alloca i64");
