@@ -1,0 +1,24 @@
+// Test 1: Simple expression arrow fn
+add <- (x, y) => x + y;
+print(add(3, 4));
+
+// Test 2: Arrow fn with single arg
+double <- (x) => x * 2;
+print(double(21));
+
+// Test 3: Arrow fn with block body
+greet <- (name) => {
+    print("hello " + name);
+};
+greet("world");
+
+// Test 4: Passing arrow fn as argument
+fn apply(f, x) {
+    return f(x);
+}
+triple <- (x) => x * 3;
+print(apply(triple, 10));
+
+// Test 5: Arrow fn returning string
+shout <- (s) => s + "!";
+print(shout("wow"));

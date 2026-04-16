@@ -123,12 +123,18 @@ fn ppm(){
 
 // Output buffer: array of lines
 ir_lines <- [""];  // init with "" so global type tracking knows it holds strings
+deferred_ir <- [""];  // buffer for arrow function definitions
+emit_target <- [0];  // 0 = ir_lines, 1 = deferred_ir
 
 // Platform detection: 1 = Windows, 0 = Unix (Linux/Mac)
 is_win <- [1]; // default Windows, overridden at startup
 
 fn emit(s) {
-    push(ir_lines, s);
+    if (emit_target[0] = 0) {
+        push(ir_lines, s);
+    } else {
+        push(deferred_ir, s);
+    }
 }
 
 fn write_ir_lines(path) {
@@ -181,6 +187,25 @@ fn fresh_lbl(prefix) {
 // Track which variables have been allocated in current function
 fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
 current_fn <- [""]; // name of function being compiled
+
+// Arrow function counter
+arrow_fn_counter <- [0];
+
+// Map variable names to arrow function names for return type lookup
+arrow_fn_map <- []; // [{var_name, fn_name}]
+
+fn set_arrow_fn_var(var_name, fn_name) {
+    push(arrow_fn_map, {var_name: var_name, fn_name: fn_name});
+}
+
+fn get_arrow_fn_name(var_name) {
+    i <- len(arrow_fn_map) - 1;
+    while (i >= 0) {
+        if (arrow_fn_map[i].var_name = var_name) { return arrow_fn_map[i].fn_name; }
+        i <- i - 1;
+    }
+    return "";
+}
 
 // String constants
 str_constants <- []; // [{id, text}]
@@ -514,6 +539,15 @@ fn scs_expr(nd, work) {
         j <- 0;
         while (j < len(nd.fields)) { push(work, nd.fields[j].val); j <- j + 1; }
     }
+    if (nd.node = "ArrowFn") {
+        // Scan arrow function body for call sites
+        if (nd.is_expr = false) {
+            j <- 0;
+            while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
+        } else {
+            push(work, nd.body);
+        }
+    }
     return work;
 }
 
@@ -771,6 +805,9 @@ fn emit_expr(nd) {
     }
     if (nd.node = "DotExpr") {
         return emit_dot_expr(nd);
+    }
+    if (nd.node = "ArrowFn") {
+        return emit_arrow_fn(nd);
     }
     print("Emit error: unsupported expr " + nd.node);
     return tv_int("0");
@@ -1258,12 +1295,62 @@ fn emit_call(nd) {
             return tv_str(ri);
         }
 
+        // Indirect call via variable (arrow function stored in variable)
+        fn_reg <- find_var(nm);
+        if (fn_reg != "") {
+            // Look up arrow function info for param type propagation
+            afn_name <- get_arrow_fn_name(nm);
+            afn_info <- false;
+            if (afn_name != "") {
+                afn_info <- find_fn(afn_name);
+            }
+
+            fn_val <- fresh("%fnld");
+            emit("  " + fn_val + " = load i64, ptr " + fn_reg);
+            fn_ptr <- fresh("%fnptr");
+            emit("  " + fn_ptr + " = inttoptr i64 " + fn_val + " to ptr");
+            // Build args with param type propagation
+            args_str <- "";
+            i <- 0;
+            while (i < len(nd.args)) {
+                if (i > 0) { args_str <- args_str + ", "; }
+                vt <- emit_expr(nd.args[i]);
+                args_str <- args_str + "i64 " + vt.reg;
+                if (afn_info != false && i < afn_info.param_count) {
+                    if (vt.type = "str") {
+                        set_fn_param_type(afn_info.name, i, "str");
+                    }
+                }
+                i <- i + 1;
+            }
+            r <- fresh("%icall");
+            emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
+            // Use return type from arrow function if known
+            if (afn_info != false) {
+                return tv(r, afn_info.ret_type);
+            }
+            return tv(r, "any");
+        }
+
         print("Error: unknown function " + nm);
         return tv_int("0");
     }
 
-    print("Error: indirect calls not yet supported in compiler");
-    return tv_int("0");
+    // Indirect call via expression (e.g. make_fn()(args))
+    fn_vt <- emit_expr(nd.callee);
+    fn_ptr <- fresh("%fnptr");
+    emit("  " + fn_ptr + " = inttoptr i64 " + fn_vt.reg + " to ptr");
+    args_str <- "";
+    i <- 0;
+    while (i < len(nd.args)) {
+        if (i > 0) { args_str <- args_str + ", "; }
+        vt <- emit_expr(nd.args[i]);
+        args_str <- args_str + "i64 " + vt.reg;
+        i <- i + 1;
+    }
+    r <- fresh("%icall");
+    emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
+    return tv(r, "any");
 }
 
 fn emit_array_lit(nd) {
@@ -1333,6 +1420,12 @@ fn emit_stmt(nd) {
             set_var_type(nd.name, "int");
             if (vt.fields != false) {
                 set_struct_layout(nd.name, vt.fields);
+            }
+        } else if (vt.type = "fn") {
+            // Arrow function assignment — track var → fn name mapping
+            set_var_type(nd.name, "fn");
+            if (vt.fields != false) {
+                set_arrow_fn_var(nd.name, vt.fields);
             }
         } else {
             set_var_type(nd.name, vt.type);
@@ -1816,6 +1909,123 @@ fn emit_for_in(nd) {
     return false;
 }
 
+// ── Emit arrow function ────────────────
+fn emit_arrow_fn(nd) {
+    // Generate unique name
+    arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
+    fn_name <- "__arrow_" + arrow_fn_counter[0];
+
+    // Register as a known function so call-site type tracking works
+    pt <- [];
+    j <- 0;
+    while (j < len(nd.params)) {
+        push(pt, "any");
+        j <- j + 1;
+    }
+    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: "any", ret_fields: false, param_types: pt});
+
+    // Switch to deferred emit buffer
+    emit_target[0] <- 1;
+
+    // Save compilation state
+    old_vars <- alloc_vars[0];
+    old_types <- var_types[0];
+    old_layouts <- struct_layouts[0];
+    old_arr_types <- array_elem_types[0];
+    old_fn <- current_fn[0];
+    alloc_vars[0] <- [];
+    var_types[0] <- [];
+    struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
+    current_fn[0] <- fn_name;
+
+    // Build param list
+    params_str <- "";
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (i > 0) { params_str <- params_str + ", "; }
+        params_str <- params_str + "i64 %" + nd.params[i] + ".arg";
+        i <- i + 1;
+    }
+
+    emit("define i64 @" + fn_name + "(" + params_str + ") {");
+    emit("entry:");
+
+    // Collect and alloca variables
+    if (nd.is_expr = false) {
+        // Body is a list of statements
+        vars <- [];
+        collect_vars(nd.body, vars);
+        // Add params
+        i <- 0;
+        while (i < len(nd.params)) {
+            if (!var_exists(vars, nd.params[i])) {
+                push(vars, nd.params[i]);
+            }
+            i <- i + 1;
+        }
+        // Alloca all
+        i <- 0;
+        while (i < len(vars)) {
+            reg <- "%" + vars[i];
+            push(alloc_vars[0], {name: vars[i], reg: reg});
+            emit("  " + reg + " = alloca i64");
+            i <- i + 1;
+        }
+    } else {
+        // Body is a single expression — just alloca params
+        i <- 0;
+        while (i < len(nd.params)) {
+            reg <- "%" + nd.params[i];
+            push(alloc_vars[0], {name: nd.params[i], reg: reg});
+            emit("  " + reg + " = alloca i64");
+            i <- i + 1;
+        }
+    }
+    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
+    emit("  %_for_idx = alloca i64");
+
+    // Store params into allocas
+    i <- 0;
+    while (i < len(nd.params)) {
+        emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
+        set_var_type(nd.params[i], "any");
+        i <- i + 1;
+    }
+
+    // Emit body
+    if (nd.is_expr = false) {
+        // Statement body
+        emit_block(nd.body);
+        // Default return (for statement bodies without explicit return)
+        emit("  ret i64 0");
+    } else {
+        // Expression body — emit and return
+        vt <- emit_expr(nd.body);
+        emit("  ret i64 " + vt.reg);
+        // Track return type
+        set_fn_ret_type(fn_name, vt.type, vt.fields);
+    }
+
+    emit("}");
+    emit("");
+
+    // Restore state
+    alloc_vars[0] <- old_vars;
+    var_types[0] <- old_types;
+    struct_layouts[0] <- old_layouts;
+    array_elem_types[0] <- old_arr_types;
+    current_fn[0] <- old_fn;
+
+    // Switch back to normal emit
+    emit_target[0] <- 0;
+
+    // Return function pointer as i64, with fn_name in fields for tracking
+    r <- fresh("%afn");
+    emit("  " + r + " = ptrtoint ptr @" + fn_name + " to i64");
+    return {reg: r, type: "fn", fields: fn_name};
+}
+
 // ── Emit function ───────────────────────
 
 fn emit_function(nd) {
@@ -2253,6 +2463,15 @@ fn compile(stmts) {
     emit("  ret i64 0");
     emit("}");
     emit("");
+
+    // Emit deferred arrow functions
+    i <- 0;
+    while (i < len(deferred_ir)) {
+        if (str_len(deferred_ir[i]) > 0) {
+            push(ir_lines, deferred_ir[i]);
+        }
+        i <- i + 1;
+    }
 
     // Emit string constants
     // Format string for integers (with newline)
