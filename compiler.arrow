@@ -1932,6 +1932,144 @@ fn emit_for_in(nd) {
 
 // ── Capture detection ──────────────────
 // Find variables referenced in an arrow fn body that aren't params or locally defined
+// ── Type inference pass ────────────────
+// Pure type computation — no IR emission. Used to populate var_types
+// before emit_function runs its body, so emit_expr returns concrete
+// types instead of "any" for local variables.
+
+fn typeof_expr(nd) {
+    if (nd.node = "NumberLit") { return "int"; }
+    if (nd.node = "StringLit") { return "str"; }
+    if (nd.node = "BoolLit") { return "int"; }
+    if (nd.node = "Identifier") {
+        t <- get_var_type(nd.name);
+        return t;
+    }
+    if (nd.node = "BinOp") {
+        op <- nd.op;
+        if (op = "&&" || op = "||") { return "int"; }
+        lt <- typeof_expr(nd.left);
+        rt <- typeof_expr(nd.right);
+        if (op = "+") {
+            if (lt = "str" || rt = "str") { return "str"; }
+            return "int";
+        }
+        // Arithmetic or comparison — all return int
+        return "int";
+    }
+    if (nd.node = "UnaryOp") { return "int"; }
+    if (nd.node = "CallExpr") {
+        if (nd.callee.node = "Identifier") {
+            nm <- nd.callee.name;
+            if (nm = "len") { return "int"; }
+            if (nm = "str_len") { return "int"; }
+            if (nm = "char_code") { return "int"; }
+            if (nm = "char_at") { return "str"; }
+            if (nm = "from_char_code") { return "str"; }
+            if (nm = "substring") { return "str"; }
+            if (nm = "input") { return "str"; }
+            if (nm = "read_file") { return "str"; }
+            if (nm = "write_file") { return "int"; }
+            if (nm = "append_file") { return "int"; }
+            if (nm = "exec_cmd") { return "int"; }
+            if (nm = "push") { return "int"; }
+            if (nm = "print") { return "int"; }
+            if (nm = "args") {
+                if (len(nd.args) = 0) { return "int"; }
+                return "str";
+            }
+            fi <- find_fn(nm);
+            if (fi != false) { return fi.ret_type; }
+        }
+        return "any";
+    }
+    if (nd.node = "ArrayLit") { return "int"; }
+    if (nd.node = "IndexExpr") {
+        if (nd.obj.node = "Identifier") {
+            return get_array_elem_type(nd.obj.name);
+        }
+        return "any";
+    }
+    if (nd.node = "DotExpr") {
+        if (nd.obj.node = "Identifier") {
+            layout <- get_struct_layout(nd.obj.name);
+            if (layout != false) {
+                return get_field_type(layout, nd.field);
+            }
+        }
+        return "any";
+    }
+    if (nd.node = "StructLit") { return "struct"; }
+    if (nd.node = "ArrowFn") { return "fn"; }
+    return "any";
+}
+
+// Walk a body of statements, updating var_types for each assignment
+fn infer_body(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "Assignment") {
+            ty <- typeof_expr(s.expr);
+            set_var_type(s.name, ty);
+            // Track struct layouts from struct literals
+            if (s.expr.node = "StructLit") {
+                // Build layout from literal
+                layout <- [];
+                j <- 0;
+                while (j < len(s.expr.fields)) {
+                    f <- s.expr.fields[j];
+                    fty <- typeof_expr(f.val);
+                    push(layout, {fname: f.key, ftype: fty});
+                    j <- j + 1;
+                }
+                set_struct_layout(s.name, layout);
+            }
+            // Track array element types from array literals
+            if (s.expr.node = "ArrayLit") {
+                j <- 0;
+                while (j < len(s.expr.elements)) {
+                    ety <- typeof_expr(s.expr.elements[j]);
+                    if (ety = "str") {
+                        set_array_elem_type(s.name, "str");
+                    }
+                    j <- j + 1;
+                }
+            }
+        }
+        if (s.node = "IfStmt") {
+            infer_body(s.then_body);
+            infer_body(s.else_body);
+        }
+        if (s.node = "WhileStmt") { infer_body(s.body); }
+        if (s.node = "ForInStmt") {
+            // Loop variable: if iterable is a string, element is str char (a string)
+            it_ty <- typeof_expr(s.iterable);
+            if (it_ty = "str") {
+                set_var_type(s.var_name, "str");
+            } else {
+                // Array iteration: elem type from array
+                et <- "any";
+                if (s.iterable.node = "Identifier") {
+                    et <- get_array_elem_type(s.iterable.name);
+                }
+                set_var_type(s.var_name, et);
+            }
+            infer_body(s.body);
+        }
+        if (s.node = "ReturnStmt") {
+            if (s.expr != false) {
+                rt <- typeof_expr(s.expr);
+                if (current_fn[0] != "") {
+                    set_fn_ret_type(current_fn[0], rt, false);
+                }
+            }
+        }
+        if (s.node = "Block") { infer_body(s.stmts); }
+        i <- i + 1;
+    }
+}
+
 fn find_captures(body, params, is_expr) {
     refs <- [];
     // Collect all Identifier references via worklist
@@ -2135,6 +2273,8 @@ fn emit_arrow_fn(nd) {
 
     // Emit body
     if (nd.is_expr = false) {
+        // Run type inference on body to populate var_types
+        infer_body(nd.body);
         emit_block(nd.body);
         emit("  ret i64 0");
     } else {
@@ -2241,6 +2381,9 @@ fn emit_function(nd) {
         }
         i <- i + 1;
     }
+
+    // Run type inference on body to populate var_types before emission
+    infer_body(nd.body);
 
     // Emit body
     emit_block(nd.body);
@@ -2599,6 +2742,10 @@ fn compile(stmts) {
     push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
     emit("  %_for_idx = alloca i64");
 
+
+    // Run type inference on top-level statements to populate var_types
+    current_fn[0] <- "";
+    infer_body(top_stmts);
 
     // Emit top-level statements (skip fn decls)
     i <- 0;
