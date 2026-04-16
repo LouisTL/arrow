@@ -1305,15 +1305,27 @@ fn emit_call(nd) {
                 afn_info <- find_fn(afn_name);
             }
 
-            fn_val <- fresh("%fnld");
-            emit("  " + fn_val + " = load i64, ptr " + fn_reg);
-            fn_ptr <- fresh("%fnptr");
-            emit("  " + fn_ptr + " = inttoptr i64 " + fn_val + " to ptr");
-            // Build args with param type propagation
-            args_str <- "";
+            // Load closure pair [fn_ptr, env_ptr]
+            pair_val <- fresh("%pld");
+            emit("  " + pair_val + " = load i64, ptr " + fn_reg);
+            pair_ptr <- fresh("%pptr");
+            emit("  " + pair_ptr + " = inttoptr i64 " + pair_val + " to ptr");
+            // Extract fn_ptr (slot 0)
+            fn_i64 <- fresh("%fni");
+            emit("  " + fn_i64 + " = load i64, ptr " + pair_ptr);
+            fn_ptr <- fresh("%fnp");
+            emit("  " + fn_ptr + " = inttoptr i64 " + fn_i64 + " to ptr");
+            // Extract env_ptr (slot 1)
+            env_slot <- fresh("%esl");
+            env_i64 <- fresh("%eni");
+            emit("  " + env_slot + " = getelementptr i64, ptr " + pair_ptr + ", i64 1");
+            emit("  " + env_i64 + " = load i64, ptr " + env_slot);
+
+            // Build args: env first, then user args
+            args_str <- "i64 " + env_i64;
             i <- 0;
             while (i < len(nd.args)) {
-                if (i > 0) { args_str <- args_str + ", "; }
+                args_str <- args_str + ", ";
                 vt <- emit_expr(nd.args[i]);
                 args_str <- args_str + "i64 " + vt.reg;
                 if (afn_info != false && i < afn_info.param_count) {
@@ -1325,7 +1337,6 @@ fn emit_call(nd) {
             }
             r <- fresh("%icall");
             emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
-            // Use return type from arrow function if known
             if (afn_info != false) {
                 return tv(r, afn_info.ret_type);
             }
@@ -1338,12 +1349,22 @@ fn emit_call(nd) {
 
     // Indirect call via expression (e.g. make_fn()(args))
     fn_vt <- emit_expr(nd.callee);
-    fn_ptr <- fresh("%fnptr");
-    emit("  " + fn_ptr + " = inttoptr i64 " + fn_vt.reg + " to ptr");
-    args_str <- "";
+    // Unpack closure pair [fn_ptr, env_ptr]
+    pair_ptr <- fresh("%pptr");
+    emit("  " + pair_ptr + " = inttoptr i64 " + fn_vt.reg + " to ptr");
+    fn_i64 <- fresh("%fni");
+    emit("  " + fn_i64 + " = load i64, ptr " + pair_ptr);
+    fn_ptr <- fresh("%fnp");
+    emit("  " + fn_ptr + " = inttoptr i64 " + fn_i64 + " to ptr");
+    env_slot <- fresh("%esl");
+    env_i64 <- fresh("%eni");
+    emit("  " + env_slot + " = getelementptr i64, ptr " + pair_ptr + ", i64 1");
+    emit("  " + env_i64 + " = load i64, ptr " + env_slot);
+
+    args_str <- "i64 " + env_i64;
     i <- 0;
     while (i < len(nd.args)) {
-        if (i > 0) { args_str <- args_str + ", "; }
+        args_str <- args_str + ", ";
         vt <- emit_expr(nd.args[i]);
         args_str <- args_str + "i64 " + vt.reg;
         i <- i + 1;
@@ -1909,13 +1930,90 @@ fn emit_for_in(nd) {
     return false;
 }
 
+// ── Capture detection ──────────────────
+// Find variables referenced in an arrow fn body that aren't params or locally defined
+fn find_captures(body, params, is_expr) {
+    refs <- [];
+    // Collect all Identifier references via worklist
+    work <- [];
+    if (is_expr = false) {
+        i <- 0;
+        while (i < len(body)) { push(work, body[i]); i <- i + 1; }
+    } else {
+        push(work, body);
+    }
+    wi <- 0;
+    while (wi < len(work)) {
+        nd <- work[wi];
+        wi <- wi + 1;
+        if (nd.node = "Identifier") {
+            if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
+        }
+        // Walk children
+        if (nd.node = "Assignment") { push(work, nd.expr); }
+        if (nd.node = "PrintStmt") { push(work, nd.expr); }
+        if (nd.node = "ReturnStmt") { if (nd.expr != false) { push(work, nd.expr); } }
+        if (nd.node = "IfStmt") {
+            push(work, nd.cond);
+            i <- 0;
+            while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
+            i <- 0;
+            while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
+        }
+        if (nd.node = "WhileStmt") {
+            push(work, nd.cond);
+            i <- 0;
+            while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+        }
+        if (nd.node = "ForInStmt") {
+            push(work, nd.iterable);
+            i <- 0;
+            while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+        }
+        if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
+        if (nd.node = "UnaryOp") { push(work, nd.operand); }
+        if (nd.node = "CallExpr") {
+            push(work, nd.callee);
+            i <- 0;
+            while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
+        }
+        if (nd.node = "ArrayLit") {
+            i <- 0;
+            while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
+        }
+        if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
+        if (nd.node = "IndexAssign") { push(work, nd.obj); push(work, nd.index); push(work, nd.value); }
+        if (nd.node = "DotExpr") { push(work, nd.obj); }
+        if (nd.node = "DotAssign") { push(work, nd.obj); push(work, nd.value); }
+        if (nd.node = "StructLit") {
+            i <- 0;
+            while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
+        }
+    }
+    // Filter: keep refs that are NOT params and ARE in current enclosing scope
+    caps <- [];
+    i <- 0;
+    while (i < len(refs)) {
+        if (!var_exists(params, refs[i])) {
+            if (find_var(refs[i]) != "") {
+                push(caps, refs[i]);
+            }
+        }
+        i <- i + 1;
+    }
+    return caps;
+}
+
 // ── Emit arrow function ────────────────
 fn emit_arrow_fn(nd) {
     // Generate unique name
     arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
     fn_name <- "__arrow_" + arrow_fn_counter[0];
 
-    // Register as a known function so call-site type tracking works
+    // Detect captures (before switching scope)
+    captures <- find_captures(nd.body, nd.params, nd.is_expr);
+
+    // Register as a known function (param_count does NOT include env param)
     pt <- [];
     j <- 0;
     while (j < len(nd.params)) {
@@ -1923,6 +2021,25 @@ fn emit_arrow_fn(nd) {
         j <- j + 1;
     }
     push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: "any", ret_fields: false, param_types: pt});
+
+    // Build env struct for captures (before switching emit target)
+    env_reg <- fresh("%env");
+    if (len(captures) > 0) {
+        env_sz <- fresh("%esz");
+        emit("  " + env_sz + " = mul i64 " + len(captures) + ", 8");
+        emit("  " + env_reg + " = call ptr @arena_alloc(i64 " + env_sz + ")");
+        // Store captured values into env
+        i <- 0;
+        while (i < len(captures)) {
+            cap_reg <- find_var(captures[i]);
+            cv <- fresh("%ecv");
+            ep <- fresh("%eep");
+            emit("  " + cv + " = load i64, ptr " + cap_reg);
+            emit("  " + ep + " = getelementptr i64, ptr " + env_reg + ", i64 " + i);
+            emit("  store i64 " + cv + ", ptr " + ep);
+            i <- i + 1;
+        }
+    }
 
     // Switch to deferred emit buffer
     emit_target[0] <- 1;
@@ -1939,12 +2056,11 @@ fn emit_arrow_fn(nd) {
     array_elem_types[0] <- [];
     current_fn[0] <- fn_name;
 
-    // Build param list
-    params_str <- "";
+    // Build param list (env is first param, then user params)
+    params_str <- "i64 %env.arg";
     i <- 0;
     while (i < len(nd.params)) {
-        if (i > 0) { params_str <- params_str + ", "; }
-        params_str <- params_str + "i64 %" + nd.params[i] + ".arg";
+        params_str <- params_str + ", i64 %" + nd.params[i] + ".arg";
         i <- i + 1;
     }
 
@@ -1953,18 +2069,19 @@ fn emit_arrow_fn(nd) {
 
     // Collect and alloca variables
     if (nd.is_expr = false) {
-        // Body is a list of statements
         vars <- [];
         collect_vars(nd.body, vars);
-        // Add params
         i <- 0;
         while (i < len(nd.params)) {
-            if (!var_exists(vars, nd.params[i])) {
-                push(vars, nd.params[i]);
-            }
+            if (!var_exists(vars, nd.params[i])) { push(vars, nd.params[i]); }
             i <- i + 1;
         }
-        // Alloca all
+        // Add captured vars as local allocas too
+        i <- 0;
+        while (i < len(captures)) {
+            if (!var_exists(vars, captures[i])) { push(vars, captures[i]); }
+            i <- i + 1;
+        }
         i <- 0;
         while (i < len(vars)) {
             reg <- "%" + vars[i];
@@ -1973,11 +2090,18 @@ fn emit_arrow_fn(nd) {
             i <- i + 1;
         }
     } else {
-        // Body is a single expression — just alloca params
+        // Expression body — alloca params + captures
         i <- 0;
         while (i < len(nd.params)) {
             reg <- "%" + nd.params[i];
             push(alloc_vars[0], {name: nd.params[i], reg: reg});
+            emit("  " + reg + " = alloca i64");
+            i <- i + 1;
+        }
+        i <- 0;
+        while (i < len(captures)) {
+            reg <- "%" + captures[i];
+            push(alloc_vars[0], {name: captures[i], reg: reg});
             emit("  " + reg + " = alloca i64");
             i <- i + 1;
         }
@@ -1993,17 +2117,29 @@ fn emit_arrow_fn(nd) {
         i <- i + 1;
     }
 
+    // Load captured variables from env
+    if (len(captures) > 0) {
+        emit("  %env_ptr = inttoptr i64 %env.arg to ptr");
+        i <- 0;
+        while (i < len(captures)) {
+            cep <- fresh("%cep");
+            cval <- fresh("%cval");
+            emit("  " + cep + " = getelementptr i64, ptr %env_ptr, i64 " + i);
+            emit("  " + cval + " = load i64, ptr " + cep);
+            emit("  store i64 " + cval + ", ptr %" + captures[i]);
+            // Preserve type from enclosing scope
+            set_var_type(captures[i], "any");
+            i <- i + 1;
+        }
+    }
+
     // Emit body
     if (nd.is_expr = false) {
-        // Statement body
         emit_block(nd.body);
-        // Default return (for statement bodies without explicit return)
         emit("  ret i64 0");
     } else {
-        // Expression body — emit and return
         vt <- emit_expr(nd.body);
         emit("  ret i64 " + vt.reg);
-        // Track return type
         set_fn_ret_type(fn_name, vt.type, vt.fields);
     }
 
@@ -2020,10 +2156,24 @@ fn emit_arrow_fn(nd) {
     // Switch back to normal emit
     emit_target[0] <- 0;
 
-    // Return function pointer as i64, with fn_name in fields for tracking
-    r <- fresh("%afn");
-    emit("  " + r + " = ptrtoint ptr @" + fn_name + " to i64");
-    return {reg: r, type: "fn", fields: fn_name};
+    // Build closure pair: [fn_ptr, env_ptr]
+    pair <- fresh("%cpair");
+    emit("  " + pair + " = call ptr @arena_alloc(i64 16)");
+    fn_as_i64 <- fresh("%cfn");
+    emit("  " + fn_as_i64 + " = ptrtoint ptr @" + fn_name + " to i64");
+    emit("  store i64 " + fn_as_i64 + ", ptr " + pair);
+    env_slot <- fresh("%cesl");
+    emit("  " + env_slot + " = getelementptr i64, ptr " + pair + ", i64 1");
+    if (len(captures) > 0) {
+        env_as_i64 <- fresh("%cei");
+        emit("  " + env_as_i64 + " = ptrtoint ptr " + env_reg + " to i64");
+        emit("  store i64 " + env_as_i64 + ", ptr " + env_slot);
+    } else {
+        emit("  store i64 0, ptr " + env_slot);
+    }
+    pair_as_i64 <- fresh("%cpi");
+    emit("  " + pair_as_i64 + " = ptrtoint ptr " + pair + " to i64");
+    return {reg: pair_as_i64, type: "fn", fields: fn_name};
 }
 
 // ── Emit function ───────────────────────
