@@ -81,8 +81,8 @@ fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e};}
-fn pfd(){eat("fn");n<-ev("IDENT");p<-ppl();b<-pb();return{node:"FnDecl",name:n,params:p,body:b};}
-fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));}}eat("RPAREN");return p;}
+fn pfd(){eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}}}eat("RPAREN");rt<-"";if(ci("COLON")){eat("COLON");rt<-ev("IDENT");}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b};}
+fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}}}eat("RPAREN");return p;}
 fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
@@ -589,14 +589,27 @@ fn scan_fns(stmts) {
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            // Build default param_types array (all "any" — unknown type)
+            // Build param_types: use annotations if present, else "any"
             pt <- [];
             j <- 0;
             while (j < len(stmts[i].params)) {
-                push(pt, "any");
+                ann <- "";
+                if (j < len(stmts[i].param_types_ann)) {
+                    ann <- stmts[i].param_types_ann[j];
+                }
+                if (ann != "") {
+                    push(pt, ann);
+                } else {
+                    push(pt, "any");
+                }
                 j <- j + 1;
             }
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: "any", ret_fields: false, param_types: pt});
+            // Use return type annotation if present
+            rt <- "any";
+            if (stmts[i].ret_type_ann != "") {
+                rt <- stmts[i].ret_type_ann;
+            }
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt});
         }
         i <- i + 1;
     }

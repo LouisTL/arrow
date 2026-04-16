@@ -1,0 +1,29 @@
+// Test 1: Annotated function
+fn add(x: int, y: int): int {
+    return x + y;
+}
+print(add(3, 4));
+
+// Test 2: Annotated with string param
+fn greet(name: str) {
+    print("hello " + name);
+}
+greet("world");
+
+// Test 3: Mixed — some annotated, some not
+fn mix(a: str, b) {
+    print(a + " and " + b);
+}
+mix("cats", "dogs");
+
+// Test 4: Unannotated (backward compat)
+fn double(x) {
+    return x * 2;
+}
+print(double(21));
+
+// Test 5: Return type annotation
+fn exclaim(s: str): str {
+    return s + "!";
+}
+print(exclaim("wow"));
