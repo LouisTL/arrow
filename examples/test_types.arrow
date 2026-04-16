@@ -1,3 +1,5 @@
+// === Function annotations ===
+
 // Test 1: Annotated function
 fn add(x: int, y: int): int {
     return x + y;
@@ -27,3 +29,33 @@ fn exclaim(s: str): str {
     return s + "!";
 }
 print(exclaim("wow"));
+
+// === Typed declarations ===
+
+// Test 6: Typed int declaration
+x: int <- 42;
+print(x);
+
+// Test 7: Typed string declaration
+msg: str <- "typed";
+print(msg);
+
+// Test 8: Untyped (old style, still works)
+count <- 10;
+print(count);
+
+// Test 9: Reassignment after typed declaration
+x <- x + 1;
+print(x);
+
+// Test 10: Typed declaration inside function
+fn make_greeting(who: str): str {
+    result: str <- "hi " + who;
+    return result;
+}
+print(make_greeting("world"));
+
+// Test 11: Mix of typed and untyped
+old_style <- 99;
+new_style: int <- 100;
+print(old_style + new_style);

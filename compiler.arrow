@@ -72,12 +72,13 @@ fn ps(){
     if(ci("if")){return pif();}if(ci("while")){return pwh();}
     if(ci("for")){return pfi();}if(ci("print")){return ppr();}
     if(ci("LBRACE")){if(isl()){e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
-    if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
+    if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"COLON")){return ptd();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
     e<-pe();eat("SEMI");return e;
 }
 fn isl(){if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e};}
+fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:""};}
+fn ptd(){n<-ev("IDENT");eat("COLON");ta<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e};}
@@ -1449,8 +1450,10 @@ fn emit_stmt(nd) {
         reg <- find_var(nd.name);
         if (reg = "") { reg <- add_var(nd.name); }
         emit("  store i64 " + vt.reg + ", ptr " + reg);
-        // Track type — structs become "int" for storage but we save layout if known
-        if (vt.type = "struct") {
+        // Track type — use explicit annotation if present
+        if (nd.type_ann != "") {
+            set_var_type(nd.name, nd.type_ann);
+        } else if (vt.type = "struct") {
             set_var_type(nd.name, "int");
             if (vt.fields != false) {
                 set_struct_layout(nd.name, vt.fields);
@@ -2023,8 +2026,13 @@ fn infer_body(stmts) {
     while (i < len(stmts)) {
         s <- stmts[i];
         if (s.node = "Assignment") {
-            ty <- typeof_expr(s.expr);
-            set_var_type(s.name, ty);
+            // Use explicit type annotation if present, otherwise infer
+            if (s.type_ann != "") {
+                set_var_type(s.name, s.type_ann);
+            } else {
+                ty <- typeof_expr(s.expr);
+                set_var_type(s.name, ty);
+            }
             // Track struct layouts from struct literals
             if (s.expr.node = "StructLit") {
                 // Build layout from literal
