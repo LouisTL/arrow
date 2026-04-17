@@ -1,0 +1,29 @@
+// Mixed annotation styles — shouldn't produce any errors
+
+// Fully annotated
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+// No annotations (current compiler.arrow style)
+fn greet(name) {
+    return "hi " + name;
+}
+
+// Sentinel return: returns either a struct or false (no annotation)
+fn find(name) {
+    if (name = "x") { return {tag: 1, val: 42}; }
+    return false;
+}
+
+// Annotated param, unannotated return
+fn double(n: int) {
+    return n * 2;
+}
+
+// Use them all
+print(add(2, 3));
+print(greet("world"));
+r <- find("x");
+print(double(10));
+print("done");

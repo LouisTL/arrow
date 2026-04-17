@@ -1,0 +1,13 @@
+// Three intentional type errors
+x: int <- "this is a string, not int";
+
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+fn greet(name: str): str {
+    return name;
+}
+
+print(add(1, "two"));    // arg 2 should be int, got str
+print(greet(42));        // arg 1 should be str, got int

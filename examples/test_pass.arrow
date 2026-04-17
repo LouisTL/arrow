@@ -1,0 +1,15 @@
+// All annotations correct — should compile and print "ok"
+x: int <- 42;
+name: str <- "hello";
+
+fn add(a: int, b: int): int {
+    return a + b;
+}
+
+fn shout(s: str): str {
+    return s + "!";
+}
+
+print(add(x, 8));
+print(shout(name));
+print("ok");

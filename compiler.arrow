@@ -77,12 +77,12 @@ fn ps(){
 }
 fn isl(){if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pas(){n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:""};}
-fn ptd(){n<-ev("IDENT");eat("COLON");ta<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta};}
+fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:"",line:ln};}
+fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
-fn prt(){eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e};}
-fn pfd(){eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}}}eat("RPAREN");rt<-"";if(ci("COLON")){eat("COLON");rt<-ev("IDENT");}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b};}
+fn prt(){ln<-toks[pos[0]].line;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln};}
+fn pfd(){ln<-toks[pos[0]].line;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}}}eat("RPAREN");rt<-"";if(ci("COLON")){eat("COLON");rt<-ev("IDENT");}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln};}
 fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}}}eat("RPAREN");return p;}
 fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
@@ -97,7 +97,7 @@ fn pcm(){l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){o<-cv();adv()
 fn ppad(){l<-pmu();while(ci("PLUS")||ci("MINUS")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
 fn pmu(){l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
 fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
-fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a};}
+fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){cln<-toks[pos[0]].line;eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln};}
     else if(ci("LBRACKET")){eat("LBRACKET");x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
     else if(ci("DOT")){eat("DOT");f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
@@ -425,7 +425,7 @@ fn set_fn_ret_type(name, rtype, rfields) {
     i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
-            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types};
+            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann};
             return false;
         }
         i <- i + 1;
@@ -438,6 +438,12 @@ fn set_fn_param_type(fn_name, param_idx, ptype) {
     fi <- find_fn(fn_name);
     if (fi = false) { return false; }
     if (param_idx < len(fi.param_types)) {
+        // Don't override explicit user annotations — let the checker complain instead
+        if (param_idx < len(fi.param_types_ann)) {
+            if (fi.param_types_ann[param_idx] != "") {
+                return false;
+            }
+        }
         // Upgrade from "any" or "int" to a more specific type, never downgrade from "str"
         if (fi.param_types[param_idx] != "str") {
             fi.param_types[param_idx] <- ptype;
@@ -591,13 +597,16 @@ fn scan_fns(stmts) {
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
             // Build param_types: use annotations if present, else "any"
+            // Also keep param_types_ann: original annotations as-given (for the checker)
             pt <- [];
+            pt_ann <- [];
             j <- 0;
             while (j < len(stmts[i].params)) {
                 ann <- "";
                 if (j < len(stmts[i].param_types_ann)) {
                     ann <- stmts[i].param_types_ann[j];
                 }
+                push(pt_ann, ann);  // empty string means no annotation
                 if (ann != "") {
                     push(pt, ann);
                 } else {
@@ -610,7 +619,7 @@ fn scan_fns(stmts) {
             if (stmts[i].ret_type_ann != "") {
                 rt <- stmts[i].ret_type_ann;
             }
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt});
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: stmts[i].ret_type_ann});
         }
         i <- i + 1;
     }
@@ -2091,6 +2100,165 @@ fn infer_body(stmts) {
     }
 }
 
+// ═══════════════════════════════════════════
+//  TYPE CHECKER
+//  Compares user-written annotations against
+//  inferred types. Errors are accumulated and
+//  printed at the end; compilation aborts if any.
+// ═══════════════════════════════════════════
+
+type_errors <- [];
+src_filename <- ["<unknown>"];
+
+fn report_error(line, msg) {
+    push(type_errors, {line: line, msg: msg});
+}
+
+// Two types are compatible when they're equal, when either is "any",
+// or when either is a structural type we can't yet model precisely.
+fn types_compat(annot, actual) {
+    if (annot = "any") { return true; }
+    if (actual = "any") { return true; }
+    if (annot = "struct") { return true; }
+    if (actual = "struct") { return true; }
+    if (annot = "fn") { return true; }
+    if (actual = "fn") { return true; }
+    return annot = actual;
+}
+
+fn check_body(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        check_stmt(stmts[i]);
+        i <- i + 1;
+    }
+}
+
+fn check_stmt(s) {
+    if (s.node = "Assignment") {
+        if (s.type_ann != "") {
+            actual <- typeof_expr(s.expr);
+            if (!types_compat(s.type_ann, actual)) {
+                report_error(s.line, "type mismatch: '" + s.name + "' annotated as " + s.type_ann + " but assigned " + actual);
+            }
+        }
+        check_expr(s.expr);
+    }
+    if (s.node = "PrintStmt") { check_expr(s.expr); }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) {
+            check_expr(s.expr);
+            if (current_fn[0] != "") {
+                fi <- find_fn(current_fn[0]);
+                if (fi != false) {
+                    if (fi.ret_type_ann != "") {
+                        actual <- typeof_expr(s.expr);
+                        if (!types_compat(fi.ret_type_ann, actual)) {
+                            report_error(s.line, "return type mismatch in '" + current_fn[0] + "': declared " + fi.ret_type_ann + " but returning " + actual);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (s.node = "IfStmt") {
+        check_expr(s.cond);
+        check_body(s.then_body);
+        check_body(s.else_body);
+    }
+    if (s.node = "WhileStmt") {
+        check_expr(s.cond);
+        check_body(s.body);
+    }
+    if (s.node = "ForInStmt") {
+        check_expr(s.iterable);
+        check_body(s.body);
+    }
+    if (s.node = "Block") { check_body(s.stmts); }
+    if (s.node = "IndexAssign") {
+        check_expr(s.obj);
+        check_expr(s.index);
+        check_expr(s.value);
+    }
+    if (s.node = "DotAssign") {
+        check_expr(s.obj);
+        check_expr(s.value);
+    }
+}
+
+fn check_expr(e) {
+    if (e.node = "BinOp") { check_expr(e.left); check_expr(e.right); }
+    if (e.node = "UnaryOp") { check_expr(e.operand); }
+    if (e.node = "CallExpr") {
+        if (e.callee.node = "Identifier") {
+            fi <- find_fn(e.callee.name);
+            if (fi != false) {
+                j <- 0;
+                while (j < len(e.args)) {
+                    if (j < fi.param_count) {
+                        ann <- fi.param_types_ann[j];
+                        // Only check args against EXPLICIT annotations
+                        if (ann != "") {
+                            actual <- typeof_expr(e.args[j]);
+                            if (!types_compat(ann, actual)) {
+                                report_error(e.line, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + ann + " but got " + actual);
+                            }
+                        }
+                    }
+                    j <- j + 1;
+                }
+            }
+        }
+        j <- 0;
+        while (j < len(e.args)) { check_expr(e.args[j]); j <- j + 1; }
+    }
+    if (e.node = "ArrayLit") {
+        j <- 0;
+        while (j < len(e.elements)) { check_expr(e.elements[j]); j <- j + 1; }
+    }
+    if (e.node = "IndexExpr") { check_expr(e.obj); check_expr(e.index); }
+    if (e.node = "DotExpr") { check_expr(e.obj); }
+    if (e.node = "StructLit") {
+        j <- 0;
+        while (j < len(e.fields)) { check_expr(e.fields[j].val); j <- j + 1; }
+    }
+}
+
+fn print_type_errors() {
+    // Insertion sort by line for stable, source-order output.
+    // Note: type_errors[j].line returns "any" via DotExpr, which would make
+    // ">" emit strcmp. Pulling each side into a typed int local forces icmp.
+    i <- 1;
+    while (i < len(type_errors)) {
+        j <- i;
+        keep_going <- 1;
+        while (j > 0 && keep_going = 1) {
+            a: int <- type_errors[j - 1].line;
+            b: int <- type_errors[j].line;
+            if (a > b) {
+                tmp <- type_errors[j - 1];
+                type_errors[j - 1] <- type_errors[j];
+                type_errors[j] <- tmp;
+                j <- j - 1;
+            } else {
+                keep_going <- 0;
+            }
+        }
+        i <- i + 1;
+    }
+    i <- 0;
+    while (i < len(type_errors)) {
+        e <- type_errors[i];
+        print(src_filename[0] + ":" + e.line + ": " + e.msg);
+        i <- i + 1;
+    }
+    if (len(type_errors) > 0) {
+        print("--");
+        print(len(type_errors) + " type error(s). Compilation aborted.");
+    }
+}
+
+
 fn find_captures(body, params, is_expr) {
     refs <- [];
     // Collect all Identifier references via worklist
@@ -2405,6 +2573,9 @@ fn emit_function(nd) {
 
     // Run type inference on body to populate var_types before emission
     infer_body(nd.body);
+
+    // Run type checker against user annotations
+    check_body(nd.body);
 
     // Emit body
     emit_block(nd.body);
@@ -2768,6 +2939,9 @@ fn compile(stmts) {
     current_fn[0] <- "";
     infer_body(top_stmts);
 
+    // Run type checker on top-level
+    check_body(top_stmts);
+
     // Emit top-level statements (skip fn decls)
     i <- 0;
     while (i < len(stmts)) {
@@ -2875,26 +3049,32 @@ if (args() > 0) {
     toks <- tokenize(source);
     pos[0] <- 0;
     ast <- pp();
+    src_filename[0] <- input_file;
     compile(ast);
-    write_ir_lines(ll_file);
 
-    // Build clang command (platform-dependent flags)
-    if (is_win[0] = 1) {
-        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+    if (len(type_errors) > 0) {
+        print_type_errors();
     } else {
-        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
-    }
-    rc <- exec_cmd(clang_cmd);
-    if (rc = 0) {
-        print("Compiled " + exe_file + " successfully!");
-        // Clean up .ll file (platform-dependent delete command)
+        write_ir_lines(ll_file);
+
+        // Build clang command (platform-dependent flags)
         if (is_win[0] = 1) {
-            exec_cmd("del " + ll_file);
+            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
         } else {
-            exec_cmd("rm " + ll_file);
+            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
         }
-    } else {
-        print("Clang failed with exit code " + rc);
-        print("IR written to " + ll_file);
+        rc <- exec_cmd(clang_cmd);
+        if (rc = 0) {
+            print("Compiled " + exe_file + " successfully!");
+            // Clean up .ll file (platform-dependent delete command)
+            if (is_win[0] = 1) {
+                exec_cmd("del " + ll_file);
+            } else {
+                exec_cmd("rm " + ll_file);
+            }
+        } else {
+            print("Clang failed with exit code " + rc);
+            print("IR written to " + ll_file);
+        }
     }
 }
