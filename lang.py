@@ -419,6 +419,11 @@ class Parser:
         if tok.type == TokenType.IDENT:
             if self._peek_type(1) == TokenType.ARROW:
                 return self._assignment()
+            # Typed assignment: ident : type <- expr;  (type is parsed and ignored)
+            if (self._peek_type(1) == TokenType.COLON and
+                    self._peek_type(2) == TokenType.IDENT and
+                    self._peek_type(3) == TokenType.ARROW):
+                return self._assignment(typed=True)
             # index/dot assignment: ident[...] <- ... OR ident.field <- ...
             if self._peek_type(1) in (TokenType.LBRACKET, TokenType.DOT):
                 return self._try_postfix_assignment()
@@ -469,8 +474,12 @@ class Parser:
         self._eat(TokenType.RBRACE)
         return Block(stmts)
 
-    def _assignment(self) -> Assignment:
+    def _assignment(self, typed: bool = False) -> Assignment:
         name = self._eat(TokenType.IDENT).value
+        if typed:
+            # Skip ': type' — interpreter ignores type annotations
+            self._eat(TokenType.COLON)
+            self._eat(TokenType.IDENT)
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
@@ -497,6 +506,10 @@ class Parser:
         self._eat(TokenType.FN)
         name = self._eat(TokenType.IDENT).value
         params = self._param_list()
+        # Optional return type annotation: fn f(...) : type { ... }
+        if self._current().type == TokenType.COLON:
+            self._eat(TokenType.COLON)
+            self._eat(TokenType.IDENT)
         body = self._block()
         return FnDecl(name, params, body.statements)
 
@@ -505,8 +518,15 @@ class Parser:
         params = []
         if self._current().type != TokenType.RPAREN:
             params.append(self._eat(TokenType.IDENT).value)
+            # Optional per-param type annotation: fn f(x: type, y: type)
+            if self._current().type == TokenType.COLON:
+                self._eat(TokenType.COLON)
+                self._eat(TokenType.IDENT)
             while self._match(TokenType.COMMA):
                 params.append(self._eat(TokenType.IDENT).value)
+                if self._current().type == TokenType.COLON:
+                    self._eat(TokenType.COLON)
+                    self._eat(TokenType.IDENT)
         self._eat(TokenType.RPAREN)
         return params
 
