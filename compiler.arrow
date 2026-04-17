@@ -12,14 +12,14 @@
 // ═══════════════════════════════════════════
 
 // ── Lexer ───────────────────────────────
-fn is_digit(c){return c>=48&&c<=57;}
-fn is_alpha(c){return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
-fn is_alnum(c){return is_digit(c)||is_alpha(c);}
-fn is_ws(c){return c=32||c=9||c=10||c=13;}
-fn mktok(t,v,l,c){return{type:t,value:v,line:l,col:c};}
-fn is_kw(w){if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}return false;}
+fn is_digit(c: int): int{return c>=48&&c<=57;}
+fn is_alpha(c: int): int{return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
+fn is_alnum(c: int): int{return is_digit(c)||is_alpha(c);}
+fn is_ws(c: int): int{return c=32||c=9||c=10||c=13;}
+fn mktok(t: str,v: str,l: int,c: int){return{type:t,value:v,line:l,col:c};}
+fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}return false;}
 
-fn tokenize(src){
+fn tokenize(src: str){
     ts<-[];p<-0;ln<-1;cl<-1;sl<-str_len(src);
     while(p<sl){ch<-char_code(char_at(src,p));
         if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
@@ -60,12 +60,12 @@ fn tokenize(src){
 
 // ── Parser ──────────────────────────────
 toks<-[];pos<-[0];
-fn ci(e){return toks[pos[0]].type=e;}
-fn pi(o,e){x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
+fn ci(e: str): int{return toks[pos[0]].type=e;}
+fn pi(o: int,e: str): int{x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
 fn adv(){pos[0]<-pos[0]+1;}
-fn cv(){return toks[pos[0]].value;}
-fn eat(e){t<-toks[pos[0]];if(t.type!=e){print("Parse error: expected "+e+" got "+t.type+" at "+t.line+":"+t.col);}pos[0]<-pos[0]+1;return t;}
-fn ev(e){t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
+fn cv(): str{return toks[pos[0]].value;}
+fn eat(e: str){t<-toks[pos[0]];if(t.type!=e){print("Parse error: expected "+e+" got "+t.type+" at "+t.line+":"+t.col);}pos[0]<-pos[0]+1;return t;}
+fn ev(e: str): str{t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
 fn pp(){ss<-[];while(!ci("EOF")){push(ss,ps());}return ss;}
 fn ps(){
     if(ci("fn")){return pfd();}if(ci("return")){return prt();}
@@ -75,7 +75,7 @@ fn ps(){
     if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"COLON")){return ptd();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
     e<-pe();eat("SEMI");return e;
 }
-fn isl(){if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
+fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:"",line:ln};}
 fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
@@ -88,7 +88,7 @@ fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("el
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
-fn iaf(){d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){if(i+1<len(toks)){return toks[i+1].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
+fn iaf(): int{d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){if(i+1<len(toks)){return toks[i+1].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
 fn paf(){p<-ppl();eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:p,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:p,body:e,is_expr:true};}
 fn por(){l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
 fn pan(){l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
@@ -130,7 +130,7 @@ emit_target <- [0];  // 0 = ir_lines, 1 = deferred_ir
 // Platform detection: 1 = Windows, 0 = Unix (Linux/Mac)
 is_win <- [1]; // default Windows, overridden at startup
 
-fn emit(s) {
+fn emit(s: str) {
     if (emit_target[0] = 0) {
         push(ir_lines, s);
     } else {
@@ -138,7 +138,7 @@ fn emit(s) {
     }
 }
 
-fn write_ir_lines(path) {
+fn write_ir_lines(path: str) {
     // Write IR directly to file in chunks without building one huge string
     // First write truncates (wb), subsequent writes append (ab)
     chunk <- "";
@@ -173,14 +173,14 @@ fn write_ir_lines(path) {
 
 // Counter for unique names
 tmp_counter <- [0];
-fn fresh(prefix) {
+fn fresh(prefix: str): str {
     tmp_counter[0] <- tmp_counter[0] + 1;
     return prefix + tmp_counter[0];
 }
 
 // Label counter
 lbl_counter <- [0];
-fn fresh_lbl(prefix) {
+fn fresh_lbl(prefix: str): str {
     lbl_counter[0] <- lbl_counter[0] + 1;
     return prefix + lbl_counter[0];
 }
@@ -195,11 +195,11 @@ arrow_fn_counter <- [0];
 // Map variable names to arrow function names for return type lookup
 arrow_fn_map <- []; // [{var_name, fn_name}]
 
-fn set_arrow_fn_var(var_name, fn_name) {
+fn set_arrow_fn_var(var_name: str, fn_name: str) {
     push(arrow_fn_map, {var_name: var_name, fn_name: fn_name});
 }
 
-fn get_arrow_fn_name(var_name) {
+fn get_arrow_fn_name(var_name: str): str {
     i <- len(arrow_fn_map) - 1;
     while (i >= 0) {
         if (arrow_fn_map[i].var_name = var_name) { return arrow_fn_map[i].fn_name; }
@@ -212,7 +212,7 @@ fn get_arrow_fn_name(var_name) {
 str_constants <- []; // [{id, text}]
 str_counter <- [0];
 
-fn add_string(text) {
+fn add_string(text: str): str {
     str_counter[0] <- str_counter[0] + 1;
     id <- "str" + str_counter[0];
     push(str_constants, {id: id, text: text});
@@ -220,7 +220,7 @@ fn add_string(text) {
 }
 
 // Escape string for LLVM IR constant
-fn ir_escape(s) {
+fn ir_escape(s: str): str {
     result <- "";
     i <- 0;
     total_len <- 0;
@@ -238,7 +238,7 @@ fn ir_escape(s) {
     return result;
 }
 
-fn ir_str_len(s) {
+fn ir_str_len(s: str): int {
     // Count actual bytes in the escaped string
     // Each \XX escape = 1 byte, each regular char = check byte length
     // Simple approach: iterate and count char_code > 127 as multi-byte
@@ -269,7 +269,7 @@ var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 // Track global variables (top-level)
 global_vars <- []; // list of variable name strings
 
-fn is_global(name) {
+fn is_global(name: str): int {
     i <- 0;
     while (i < len(global_vars)) {
         if (global_vars[i] = name) { return true; }
@@ -278,7 +278,7 @@ fn is_global(name) {
     return false;
 }
 
-fn find_var(name) {
+fn find_var(name: str): str {
     vars <- alloc_vars[0];
     i <- len(vars) - 1;
     while (i >= 0) {
@@ -290,14 +290,14 @@ fn find_var(name) {
     return "";
 }
 
-fn add_var(name) {
+fn add_var(name: str): str {
     reg <- "%" + name;
     if (find_var(name) != "") { return find_var(name); }
     push(alloc_vars[0], {name: name, reg: reg});
     return reg;
 }
 
-fn set_var_type(name, vtype) {
+fn set_var_type(name: str, vtype: str) {
     types <- var_types[0];
     i <- 0;
     while (i < len(types)) {
@@ -311,7 +311,7 @@ fn set_var_type(name, vtype) {
     return false;
 }
 
-fn get_var_type(name) {
+fn get_var_type(name: str): str {
     types <- var_types[0];
     i <- len(types) - 1;
     while (i >= 0) {
@@ -324,7 +324,7 @@ fn get_var_type(name) {
 // Track struct field layouts: var_name -> [{fname, ftype}]
 struct_layouts <- [[]]; // struct_layouts[0] is list of [{var_name, fields}]
 
-fn set_struct_layout(var_name, fields) {
+fn set_struct_layout(var_name: str, fields) {
     layouts <- struct_layouts[0];
     i <- 0;
     while (i < len(layouts)) {
@@ -338,7 +338,7 @@ fn set_struct_layout(var_name, fields) {
     return false;
 }
 
-fn get_struct_layout(var_name) {
+fn get_struct_layout(var_name: str) {
     layouts <- struct_layouts[0];
     i <- len(layouts) - 1;
     while (i >= 0) {
@@ -348,7 +348,7 @@ fn get_struct_layout(var_name) {
     return false;
 }
 
-fn get_field_type(fields, fname) {
+fn get_field_type(fields, fname: str): str {
     i <- 0;
     while (i < len(fields)) {
         if (fields[i].fname = fname) { return fields[i].ftype; }
@@ -361,7 +361,7 @@ fn get_field_type(fields, fname) {
 array_elem_types <- [[]]; // array_elem_types[0] is list of [{var_name, elem_type}]
 global_array_types <- []; // persistent list for globals [{var_name, elem_type}]
 
-fn set_array_elem_type(var_name, etype) {
+fn set_array_elem_type(var_name: str, etype: str) {
     types <- array_elem_types[0];
     i <- 0;
     while (i < len(types)) {
@@ -377,7 +377,7 @@ fn set_array_elem_type(var_name, etype) {
     return false;
 }
 
-fn set_global_array_type(var_name, etype) {
+fn set_global_array_type(var_name: str, etype: str) {
     i <- 0;
     while (i < len(global_array_types)) {
         if (global_array_types[i].var_name = var_name) {
@@ -392,7 +392,7 @@ fn set_global_array_type(var_name, etype) {
     return false;
 }
 
-fn get_array_elem_type(var_name) {
+fn get_array_elem_type(var_name: str): str {
     // Check local scope first
     types <- array_elem_types[0];
     i <- len(types) - 1;
@@ -412,7 +412,7 @@ fn get_array_elem_type(var_name) {
 // Function declarations we need to track
 declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
 
-fn find_fn(name) {
+fn find_fn(name: str) {
     i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) { return declared_fns[i]; }
@@ -421,10 +421,14 @@ fn find_fn(name) {
     return false;
 }
 
-fn set_fn_ret_type(name, rtype, rfields) {
+fn set_fn_ret_type(name: str, rtype: str, rfields) {
     i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
+            // Don't override explicit user annotations — let the checker complain instead
+            if (declared_fns[i].ret_type_ann != "") {
+                return false;
+            }
             declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann};
             return false;
         }
@@ -434,7 +438,7 @@ fn set_fn_ret_type(name, rtype, rfields) {
 }
 
 // Set a parameter type for a function (from call-site analysis)
-fn set_fn_param_type(fn_name, param_idx, ptype) {
+fn set_fn_param_type(fn_name: str, param_idx: int, ptype: str) {
     fi <- find_fn(fn_name);
     if (fi = false) { return false; }
     if (param_idx < len(fi.param_types)) {
@@ -559,18 +563,18 @@ fn scs_expr(nd, work) {
 }
 
 // ── Typed result helpers ────────────────
-fn tv(reg, vtype) { return {reg: reg, type: vtype, fields: false}; }
-fn tv_int(reg) { return {reg: reg, type: "int", fields: false}; }
-fn tv_str(reg) { return {reg: reg, type: "str", fields: false}; }
+fn tv(reg: str, vtype: str) { return {reg: reg, type: vtype, fields: false}; }
+fn tv_int(reg: str) { return {reg: reg, type: "int", fields: false}; }
+fn tv_str(reg: str) { return {reg: reg, type: "str", fields: false}; }
 
 // Convert a typed value to i64 (for storing, passing as arg, etc.)
 // Strings are already i8*-as-i64 via ptrtoint, so no conversion needed.
 // This just returns the reg — all values are i64 in our IR.
-fn to_i64(t) { return t.reg; }
+fn to_i64(t): str { return t.reg; }
 
 // Convert an i64 value to a string (for string concat with non-strings)
 // Calls our own arrow_itoa helper (no sprintf dependency)
-fn int_to_str(reg) {
+fn int_to_str(reg: str): str {
     r <- fresh("%i2s");
     rp <- fresh("%i2sp");
     emit("  " + r + " = call ptr @arrow_itoa(i64 " + reg + ")");
@@ -580,14 +584,14 @@ fn int_to_str(reg) {
 
 // Ensure a typed value is a string (i8* as i64)
 // If it's already a string, return as-is; if int, convert via itoa
-fn ensure_str(t) {
+fn ensure_str(t): str {
     if (t.type = "str") { return t.reg; }
     return int_to_str(t.reg);
 }
 
 // Like ensure_str, but when we know the context is string-heavy,
 // treat "int" as a string pointer (don't itoa it)
-fn as_str_ptr(t) {
+fn as_str_ptr(t): str {
     return t.reg; // i64 is already the right value — just use it as-is
 }
 
@@ -668,7 +672,7 @@ fn scan_globals_list(stmts) {
     }
 }
 
-fn var_exists(vars, name) {
+fn var_exists(vars, name: str): int {
     i <- 0;
     while (i < len(vars)) {
         if (vars[i] = name) { return true; }
@@ -887,7 +891,7 @@ fn emit_binop(nd) {
 }
 
 // Check if an AST expression node is known to be a string
-fn is_str_expr(nd) {
+fn is_str_expr(nd): int {
     if (nd.node = "StringLit") { return true; }
     if (nd.node = "DotExpr") { return true; }  // struct fields are usually strings in Arrow
     if (nd.node = "BinOp") {
@@ -961,7 +965,7 @@ fn emit_strcat(l, r) {
 }
 
 // ── String comparison ───────────────────
-fn emit_strcmp(l, r, cmp_op) {
+fn emit_strcmp(l, r, cmp_op: str) {
     // In strcmp context, both values must be string pointers
     ls <- as_str_ptr(l);
     rs <- as_str_ptr(r);
@@ -1962,7 +1966,7 @@ fn emit_for_in(nd) {
 // before emit_function runs its body, so emit_expr returns concrete
 // types instead of "any" for local variables.
 
-fn typeof_expr(nd) {
+fn typeof_expr(nd): str {
     if (nd.node = "NumberLit") { return "int"; }
     if (nd.node = "StringLit") { return "str"; }
     if (nd.node = "BoolLit") { return "int"; }
@@ -2110,13 +2114,13 @@ fn infer_body(stmts) {
 type_errors <- [];
 src_filename <- ["<unknown>"];
 
-fn report_error(line, msg) {
+fn report_error(line: int, msg: str) {
     push(type_errors, {line: line, msg: msg});
 }
 
 // Two types are compatible when they're equal, when either is "any",
 // or when either is a structural type we can't yet model precisely.
-fn types_compat(annot, actual) {
+fn types_compat(annot: str, actual: str): int {
     if (annot = "any") { return true; }
     if (actual = "any") { return true; }
     if (annot = "struct") { return true; }
@@ -2259,7 +2263,7 @@ fn print_type_errors() {
 }
 
 
-fn find_captures(body, params, is_expr) {
+fn find_captures(body, params, is_expr: int) {
     refs <- [];
     // Collect all Identifier references via worklist
     work <- [];
