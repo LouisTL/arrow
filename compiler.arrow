@@ -77,13 +77,14 @@ fn ps(){
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:"",line:ln};}
-fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
+fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
+fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln};}
+fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){ln<-toks[pos[0]].line;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln};}
-fn pfd(){ln<-toks[pos[0]].line;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,ev("IDENT"));}else{push(pt,"");}}}eat("RPAREN");rt<-"";if(ci("COLON")){eat("COLON");rt<-ev("IDENT");}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln};}
-fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");ev("IDENT");}}}eat("RPAREN");return p;}
+fn pfd(){ln<-toks[pos[0]].line;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln};}
+fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");pty();}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");pty();}}}eat("RPAREN");return p;}
 fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
@@ -297,7 +298,7 @@ fn add_var(name: str): str {
     return reg;
 }
 
-fn set_var_type(name: str, vtype: str) {
+fn set_var_type(name: str, vtype) {
     types <- var_types[0];
     i <- 0;
     while (i < len(types)) {
@@ -311,14 +312,14 @@ fn set_var_type(name: str, vtype: str) {
     return false;
 }
 
-fn get_var_type(name: str): str {
+fn get_var_type(name: str) {
     types <- var_types[0];
     i <- len(types) - 1;
     while (i >= 0) {
         if (types[i].name = name) { return types[i].vtype; }
         i <- i - 1;
     }
-    return "any";
+    return mk_any();
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
@@ -348,13 +349,20 @@ fn get_struct_layout(var_name: str) {
     return false;
 }
 
-fn get_field_type(fields, fname: str): str {
+fn get_field_type(fields, fname: str) {
     i <- 0;
     while (i < len(fields)) {
-        if (fields[i].fname = fname) { return fields[i].ftype; }
+        if (fields[i].fname = fname) {
+            ft <- fields[i].ftype;
+            if (ft = "int") { return mk_int(); }
+            if (ft = "str") { return mk_str(); }
+            if (ft = "struct") { return mk_struct(); }
+            if (ft = "fn") { return mk_fn(); }
+            return mk_any();
+        }
         i <- i + 1;
     }
-    return "any";
+    return mk_any();
 }
 
 // Track array element types: var_name -> elem_type ("int" or "str")
@@ -392,21 +400,27 @@ fn set_global_array_type(var_name: str, etype: str) {
     return false;
 }
 
-fn get_array_elem_type(var_name: str): str {
+fn get_array_elem_type(var_name: str) {
     // Check local scope first
     types <- array_elem_types[0];
     i <- len(types) - 1;
     while (i >= 0) {
-        if (types[i].var_name = var_name) { return types[i].elem_type; }
+        if (types[i].var_name = var_name) {
+            if (types[i].elem_type = "str") { return mk_str(); }
+            return mk_int();
+        }
         i <- i - 1;
     }
     // Fall back to global array types
     i <- 0;
     while (i < len(global_array_types)) {
-        if (global_array_types[i].var_name = var_name) { return global_array_types[i].elem_type; }
+        if (global_array_types[i].var_name = var_name) {
+            if (global_array_types[i].elem_type = "str") { return mk_str(); }
+            return mk_int();
+        }
         i <- i + 1;
     }
-    return "any";
+    return mk_any();
 }
 
 // Function declarations we need to track
@@ -421,12 +435,12 @@ fn find_fn(name: str) {
     return false;
 }
 
-fn set_fn_ret_type(name: str, rtype: str, rfields) {
+fn set_fn_ret_type(name: str, rtype, rfields) {
     i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
             // Don't override explicit user annotations — let the checker complain instead
-            if (declared_fns[i].ret_type_ann != "") {
+            if (declared_fns[i].ret_type_ann.kind != "none") {
                 return false;
             }
             declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann};
@@ -438,18 +452,18 @@ fn set_fn_ret_type(name: str, rtype: str, rfields) {
 }
 
 // Set a parameter type for a function (from call-site analysis)
-fn set_fn_param_type(fn_name: str, param_idx: int, ptype: str) {
+fn set_fn_param_type(fn_name: str, param_idx: int, ptype) {
     fi <- find_fn(fn_name);
     if (fi = false) { return false; }
     if (param_idx < len(fi.param_types)) {
         // Don't override explicit user annotations — let the checker complain instead
         if (param_idx < len(fi.param_types_ann)) {
-            if (fi.param_types_ann[param_idx] != "") {
+            if (fi.param_types_ann[param_idx].kind != "none") {
                 return false;
             }
         }
         // Upgrade from "any" or "int" to a more specific type, never downgrade from "str"
-        if (fi.param_types[param_idx] != "str") {
+        if (fi.param_types[param_idx].kind != "str") {
             fi.param_types[param_idx] <- ptype;
         }
     }
@@ -528,7 +542,7 @@ fn scs_expr(nd, work) {
                 while (j < len(nd.args)) {
                     if (j < fi.param_count) {
                         if (is_str_expr(nd.args[j])) {
-                            set_fn_param_type(fi.name, j, "str");
+                            set_fn_param_type(fi.name, j, mk_str());
                         }
                     }
                     j <- j + 1;
@@ -562,7 +576,86 @@ fn scs_expr(nd, work) {
     return work;
 }
 
-// ── Typed result helpers ────────────────
+// ═══════════════════════════════════════════
+//  TYPE REPRESENTATION (universe 1)
+//  A Type is a struct {kind: str, ...}.
+//  Kinds:
+//    "int", "str", "any", "struct", "fn"     — primitive
+//    "array" with field `elem: Type`           — [T]
+//    "struct_lit" with field `fields: [...]`   — {name: T, ...}
+//    "none"                                    — sentinel: no annotation
+//  Stored in var_types and declared_fns; returned by typeof_expr.
+//  Distinct from the .type string field on typed values (universe 2)
+//  used by the IR emitter for codegen decisions.
+// ═══════════════════════════════════════════
+
+fn mk_int() { return {kind: "int"}; }
+fn mk_str() { return {kind: "str"}; }
+fn mk_any() { return {kind: "any"}; }
+fn mk_struct() { return {kind: "struct"}; }
+fn mk_fn() { return {kind: "fn"}; }
+fn mk_none() { return {kind: "none"}; }
+fn mk_array(elem) { return {kind: "array", elem: elem}; }
+fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
+
+// Render a Type as surface syntax for error messages.
+fn type_str(t): str {
+    if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
+    if (t.kind = "struct_lit") {
+        s <- "{";
+        i <- 0;
+        while (i < len(t.fields)) {
+            if (i > 0) { s <- s + ", "; }
+            s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
+            i <- i + 1;
+        }
+        return s + "}";
+    }
+    return t.kind;
+}
+
+// Convert a kind string (from typed-value .type strings) to a Type.
+// Used at the codegen → type-system boundary. Does NOT handle composite
+// types — those come from the parser, not from value tags.
+fn parse_type_ann(s: str) {
+    if (s = "int") { return mk_int(); }
+    if (s = "str") { return mk_str(); }
+    if (s = "any") { return mk_any(); }
+    if (s = "struct") { return mk_struct(); }
+    if (s = "fn") { return mk_fn(); }
+    return mk_any();
+}
+
+// Look up a field's type in a struct_lit's fields list. Returns mk_none() if absent.
+fn struct_field_type(fields, name: str) {
+    i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].name = name) { return fields[i].type; }
+        i <- i + 1;
+    }
+    return mk_none();
+}
+
+// Recursive structural equality on Types.
+fn type_eq(a, b): int {
+    if (a.kind != b.kind) { return false; }
+    if (a.kind = "array") { return type_eq(a.elem, b.elem); }
+    if (a.kind = "struct_lit") {
+        if (len(a.fields) != len(b.fields)) { return false; }
+        // Order-independent: every field in a must exist with matching type in b
+        i <- 0;
+        while (i < len(a.fields)) {
+            bt <- struct_field_type(b.fields, a.fields[i].name);
+            if (bt.kind = "none") { return false; }
+            if (!type_eq(a.fields[i].type, bt)) { return false; }
+            i <- i + 1;
+        }
+        return true;
+    }
+    return true;
+}
+
+// ── Typed result helpers (universe 2) ────
 fn tv(reg: str, vtype: str) { return {reg: reg, type: vtype, fields: false}; }
 fn tv_int(reg: str) { return {reg: reg, type: "int", fields: false}; }
 fn tv_str(reg: str) { return {reg: reg, type: "str", fields: false}; }
@@ -600,30 +693,28 @@ fn scan_fns(stmts) {
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            // Build param_types: use annotations if present, else "any"
-            // Also keep param_types_ann: original annotations as-given (for the checker)
+            // param_types_ann from AST is already a list of Type values (mk_none() if absent)
+            // param_types is the working type used for inference (starts at any, widens via call sites)
             pt <- [];
-            pt_ann <- [];
             j <- 0;
             while (j < len(stmts[i].params)) {
-                ann <- "";
+                ann <- mk_none();
                 if (j < len(stmts[i].param_types_ann)) {
                     ann <- stmts[i].param_types_ann[j];
                 }
-                push(pt_ann, ann);  // empty string means no annotation
-                if (ann != "") {
+                if (ann.kind != "none") {
                     push(pt, ann);
                 } else {
-                    push(pt, "any");
+                    push(pt, mk_any());
                 }
                 j <- j + 1;
             }
-            // Use return type annotation if present
-            rt <- "any";
-            if (stmts[i].ret_type_ann != "") {
+            // Use return type annotation if present (a Type value)
+            rt <- mk_any();
+            if (stmts[i].ret_type_ann.kind != "none") {
                 rt <- stmts[i].ret_type_ann;
             }
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: stmts[i].ret_type_ann});
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann});
         }
         i <- i + 1;
     }
@@ -797,7 +888,7 @@ fn emit_expr(nd) {
         }
         r <- fresh("%ld");
         emit("  " + r + " = load i64, ptr " + reg);
-        return tv(r, get_var_type(nd.name));
+        return tv(r, get_var_type(nd.name).kind);
     }
     if (nd.node = "BinOp") {
         return emit_binop(nd);
@@ -1077,17 +1168,17 @@ fn emit_call(nd) {
                 // This catches cases scan_call_sites misses (Identifiers with type "str")
                 if (i < fi.param_count) {
                     if (vt.type = "str") {
-                        set_fn_param_type(fi.name, i, "str");
+                        set_fn_param_type(fi.name, i, mk_str());
                     }
                 }
                 i <- i + 1;
             }
             r <- fresh("%call");
             emit("  " + r + " = call i64 @" + nm + "(" + args_str + ")");
-            if (fi.ret_type = "struct") {
+            if (fi.ret_type.kind = "struct") {
                 return {reg: r, type: "struct", fields: fi.ret_fields};
             }
-            return tv(r, fi.ret_type);
+            return tv(r, fi.ret_type.kind);
         }
 
         // Builtin len
@@ -1357,7 +1448,7 @@ fn emit_call(nd) {
                 args_str <- args_str + "i64 " + vt.reg;
                 if (afn_info != false && i < afn_info.param_count) {
                     if (vt.type = "str") {
-                        set_fn_param_type(afn_info.name, i, "str");
+                        set_fn_param_type(afn_info.name, i, mk_str());
                     }
                 }
                 i <- i + 1;
@@ -1365,7 +1456,7 @@ fn emit_call(nd) {
             r <- fresh("%icall");
             emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
             if (afn_info != false) {
-                return tv(r, afn_info.ret_type);
+                return tv(r, afn_info.ret_type.kind);
             }
             return tv(r, "any");
         }
@@ -1448,11 +1539,11 @@ fn emit_index(nd) {
     emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
     emit("  " + ev + " = load i64, ptr " + ep);
     // Check if we know the element type for this array variable
-    etype <- "any";
+    etype <- mk_any();
     if (nd.obj.node = "Identifier") {
         etype <- get_array_elem_type(nd.obj.name);
     }
-    return tv(ev, etype);
+    return tv(ev, etype.kind);
 }
 
 // ── Emit statement ──────────────────────
@@ -1463,22 +1554,22 @@ fn emit_stmt(nd) {
         reg <- find_var(nd.name);
         if (reg = "") { reg <- add_var(nd.name); }
         emit("  store i64 " + vt.reg + ", ptr " + reg);
-        // Track type — use explicit annotation if present
-        if (nd.type_ann != "") {
+        // Track type — use explicit annotation if present (already a Type)
+        if (nd.type_ann.kind != "none") {
             set_var_type(nd.name, nd.type_ann);
         } else if (vt.type = "struct") {
-            set_var_type(nd.name, "int");
+            set_var_type(nd.name, mk_int());
             if (vt.fields != false) {
                 set_struct_layout(nd.name, vt.fields);
             }
         } else if (vt.type = "fn") {
             // Arrow function assignment — track var → fn name mapping
-            set_var_type(nd.name, "fn");
+            set_var_type(nd.name, mk_fn());
             if (vt.fields != false) {
                 set_arrow_fn_var(nd.name, vt.fields);
             }
         } else {
-            set_var_type(nd.name, vt.type);
+            set_var_type(nd.name, parse_type_ann(vt.type));
         }
         // Track array element types from ArrayLit initializers
         if (nd.expr.node = "ArrayLit") {
@@ -1513,7 +1604,7 @@ fn emit_stmt(nd) {
             // Track return type and struct fields for function
             fn_name <- current_fn[0];
             if (fn_name != "") {
-                set_fn_ret_type(fn_name, vt.type, vt.fields);
+                set_fn_ret_type(fn_name, parse_type_ann(vt.type), vt.fields);
             }
         }
         return false;
@@ -1695,14 +1786,14 @@ fn emit_dot_expr(nd) {
     emit("  " + val + " = load i64, ptr " + vp);
 
     // Try to determine field type from struct layout
-    ftype <- "any"; // unknown type — could be string, int, or struct pointer
+    ftype <- mk_any(); // unknown type — could be string, int, or struct pointer
     if (nd.obj.node = "Identifier") {
         layout <- get_struct_layout(nd.obj.name);
         if (layout != false) {
             ftype <- get_field_type(layout, nd.field);
         }
     }
-    return tv(val, ftype);
+    return tv(val, ftype.kind);
 }
 
 fn emit_dot_assign(nd) {
@@ -1901,7 +1992,7 @@ fn emit_for_in(nd) {
         emit("  store i64 " + ri + ", ptr " + var_reg);
 
         // Set loop var type to string
-        set_var_type(nd.var_name, "str");
+        set_var_type(nd.var_name, mk_str());
 
         emit_block(nd.body);
 
@@ -1966,71 +2057,107 @@ fn emit_for_in(nd) {
 // before emit_function runs its body, so emit_expr returns concrete
 // types instead of "any" for local variables.
 
-fn typeof_expr(nd): str {
-    if (nd.node = "NumberLit") { return "int"; }
-    if (nd.node = "StringLit") { return "str"; }
-    if (nd.node = "BoolLit") { return "int"; }
+fn typeof_expr(nd) {
+    if (nd.node = "NumberLit") { return mk_int(); }
+    if (nd.node = "StringLit") { return mk_str(); }
+    if (nd.node = "BoolLit") { return mk_int(); }
     if (nd.node = "Identifier") {
-        t <- get_var_type(nd.name);
-        return t;
+        return get_var_type(nd.name);
     }
     if (nd.node = "BinOp") {
         op <- nd.op;
-        if (op = "&&" || op = "||") { return "int"; }
+        if (op = "&&" || op = "||") { return mk_int(); }
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (op = "+") {
-            if (lt = "str" || rt = "str") { return "str"; }
-            return "int";
+            if (lt.kind = "str" || rt.kind = "str") { return mk_str(); }
+            return mk_int();
         }
         // Arithmetic or comparison — all return int
-        return "int";
+        return mk_int();
     }
-    if (nd.node = "UnaryOp") { return "int"; }
+    if (nd.node = "UnaryOp") { return mk_int(); }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             nm <- nd.callee.name;
-            if (nm = "len") { return "int"; }
-            if (nm = "str_len") { return "int"; }
-            if (nm = "char_code") { return "int"; }
-            if (nm = "char_at") { return "str"; }
-            if (nm = "from_char_code") { return "str"; }
-            if (nm = "substring") { return "str"; }
-            if (nm = "input") { return "str"; }
-            if (nm = "read_file") { return "str"; }
-            if (nm = "write_file") { return "int"; }
-            if (nm = "append_file") { return "int"; }
-            if (nm = "exec_cmd") { return "int"; }
-            if (nm = "push") { return "int"; }
-            if (nm = "print") { return "int"; }
+            if (nm = "len") { return mk_int(); }
+            if (nm = "str_len") { return mk_int(); }
+            if (nm = "char_code") { return mk_int(); }
+            if (nm = "char_at") { return mk_str(); }
+            if (nm = "from_char_code") { return mk_str(); }
+            if (nm = "substring") { return mk_str(); }
+            if (nm = "input") { return mk_str(); }
+            if (nm = "read_file") { return mk_str(); }
+            if (nm = "write_file") { return mk_int(); }
+            if (nm = "append_file") { return mk_int(); }
+            if (nm = "exec_cmd") { return mk_int(); }
+            if (nm = "push") { return mk_int(); }
+            if (nm = "print") { return mk_int(); }
             if (nm = "args") {
-                if (len(nd.args) = 0) { return "int"; }
-                return "str";
+                if (len(nd.args) = 0) { return mk_int(); }
+                return mk_str();
             }
             fi <- find_fn(nm);
             if (fi != false) { return fi.ret_type; }
         }
-        return "any";
+        return mk_any();
     }
-    if (nd.node = "ArrayLit") { return "int"; }
+    if (nd.node = "ArrayLit") {
+        // Empty array → unknown element type
+        if (len(nd.elements) = 0) { return mk_array(mk_any()); }
+        // Use the first element's type as the array's element type.
+        // (No unification across mixed-type literals yet — that's a future refinement.)
+        et <- typeof_expr(nd.elements[0]);
+        return mk_array(et);
+    }
     if (nd.node = "IndexExpr") {
+        // Prefer the array's Type if we know it
         if (nd.obj.node = "Identifier") {
+            ot <- get_var_type(nd.obj.name);
+            if (ot.kind = "array") { return ot.elem; }
+            // Fall back to the side table for arrays we set up before var_types existed
             return get_array_elem_type(nd.obj.name);
         }
-        return "any";
+        // Index into a non-Identifier (e.g. nested [[int]] subscript)
+        ot <- typeof_expr(nd.obj);
+        if (ot.kind = "array") { return ot.elem; }
+        return mk_any();
     }
     if (nd.node = "DotExpr") {
         if (nd.obj.node = "Identifier") {
+            // Prefer the struct_lit Type from var_types if present
+            ot <- get_var_type(nd.obj.name);
+            if (ot.kind = "struct_lit") {
+                ft <- struct_field_type(ot.fields, nd.field);
+                if (ft.kind != "none") { return ft; }
+            }
+            // Fall back to legacy struct_layouts side table
             layout <- get_struct_layout(nd.obj.name);
             if (layout != false) {
                 return get_field_type(layout, nd.field);
             }
         }
-        return "any";
+        // Index into a non-Identifier (e.g. arr[0].field where arr is [{...}])
+        ot <- typeof_expr(nd.obj);
+        if (ot.kind = "struct_lit") {
+            ft <- struct_field_type(ot.fields, nd.field);
+            if (ft.kind != "none") { return ft; }
+        }
+        return mk_any();
     }
-    if (nd.node = "StructLit") { return "struct"; }
-    if (nd.node = "ArrowFn") { return "fn"; }
-    return "any";
+    if (nd.node = "StructLit") {
+        // Build a struct_lit type from the literal's fields
+        fs <- [];
+        i <- 0;
+        while (i < len(nd.fields)) {
+            f <- nd.fields[i];
+            push(fs, {name: f.key, type: typeof_expr(f.val)});
+            i <- i + 1;
+        }
+        return mk_struct_lit(fs);
+    }
+    if (nd.node = "ArrowFn") { return mk_fn(); }
+    return mk_any();
 }
 
 // Walk a body of statements, updating var_types for each assignment
@@ -2039,22 +2166,21 @@ fn infer_body(stmts) {
     while (i < len(stmts)) {
         s <- stmts[i];
         if (s.node = "Assignment") {
-            // Use explicit type annotation if present, otherwise infer
-            if (s.type_ann != "") {
+            // Use explicit type annotation if present (already a Type), otherwise infer
+            if (s.type_ann.kind != "none") {
                 set_var_type(s.name, s.type_ann);
             } else {
                 ty <- typeof_expr(s.expr);
                 set_var_type(s.name, ty);
             }
-            // Track struct layouts from struct literals
+            // Track struct layouts from struct literals — store ftype as kind string
             if (s.expr.node = "StructLit") {
-                // Build layout from literal
                 layout <- [];
                 j <- 0;
                 while (j < len(s.expr.fields)) {
                     f <- s.expr.fields[j];
                     fty <- typeof_expr(f.val);
-                    push(layout, {fname: f.key, ftype: fty});
+                    push(layout, {fname: f.key, ftype: fty.kind});
                     j <- j + 1;
                 }
                 set_struct_layout(s.name, layout);
@@ -2064,7 +2190,7 @@ fn infer_body(stmts) {
                 j <- 0;
                 while (j < len(s.expr.elements)) {
                     ety <- typeof_expr(s.expr.elements[j]);
-                    if (ety = "str") {
+                    if (ety.kind = "str") {
                         set_array_elem_type(s.name, "str");
                     }
                     j <- j + 1;
@@ -2079,11 +2205,11 @@ fn infer_body(stmts) {
         if (s.node = "ForInStmt") {
             // Loop variable: if iterable is a string, element is str char (a string)
             it_ty <- typeof_expr(s.iterable);
-            if (it_ty = "str") {
-                set_var_type(s.var_name, "str");
+            if (it_ty.kind = "str") {
+                set_var_type(s.var_name, mk_str());
             } else {
                 // Array iteration: elem type from array
-                et <- "any";
+                et <- mk_any();
                 if (s.iterable.node = "Identifier") {
                     et <- get_array_elem_type(s.iterable.name);
                 }
@@ -2118,16 +2244,38 @@ fn report_error(line: int, msg: str) {
     push(type_errors, {line: line, msg: msg});
 }
 
-// Two types are compatible when they're equal, when either is "any",
+// Two types are compatible when they're equal, when either is "any" or "none",
 // or when either is a structural type we can't yet model precisely.
-fn types_compat(annot: str, actual: str): int {
-    if (annot = "any") { return true; }
-    if (actual = "any") { return true; }
-    if (annot = "struct") { return true; }
-    if (actual = "struct") { return true; }
-    if (annot = "fn") { return true; }
-    if (actual = "fn") { return true; }
-    return annot = actual;
+// For arrays, recurse into element types. For struct_lits, recurse into fields.
+// Note: "struct" (no field info) is permissive against "struct_lit" — preserves
+// backward compat with code annotated `: struct` before struct_lit existed.
+fn types_compat(annot, actual): int {
+    if (annot.kind = "none") { return true; }   // no annotation = no check
+    if (actual.kind = "none") { return true; }
+    if (annot.kind = "any") { return true; }
+    if (actual.kind = "any") { return true; }
+    if (annot.kind = "struct") { return true; }
+    if (actual.kind = "struct") { return true; }
+    if (annot.kind = "fn") { return true; }
+    if (actual.kind = "fn") { return true; }
+    if (annot.kind = "array" && actual.kind = "array") {
+        return types_compat(annot.elem, actual.elem);
+    }
+    if (annot.kind = "struct_lit" && actual.kind = "struct_lit") {
+        // Every field in annot must be present in actual with a compatible type.
+        // (Width subtyping: actual may have extra fields. This matches typical structural
+        //  typing and lets you pass a richer struct where a smaller shape is expected.)
+        i <- 0;
+        while (i < len(annot.fields)) {
+            af <- annot.fields[i];
+            bt <- struct_field_type(actual.fields, af.name);
+            if (bt.kind = "none") { return false; }
+            if (!types_compat(af.type, bt)) { return false; }
+            i <- i + 1;
+        }
+        return true;
+    }
+    return annot.kind = actual.kind;
 }
 
 fn check_body(stmts) {
@@ -2140,10 +2288,10 @@ fn check_body(stmts) {
 
 fn check_stmt(s) {
     if (s.node = "Assignment") {
-        if (s.type_ann != "") {
+        if (s.type_ann.kind != "none") {
             actual <- typeof_expr(s.expr);
             if (!types_compat(s.type_ann, actual)) {
-                report_error(s.line, "type mismatch: '" + s.name + "' annotated as " + s.type_ann + " but assigned " + actual);
+                report_error(s.line, "type mismatch: '" + s.name + "' annotated as " + type_str(s.type_ann) + " but assigned " + type_str(actual));
             }
         }
         check_expr(s.expr);
@@ -2155,10 +2303,10 @@ fn check_stmt(s) {
             if (current_fn[0] != "") {
                 fi <- find_fn(current_fn[0]);
                 if (fi != false) {
-                    if (fi.ret_type_ann != "") {
+                    if (fi.ret_type_ann.kind != "none") {
                         actual <- typeof_expr(s.expr);
                         if (!types_compat(fi.ret_type_ann, actual)) {
-                            report_error(s.line, "return type mismatch in '" + current_fn[0] + "': declared " + fi.ret_type_ann + " but returning " + actual);
+                            report_error(s.line, "return type mismatch in '" + current_fn[0] + "': declared " + type_str(fi.ret_type_ann) + " but returning " + type_str(actual));
                         }
                     }
                 }
@@ -2202,10 +2350,10 @@ fn check_expr(e) {
                     if (j < fi.param_count) {
                         ann <- fi.param_types_ann[j];
                         // Only check args against EXPLICIT annotations
-                        if (ann != "") {
+                        if (ann.kind != "none") {
                             actual <- typeof_expr(e.args[j]);
                             if (!types_compat(ann, actual)) {
-                                report_error(e.line, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + ann + " but got " + actual);
+                                report_error(e.line, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_str(ann) + " but got " + type_str(actual));
                             }
                         }
                     }
@@ -2444,7 +2592,7 @@ fn emit_arrow_fn(nd) {
     i <- 0;
     while (i < len(nd.params)) {
         emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
-        set_var_type(nd.params[i], "any");
+        set_var_type(nd.params[i], mk_any());
         i <- i + 1;
     }
 
@@ -2459,7 +2607,7 @@ fn emit_arrow_fn(nd) {
             emit("  " + cval + " = load i64, ptr " + cep);
             emit("  store i64 " + cval + ", ptr %" + captures[i]);
             // Preserve type from enclosing scope
-            set_var_type(captures[i], "any");
+            set_var_type(captures[i], mk_any());
             i <- i + 1;
         }
     }
@@ -2473,7 +2621,7 @@ fn emit_arrow_fn(nd) {
     } else {
         vt <- emit_expr(nd.body);
         emit("  ret i64 " + vt.reg);
-        set_fn_ret_type(fn_name, vt.type, vt.fields);
+        set_fn_ret_type(fn_name, parse_type_ann(vt.type), vt.fields);
     }
 
     emit("}");
@@ -2570,7 +2718,7 @@ fn emit_function(nd) {
         if (fi_info != false && i < len(fi_info.param_types)) {
             set_var_type(nd.params[i], fi_info.param_types[i]);
         } else {
-            set_var_type(nd.params[i], "any");
+            set_var_type(nd.params[i], mk_any());
         }
         i <- i + 1;
     }

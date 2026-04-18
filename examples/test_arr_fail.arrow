@@ -1,0 +1,19 @@
+// Should fail: 3 errors involving array types
+
+// 1. Annotated as [int] but assigned [str]
+words: [int] <- ["a", "b", "c"];
+
+// 2. Function expects [int], called with [str]
+fn sum(xs: [int]): int {
+    total: int <- 0;
+    for (n in xs) { total <- total + n; }
+    return total;
+}
+
+names: [str] <- ["x", "y"];
+print(sum(names));
+
+// 3. Function declared to return [int] but returns int
+fn bad(): [int] {
+    return 42;
+}

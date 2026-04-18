@@ -1,0 +1,9 @@
+// Should pass: array of int annotated correctly
+nums: [int] <- [1, 2, 3];
+
+fn first(xs: [int]): int {
+    return xs[0];
+}
+
+print(first(nums));
+print("ok");

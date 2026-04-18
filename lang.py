@@ -419,10 +419,10 @@ class Parser:
         if tok.type == TokenType.IDENT:
             if self._peek_type(1) == TokenType.ARROW:
                 return self._assignment()
-            # Typed assignment: ident : type <- expr;  (type is parsed and ignored)
+            # Typed assignment: ident : type <- expr;  (type parsed and ignored)
+            # Type can start with IDENT (int, str, ...), LBRACKET ([int]), or LBRACE ({x:int})
             if (self._peek_type(1) == TokenType.COLON and
-                    self._peek_type(2) == TokenType.IDENT and
-                    self._peek_type(3) == TokenType.ARROW):
+                    self._peek_type(2) in (TokenType.IDENT, TokenType.LBRACKET, TokenType.LBRACE)):
                 return self._assignment(typed=True)
             # index/dot assignment: ident[...] <- ... OR ident.field <- ...
             if self._peek_type(1) in (TokenType.LBRACKET, TokenType.DOT):
@@ -474,12 +474,35 @@ class Parser:
         self._eat(TokenType.RBRACE)
         return Block(stmts)
 
+    def _skip_type_ann(self):
+        """Parse and discard a type annotation. Supports: int, str, [int], [[str]], {x: int, y: int}, ..."""
+        if self._current().type == TokenType.LBRACKET:
+            self._eat(TokenType.LBRACKET)
+            self._skip_type_ann()
+            self._eat(TokenType.RBRACKET)
+        elif self._current().type == TokenType.LBRACE:
+            # Struct type: {name: type, name: type, ...}
+            self._eat(TokenType.LBRACE)
+            if self._current().type != TokenType.RBRACE:
+                self._eat(TokenType.IDENT)        # field name
+                self._eat(TokenType.COLON)
+                self._skip_type_ann()             # field type
+                while self._match(TokenType.COMMA):
+                    if self._current().type == TokenType.RBRACE:
+                        break  # trailing comma
+                    self._eat(TokenType.IDENT)
+                    self._eat(TokenType.COLON)
+                    self._skip_type_ann()
+            self._eat(TokenType.RBRACE)
+        else:
+            self._eat(TokenType.IDENT)
+
     def _assignment(self, typed: bool = False) -> Assignment:
         name = self._eat(TokenType.IDENT).value
         if typed:
             # Skip ': type' — interpreter ignores type annotations
             self._eat(TokenType.COLON)
-            self._eat(TokenType.IDENT)
+            self._skip_type_ann()
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
@@ -509,7 +532,7 @@ class Parser:
         # Optional return type annotation: fn f(...) : type { ... }
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
-            self._eat(TokenType.IDENT)
+            self._skip_type_ann()
         body = self._block()
         return FnDecl(name, params, body.statements)
 
@@ -521,12 +544,12 @@ class Parser:
             # Optional per-param type annotation: fn f(x: type, y: type)
             if self._current().type == TokenType.COLON:
                 self._eat(TokenType.COLON)
-                self._eat(TokenType.IDENT)
+                self._skip_type_ann()
             while self._match(TokenType.COMMA):
                 params.append(self._eat(TokenType.IDENT).value)
                 if self._current().type == TokenType.COLON:
                     self._eat(TokenType.COLON)
-                    self._eat(TokenType.IDENT)
+                    self._skip_type_ann()
         self._eat(TokenType.RPAREN)
         return params
 
