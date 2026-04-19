@@ -1241,6 +1241,17 @@ fn emit_call(nd) {
             return tv(rp, et_kind);
         }
 
+        // Builtin keys — returns [str] of a struct's field names.
+        if (nm = "keys") {
+            vt_s <- emit_expr(nd.args[0]);
+            rp <- fresh("%keys_r");
+            emit("  " + rp + " = call i64 @arrow_keys(i64 " + vt_s.reg + ")");
+            // Result is a [str]. Tag the value as "int" (pointer) — the structural
+            // type info lives in var_types once assigned (preserved by the
+            // infer_body/emit_stmt harmony fix from the pop work).
+            return tv_int(rp);
+        }
+
         // Builtin str_len
         if (nm = "str_len") {
             vt <- emit_expr(nd.args[0]);
@@ -1570,10 +1581,16 @@ fn emit_index(nd) {
     emit("  " + off + " = add i64 " + vt_idx.reg + ", 2"); // skip len+cap
     emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
     emit("  " + ev + " = load i64, ptr " + ep);
-    // Check if we know the element type for this array variable
+    // Element type: prefer structural info from var_types (set by infer_body for
+    // all [T]-typed variables), fall back to the legacy side table.
     etype <- mk_any();
     if (nd.obj.node = "Identifier") {
-        etype <- get_array_elem_type(nd.obj.name);
+        ot <- get_var_type(nd.obj.name);
+        if (ot.kind = "array") {
+            etype <- ot.elem;
+        } else {
+            etype <- get_array_elem_type(nd.obj.name);
+        }
     }
     return tv(ev, etype.kind);
 }
@@ -2144,6 +2161,7 @@ fn typeof_expr(nd) {
                 }
                 return mk_any();
             }
+            if (nm = "keys") { return mk_array(mk_str()); }
             if (nm = "print") { return mk_int(); }
             if (nm = "args") {
                 if (len(nd.args) = 0) { return mk_int(); }
@@ -2948,6 +2966,55 @@ fn emit_pop_helper() {
     emit("");
 }
 
+// ── Emit keys helper ────────────────────
+//
+// arrow_keys(struct_ptr) returns a new [str] of the struct's field names.
+// Struct layout (see emit_struct_lit):
+//   slot 0      : count n
+//   slots 1..n  : values
+//   slots n+1.. : name pointers (as i64)
+// Output array layout (see emit_array_lit):
+//   slot 0      : len
+//   slot 1      : cap
+//   slots 2..   : elements
+fn emit_keys_helper() {
+    emit("define i64 @arrow_keys(i64 %s.i) {");
+    emit("entry:");
+    emit("  %s = inttoptr i64 %s.i to ptr");
+    emit("  %np = getelementptr i64, ptr %s, i64 0");
+    emit("  %n = load i64, ptr %np");
+    // Allocate the result array. Same sizing rule as emit_array_lit: cap=max(n,4096).
+    emit("  %cap1 = icmp slt i64 %n, 4096");
+    emit("  %cap = select i1 %cap1, i64 4096, i64 %n");
+    emit("  %total = add i64 %cap, 2");
+    emit("  %bytes = mul i64 %total, 8");
+    emit("  %arr = call ptr @malloc(i64 %bytes)");
+    emit("  store i64 %n, ptr %arr");
+    emit("  %capp = getelementptr i64, ptr %arr, i64 1");
+    emit("  store i64 %cap, ptr %capp");
+    // Copy name pointers from struct slots [n+1 .. 2n] into array slots [2 .. n+1].
+    emit("  br label %loop_cond");
+    emit("loop_cond:");
+    emit("  %i = phi i64 [0, %entry], [%i_next, %loop_body]");
+    emit("  %done = icmp sge i64 %i, %n");
+    emit("  br i1 %done, label %exit, label %loop_body");
+    emit("loop_body:");
+    emit("  %src_off = add i64 %i, %n");
+    emit("  %src_off1 = add i64 %src_off, 1");
+    emit("  %src_p = getelementptr i64, ptr %s, i64 %src_off1");
+    emit("  %name = load i64, ptr %src_p");
+    emit("  %dst_off = add i64 %i, 2");
+    emit("  %dst_p = getelementptr i64, ptr %arr, i64 %dst_off");
+    emit("  store i64 %name, ptr %dst_p");
+    emit("  %i_next = add i64 %i, 1");
+    emit("  br label %loop_cond");
+    emit("exit:");
+    emit("  %ri = ptrtoint ptr %arr to i64");
+    emit("  ret i64 %ri");
+    emit("}");
+    emit("");
+}
+
 // ── Emit read_file helper ───────────────
 
 fn emit_read_file_helper() {
@@ -3120,6 +3187,7 @@ fn compile(stmts) {
     emit_safe_strcmp_helper();
     emit_push_helper();
     emit_pop_helper();
+    emit_keys_helper();
     emit_struct_find_helper();
     emit_itoa_helper();
     emit_read_file_helper();
