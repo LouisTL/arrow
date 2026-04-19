@@ -1226,6 +1226,21 @@ fn emit_call(nd) {
             return tv(vt_val.reg, vt_val.type);
         }
 
+        // Builtin pop — returns last element, decrements array len in place.
+        // No pointer store-back needed: arrow_pop shrinks in place and never reallocs.
+        if (nm = "pop") {
+            vt_arr <- emit_expr(nd.args[0]);
+            rp <- fresh("%pop_r");
+            emit("  " + rp + " = call i64 @arrow_pop(i64 " + vt_arr.reg + ")");
+            // Element type from the full typeof_expr pipeline (which reads var_types
+            // populated by infer_body). Avoids dropping structural types that
+            // emit-time codegen doesn't carry on typed values.
+            at <- typeof_expr(nd.args[0]);
+            et_kind <- "any";
+            if (at.kind = "array") { et_kind <- at.elem.kind; }
+            return tv(rp, et_kind);
+        }
+
         // Builtin str_len
         if (nm = "str_len") {
             vt <- emit_expr(nd.args[0]);
@@ -1586,7 +1601,19 @@ fn emit_stmt(nd) {
                 set_arrow_fn_var(nd.name, vt.fields);
             }
         } else {
-            set_var_type(nd.name, parse_type_ann(vt.type));
+            // Don't clobber a richer inferred type from infer_body.
+            // emit_expr returns a value-tag kind string — e.g. ArrayLit returns
+            // "int" because its value is a pointer. If infer_body already set
+            // a structural Type (array, struct_lit) or a better primitive (str),
+            // keep it.
+            existing <- get_var_type(nd.name);
+            if (existing.kind = "array" || existing.kind = "struct_lit") {
+                // keep structural type
+            } else if (existing.kind = "str" && vt.type != "str") {
+                // keep previously-inferred string type
+            } else {
+                set_var_type(nd.name, parse_type_ann(vt.type));
+            }
         }
         // Track array element types from ArrayLit initializers
         if (nd.expr.node = "ArrayLit") {
@@ -2109,6 +2136,14 @@ fn typeof_expr(nd) {
             if (nm = "append_file") { return mk_int(); }
             if (nm = "exec_cmd") { return mk_int(); }
             if (nm = "push") { return mk_int(); }
+            if (nm = "pop") {
+                // Element type if known, else any
+                if (len(nd.args) > 0) {
+                    at <- typeof_expr(nd.args[0]);
+                    if (at.kind = "array") { return at.elem; }
+                }
+                return mk_any();
+            }
             if (nm = "print") { return mk_int(); }
             if (nm = "args") {
                 if (len(nd.args) = 0) { return mk_int(); }
@@ -2885,6 +2920,34 @@ fn emit_push_helper() {
     emit("");
 }
 
+// ── Emit pop helper ─────────────────────
+
+fn emit_pop_helper() {
+    // arrow_pop(arr) -> element at index len-1; decrements len in place.
+    // On empty array: prints "Error: pop from empty array" and exits(1).
+    emit("@.str.pop_empty = private constant [29 x i8] c\"Error: pop from empty array\\0A\\00\"");
+    emit("define i64 @arrow_pop(i64 %arr.i) {");
+    emit("entry:");
+    emit("  %arr = inttoptr i64 %arr.i to ptr");
+    emit("  %lenp = getelementptr i64, ptr %arr, i64 0");
+    emit("  %len = load i64, ptr %lenp");
+    emit("  %empty = icmp sle i64 %len, 0");
+    emit("  br i1 %empty, label %fail, label %ok");
+    emit("fail:");
+    emit("  call i32 @printf(ptr @.str.pop_empty)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %newlen = sub i64 %len, 1");
+    emit("  %off = add i64 %newlen, 2");
+    emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
+    emit("  %val = load i64, ptr %ep");
+    emit("  store i64 %newlen, ptr %lenp");
+    emit("  ret i64 %val");
+    emit("}");
+    emit("");
+}
+
 // ── Emit read_file helper ───────────────
 
 fn emit_read_file_helper() {
@@ -2999,6 +3062,7 @@ fn compile(stmts) {
     emit("declare ptr @strcat(ptr, ptr)");
     emit("declare i32 @strcmp(ptr, ptr)");
     emit("declare i32 @system(ptr)");
+    emit("declare void @exit(i32)");
     emit("declare ptr @fopen(ptr, ptr)");
     emit("declare i32 @fclose(ptr)");
     emit("declare i64 @fread(ptr, i64, i64, ptr)");
@@ -3055,6 +3119,7 @@ fn compile(stmts) {
     emit_arena_helper();
     emit_safe_strcmp_helper();
     emit_push_helper();
+    emit_pop_helper();
     emit_struct_find_helper();
     emit_itoa_helper();
     emit_read_file_helper();
