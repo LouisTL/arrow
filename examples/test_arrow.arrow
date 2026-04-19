@@ -42,3 +42,10 @@ c <- make_counter();
 print(c());
 print(c());
 print(c());
+
+// Test 8: Closure capturing a string from enclosing scope
+prefix <- "arrow: ";
+prefixed <- (msg) => {
+    print(prefix + msg);
+};
+prefixed("captured!");
