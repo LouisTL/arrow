@@ -2573,8 +2573,12 @@ fn emit_arrow_fn(nd) {
     }
     push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: mk_any(), ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: mk_none()});
 
-    // Build env struct for captures (before switching emit target)
+    // Build env struct for captures (before switching emit target).
+    // Also snapshot each capture's type from the outer scope so we can
+    // restore it inside the closure scope (otherwise they default to "any"
+    // and strings-from-capture get printed as pointers).
     env_reg <- fresh("%env");
+    capture_types <- [];
     if (len(captures) > 0) {
         env_sz <- fresh("%esz");
         emit("  " + env_sz + " = mul i64 " + len(captures) + ", 8");
@@ -2582,6 +2586,7 @@ fn emit_arrow_fn(nd) {
         // Store captured values into env
         i <- 0;
         while (i < len(captures)) {
+            push(capture_types, get_var_type(captures[i]));
             cap_reg <- find_var(captures[i]);
             cv <- fresh("%ecv");
             ep <- fresh("%eep");
@@ -2678,8 +2683,13 @@ fn emit_arrow_fn(nd) {
             emit("  " + cep + " = getelementptr i64, ptr %env_ptr, i64 " + i);
             emit("  " + cval + " = load i64, ptr " + cep);
             emit("  store i64 " + cval + ", ptr %" + captures[i]);
-            // Preserve type from enclosing scope
-            set_var_type(captures[i], mk_any());
+            // Preserve type from enclosing scope (snapshotted before the scope
+            // switch). Falls back to mk_any() when the outer scope didn't have
+            // a type for the var (shouldn't normally happen for a valid capture).
+            ct <- mk_any();
+            if (i < len(capture_types)) { ct <- capture_types[i]; }
+            if (ct.kind = "none") { ct <- mk_any(); }
+            set_var_type(captures[i], ct);
             i <- i + 1;
         }
     }
