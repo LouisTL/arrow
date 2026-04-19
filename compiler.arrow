@@ -984,7 +984,13 @@ fn emit_binop(nd) {
 // Check if an AST expression node is known to be a string
 fn is_str_expr(nd): int {
     if (nd.node = "StringLit") { return true; }
-    if (nd.node = "DotExpr") { return true; }  // struct fields are usually strings in Arrow
+    // Note: DotExpr used to return true here as a blanket heuristic ("struct fields
+    // are usually strings in Arrow") but that's a lie for the majority of fields
+    // (body, args, params, etc. are arrays). The lie was latent because len() and
+    // other code paths defaulted to array ops regardless of the tag. Removing the
+    // heuristic means some DotExpr-returning-str cases (field lookups that really
+    // do return strings) fall through to mk_any() — which is fine for correctness,
+    // just slightly less precise.
     if (nd.node = "BinOp") {
         if (nd.op = "+") {
             return is_str_expr(nd.left) || is_str_expr(nd.right);
@@ -1184,6 +1190,17 @@ fn emit_call(nd) {
         // Builtin len
         if (nm = "len") {
             vt <- emit_expr(nd.args[0]);
+            // Dispatch on static type: strings use strlen, arrays/any read the
+            // length word at offset 0. Defaulting non-str to the array path
+            // preserves existing behavior for arrays whose variable was typed
+            // as "any" (happens when arrays flow through generic helpers).
+            if (vt.type = "str") {
+                sp <- fresh("%lsp");
+                sl <- fresh("%lsr");
+                emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
+                emit("  " + sl + " = call i64 @strlen(ptr " + sp + ")");
+                return tv_int(sl);
+            }
             ap <- fresh("%ap");
             lp <- fresh("%lp");
             lv <- fresh("%lv");
