@@ -1573,6 +1573,41 @@ fn emit_array_lit(nd) {
 fn emit_index(nd) {
     vt_obj <- emit_expr(nd.obj);
     vt_idx <- emit_expr(nd.index);
+
+    // Dispatch: if the object is statically a string, index by byte and build
+    // a 2-byte allocated string (same semantics as char_at). If it's an array
+    // or we don't know, fall through to the array-indexing path.
+    //
+    // We could also check vt_obj.type = "str" here, but that field only reflects
+    // the immediate emit_expr return tag — which is "int" for a string literal
+    // loaded from a global. The richer source of truth is the var_types table
+    // populated by infer_body/scan_call_sites.
+    is_str <- false;
+    if (nd.obj.node = "Identifier") {
+        ot <- get_var_type(nd.obj.name);
+        if (ot.kind = "str") { is_str <- true; }
+    }
+    if (vt_obj.type = "str") { is_str <- true; }
+
+    if (is_str) {
+        sp <- fresh("%sip");
+        ep <- fresh("%sibp");
+        ch <- fresh("%sich");
+        buf <- fresh("%sibuf");
+        np <- fresh("%sinp");
+        r <- fresh("%sir");
+        emit("  " + sp + " = inttoptr i64 " + vt_obj.reg + " to ptr");
+        emit("  " + ep + " = getelementptr i8, ptr " + sp + ", i64 " + vt_idx.reg);
+        emit("  " + ch + " = load i8, ptr " + ep);
+        emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
+        emit("  store i8 " + ch + ", ptr " + buf);
+        emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
+        emit("  store i8 0, ptr " + np);
+        emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
+        return tv_str(r);
+    }
+
+    // Array path
     ap <- fresh("%ip");
     off <- fresh("%ioff");
     ep <- fresh("%iep");
