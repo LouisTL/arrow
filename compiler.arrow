@@ -2494,12 +2494,14 @@ fn emit_arrow_fn(nd) {
 
     // Register as a known function (param_count does NOT include env param)
     pt <- [];
+    pt_ann <- [];
     j <- 0;
     while (j < len(nd.params)) {
-        push(pt, "any");
+        push(pt, mk_any());
+        push(pt_ann, mk_none());
         j <- j + 1;
     }
-    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: "any", ret_fields: false, param_types: pt});
+    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: mk_any(), ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: mk_none()});
 
     // Build env struct for captures (before switching emit target)
     env_reg <- fresh("%env");
