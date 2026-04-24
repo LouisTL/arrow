@@ -1651,6 +1651,8 @@ fn emit_index(nd) {
     emit("  " + ev + " = load i64, ptr " + ep);
     // Element type: prefer structural info from var_types (set by infer_body for
     // all [T]-typed variables), fall back to the legacy side table.
+    // When the object isn't a direct Identifier (e.g. nested `m.functions[0]`
+    // or `arr[i][j]`), recurse through typeof_expr to walk structural types.
     etype <- mk_any();
     if (nd.obj.node = "Identifier") {
         ot <- get_var_type(nd.obj.name);
@@ -1659,6 +1661,9 @@ fn emit_index(nd) {
         } else {
             etype <- get_array_elem_type(nd.obj.name);
         }
+    } else {
+        ot <- typeof_expr(nd.obj);
+        if (ot.kind = "array") { etype <- ot.elem; }
     }
     return tv(ev, etype.kind);
 }
@@ -1689,13 +1694,11 @@ fn emit_stmt(nd) {
             // Don't clobber a richer inferred type from infer_body.
             // emit_expr returns a value-tag kind string — e.g. ArrayLit returns
             // "int" because its value is a pointer. If infer_body already set
-            // a structural Type (array, struct_lit) or a better primitive (str),
-            // keep it.
+            // a structural Type (array, struct_lit), keep it. For primitives,
+            // accept the update — a var reassigned from str to int truly is int.
             existing <- get_var_type(nd.name);
             if (existing.kind = "array" || existing.kind = "struct_lit") {
                 // keep structural type
-            } else if (existing.kind = "str" && vt.type != "str") {
-                // keep previously-inferred string type
             } else {
                 set_var_type(nd.name, parse_type_ann(vt.type));
             }
@@ -3407,7 +3410,41 @@ if (args() < 1) {
     print("  Compiles Arrow Lang source to a native executable.");
 }
 
+// Phase-1 IR acceptance: build a tiny module by hand, render, print.
+// Invoked as `arrow --ir-test`. The dispatch lives at the very end of the
+// file so that all ir_* helper fns have been declared by lang.py's linear
+// execution before run_ir_test is called.
+fn run_ir_test() {
+    m <- ir_module();
+    f <- ir_function("add_one", [{name: "x", type: mk_int()}], mk_int());
+    bb <- ir_block("entry");
+    x_slot <- ir_reg("%x", mk_int());
+    ir_push_inst(bb, ii_alloca("%x", mk_int()));
+    x_arg <- ir_reg("%x.arg", mk_int());
+    ir_push_inst(bb, ii_store(x_arg, x_slot));
+    ld <- ir_reg("%ld", mk_int());
+    ir_push_inst(bb, ii_load("%ld", mk_int(), x_slot));
+    res <- ir_reg("%res", mk_int());
+    ir_push_inst(bb, ii_add("%res", ld, ir_const_int(1)));
+    ir_set_terminator(bb, ii_ret(res));
+    ir_fn_add_block(f, bb);
+    ir_mod_add_function(m, f);
+    ir_mod_add_str(m, "hello");
+    ir_mod_add_global(m, "counter", mk_int());
+    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+    print(ir_render_module(m));
+}
+
+ir_test_mode <- [false];
 if (args() > 0) {
+    if (args(0) = "--ir-test") {
+        ir_test_mode[0] <- true;
+        // Call site moved to end-of-file. Setting the flag here is enough
+        // to skip the real compile below.
+    }
+}
+
+if (args() > 0 && !ir_test_mode[0]) {
     input_file <- args(0);
 
     // Parse -o flag
@@ -3481,4 +3518,457 @@ if (args() > 0) {
             print("IR written to " + ll_file);
         }
     }
+}
+
+// ═══════════════════════════════════════════
+//  ARROW IR (Phase 1 — data structures & renderer)
+//
+//  Purpose: sit alongside the existing string-emitting codegen. Nothing in
+//  this section is wired into emit_* yet. Phase 2 will migrate one function
+//  through this pipeline as proof-of-concept.
+//
+//  Shapes (all are plain Arrow structs):
+//
+//    Value =
+//      { kind: "reg",        name: str,  type: Type }   // %name
+//      { kind: "const_int",  val: int,   type: Type }   // literal integer
+//      { kind: "const_str",  id: str,    type: Type }   // @strN (pooled)
+//      { kind: "label",      name: str,                 }  // basic-block label
+//      { kind: "global",     name: str,  type: Type }   // @g_name
+//
+//    Instruction =
+//      { op: str,            // "add", "strcat", "call", ...
+//        dst: str,           // result register name, or "" when void
+//        dst_type: Type,     // mk_none() when void
+//        operands: [Value],  // inputs
+//        extra: <any> }      // op-specific (call target, field name, etc.)
+//
+//    BasicBlock =
+//      { label: str,
+//        insts: [Instruction],     // non-terminator instructions
+//        terminator: Instruction | false }   // br/cond_br/ret/ret_void
+//
+//    Function =
+//      { name: str,
+//        params: [{name: str, type: Type}],
+//        ret_type: Type,
+//        blocks: [BasicBlock],
+//        // used during construction:
+//        next_reg: [int],          // fresh-register counter (boxed)
+//        next_label: [int] }       // fresh-label counter (boxed)
+//
+//    Module =
+//      { functions: [Function],
+//        str_table: [{id: str, text: str}],
+//        globals:   [{name: str, type: Type}],
+//        externs:   [{name: str, params: [Type], ret_type: Type, is_variadic: int}] }
+//
+//  Terminator discipline: every BasicBlock in a well-formed Function has a
+//  non-false terminator at render time. During construction the field can be
+//  false; set_terminator(bb, ...) fills it.
+//
+//  Opcode set (rendered by render_llvm; each backend will implement its own
+//  lowering in a future phase):
+//    Arithmetic (int):   add sub mul sdiv srem neg
+//    Compare (int):      icmp_eq icmp_ne icmp_slt icmp_sle icmp_sgt icmp_sge
+//    String-aware cmp:   strcmp_eq strcmp_ne  (higher-level than icmp)
+//    Logical:            land lor lnot
+//    Memory (stack):     alloca load store
+//    Memory (heap):      malloc  (treated as extern call by some backends)
+//    String ops:         strcat strlen char_code char_at substring from_char_code int_to_str
+//    Array ops:          array_new array_len array_get array_set array_push array_pop array_keys
+//    Struct ops:         struct_new struct_get struct_set
+//    Calls:              call indirect_call
+//    Control flow:       br cond_br ret ret_void unreachable
+//    Misc:               print io_read_file io_write_file io_append_file io_exec io_input io_args
+//                        ptrtoint inttoptr  (only used by the low-level slice of the IR)
+//
+//  The io_* and ptr*/* ops are placeholders: they may become regular `call`s
+//  to externs when we settle the runtime-vs-IR split. For now they're first-
+//  class so each backend can decide.
+// ═══════════════════════════════════════════
+
+// ── Value constructors ──────────────────────────────
+
+fn ir_reg(name: str, t) {
+    return {kind: "reg", name: name, type: t};
+}
+
+fn ir_const_int(n: int) {
+    return {kind: "const_int", val: n, type: mk_int()};
+}
+
+fn ir_const_str(id: str) {
+    // id is a string-table id like "str7" (produced by add_string-style API)
+    return {kind: "const_str", id: id, type: mk_str()};
+}
+
+fn ir_label(name: str) {
+    return {kind: "label", name: name};
+}
+
+fn ir_global(name: str, t) {
+    return {kind: "global", name: name, type: t};
+}
+
+// ── Instruction constructor ─────────────────────────
+
+fn ir_inst(op: str, dst: str, dst_type, operands, extra) {
+    return {op: op, dst: dst, dst_type: dst_type, operands: operands, extra: extra};
+}
+
+// Convenience: a void instruction (no result).
+fn ir_void_inst(op: str, operands, extra) {
+    return {op: op, dst: "", dst_type: mk_none(), operands: operands, extra: extra};
+}
+
+// ── BasicBlock ──────────────────────────────────────
+
+fn ir_block(label: str) {
+    return {label: label, insts: [], terminator: false};
+}
+
+fn ir_push_inst(bb, inst) {
+    push(bb.insts, inst);
+    return 0;
+}
+
+fn ir_set_terminator(bb, term) {
+    bb.terminator <- term;
+    return 0;
+}
+
+// ── Function ────────────────────────────────────────
+//
+// Fresh-name counters are boxed (length-1 arrays) so helper fns can mutate them.
+fn ir_function(name: str, params, ret_type) {
+    return {
+        name: name,
+        params: params,
+        ret_type: ret_type,
+        blocks: [],
+        next_reg: [0],
+        next_label: [0]
+    };
+}
+
+fn ir_fn_fresh_reg(f, prefix: str): str {
+    f.next_reg[0] <- f.next_reg[0] + 1;
+    return "%" + prefix + f.next_reg[0];
+}
+
+fn ir_fn_fresh_label(f, prefix: str): str {
+    f.next_label[0] <- f.next_label[0] + 1;
+    return prefix + f.next_label[0];
+}
+
+fn ir_fn_add_block(f, bb) {
+    push(f.blocks, bb);
+    return 0;
+}
+
+// ── Module ──────────────────────────────────────────
+
+fn ir_module() {
+    return {
+        functions: [],
+        str_table: [],
+        globals: [],
+        externs: []
+    };
+}
+
+fn ir_mod_add_function(m, f) {
+    push(m.functions, f);
+    return 0;
+}
+
+fn ir_mod_add_str(m, text: str): str {
+    // Return the id used to refer to this string via ir_const_str.
+    id <- "str" + len(m.str_table);
+    push(m.str_table, {id: id, text: text});
+    return id;
+}
+
+fn ir_mod_add_global(m, name: str, t) {
+    push(m.globals, {name: name, type: t});
+    return 0;
+}
+
+fn ir_mod_add_extern(m, name: str, params, ret_type, is_variadic: int) {
+    push(m.externs, {name: name, params: params, ret_type: ret_type, is_variadic: is_variadic});
+    return 0;
+}
+
+// ── Convenience instruction builders ────────────────
+//
+// Each wraps ir_inst with the right operand ordering. Extra field carries
+// op-specific data (the callee name for `call`, field name for struct_get, etc.).
+
+fn ii_add(dst: str, l, r)       { return ir_inst("add",     dst, mk_int(), [l, r], false); }
+fn ii_sub(dst: str, l, r)       { return ir_inst("sub",     dst, mk_int(), [l, r], false); }
+fn ii_mul(dst: str, l, r)       { return ir_inst("mul",     dst, mk_int(), [l, r], false); }
+fn ii_sdiv(dst: str, l, r)      { return ir_inst("sdiv",    dst, mk_int(), [l, r], false); }
+fn ii_srem(dst: str, l, r)      { return ir_inst("srem",    dst, mk_int(), [l, r], false); }
+fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, mk_int(), [v],    false); }
+
+fn ii_icmp(dst: str, op: str, l, r) {
+    // op is "eq","ne","slt","sle","sgt","sge"
+    return ir_inst("icmp", dst, mk_int(), [l, r], op);
+}
+
+fn ii_strcmp(dst: str, op: str, l, r) {
+    return ir_inst("strcmp", dst, mk_int(), [l, r], op);
+}
+
+fn ii_alloca(dst: str, t)       { return ir_inst("alloca",  dst, t,        [],     false); }
+fn ii_load(dst: str, t, ptr)    { return ir_inst("load",    dst, t,        [ptr],  false); }
+fn ii_store(val, ptr)           { return ir_void_inst("store",              [val, ptr], false); }
+
+fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, mk_str(), [l, r], false); }
+fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, mk_int(), [s],    false); }
+fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, mk_str(), [n], false); }
+
+fn ii_array_new(dst: str, elem_type, elems) {
+    // elems is [Value]; elem_type is a Type (element kind)
+    return ir_inst("array_new", dst, mk_array(elem_type), elems, elem_type);
+}
+fn ii_array_len(dst: str, arr) { return ir_inst("array_len", dst, mk_int(), [arr], false); }
+fn ii_array_get(dst: str, elem_type, arr, idx) {
+    return ir_inst("array_get", dst, elem_type, [arr, idx], false);
+}
+fn ii_array_set(arr, idx, val)  { return ir_void_inst("array_set", [arr, idx, val], false); }
+fn ii_array_push(dst: str, arr, val) {
+    // Returns updated array pointer (realloc may move it)
+    return ir_inst("array_push", dst, arr.type, [arr, val], false);
+}
+fn ii_array_pop(dst: str, elem_type, arr) {
+    return ir_inst("array_pop", dst, elem_type, [arr], false);
+}
+
+fn ii_struct_new(dst: str, fields) {
+    // fields: [{name: str, val: Value}]
+    return ir_inst("struct_new", dst, mk_struct(), [], fields);
+}
+fn ii_struct_get(dst: str, field_type, s, field: str) {
+    return ir_inst("struct_get", dst, field_type, [s], field);
+}
+fn ii_struct_set(s, field: str, val) {
+    return ir_void_inst("struct_set", [s, val], field);
+}
+fn ii_struct_keys(dst: str, s) {
+    return ir_inst("struct_keys", dst, mk_array(mk_str()), [s], false);
+}
+
+fn ii_call(dst: str, ret_type, callee: str, args) {
+    return ir_inst("call", dst, ret_type, args, callee);
+}
+fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
+    ops <- [fn_ptr];
+    i <- 0;
+    while (i < len(args)) { push(ops, args[i]); i <- i + 1; }
+    return ir_inst("indirect_call", dst, ret_type, ops, false);
+}
+
+fn ii_br(label: str)            { return ir_void_inst("br", [ir_label(label)], false); }
+fn ii_cond_br(cond, then_lbl: str, else_lbl: str) {
+    return ir_void_inst("cond_br", [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
+}
+fn ii_ret(val)                  { return ir_void_inst("ret", [val], false); }
+fn ii_ret_void()                { return ir_void_inst("ret_void", [], false); }
+fn ii_unreachable()             { return ir_void_inst("unreachable", [], false); }
+
+fn ii_print(val)                { return ir_void_inst("print", [val], false); }
+
+// Low-level escape hatches for the current runtime:
+fn ii_ptrtoint(dst: str, v)     { return ir_inst("ptrtoint", dst, mk_int(), [v], false); }
+fn ii_inttoptr(dst: str, v)     { return ir_inst("inttoptr", dst, mk_any(), [v], false); }
+
+// ── LLVM rendering ──────────────────────────────────
+//
+// render_llvm(module) returns a string of LLVM IR equivalent to what the
+// existing string emitter produces. Type-to-LLVM translation is centralized
+// in ir_llvm_type(t): every Arrow Type becomes i64 (ints, pointers as
+// integers) or ptr (when we need ptr specifically, e.g. string constants).
+// The current runtime is i64-everywhere with inttoptr/ptrtoint as needed —
+// the renderer keeps that discipline.
+
+fn ir_llvm_type(t): str {
+    // For now: nearly everything is i64. The exceptions are rendered inline
+    // (alloca uses ptr types; string constants use [N x i8] arrays).
+    if (t.kind = "none") { return "void"; }
+    return "i64";
+}
+
+// Render a Value as an LLVM operand (no type prefix).
+fn ir_render_operand(v): str {
+    if (v.kind = "reg")       { return v.name; }
+    if (v.kind = "const_int") { return "" + v.val; }  // force int→str coercion via concat
+    if (v.kind = "const_str") { return "@" + v.id; }  // caller typically ptrtoints it
+    if (v.kind = "label")     { return "label %" + v.name; }
+    if (v.kind = "global")    { return "@g_" + v.name; }
+    return "<?>";
+}
+
+// Render a Value as a typed LLVM operand ("i64 %r", "i64 42", etc.).
+fn ir_render_typed_operand(v): str {
+    return ir_llvm_type(v.type) + " " + ir_render_operand(v);
+}
+
+// Render one instruction as a single LLVM IR line (no leading indent; caller
+// handles that). Terminators are rendered separately by ir_render_block.
+fn ir_render_inst(inst): str {
+    op <- inst.op;
+    // Arithmetic: dst = <op> i64 %a, %b
+    if (op = "add" || op = "sub" || op = "mul" || op = "sdiv" || op = "srem") {
+        return inst.dst + " = " + op + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "neg") {
+        return inst.dst + " = sub i64 0, " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "icmp") {
+        tmp <- inst.dst + ".cmp";
+        return inst.dst + ".cmp = icmp " + inst.extra + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
+    }
+    if (op = "alloca") {
+        return inst.dst + " = alloca i64";
+    }
+    if (op = "load") {
+        return inst.dst + " = load i64, ptr " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "store") {
+        return "store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "call") {
+        args <- "";
+        i <- 0;
+        while (i < len(inst.operands)) {
+            if (i > 0) { args <- args + ", "; }
+            args <- args + ir_render_typed_operand(inst.operands[i]);
+            i <- i + 1;
+        }
+        if (inst.dst = "") {
+            return "call " + ir_llvm_type(inst.dst_type) + " @" + inst.extra + "(" + args + ")";
+        }
+        return inst.dst + " = call i64 @" + inst.extra + "(" + args + ")";
+    }
+    if (op = "strcat") {
+        return inst.dst + " = call i64 @arrow_strcat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "strlen") {
+        tmp <- inst.dst + ".p";
+        return tmp + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = call i64 @strlen(ptr " + tmp + ")";
+    }
+    if (op = "int_to_str") {
+        return inst.dst + " = call i64 @arrow_itoa(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print") {
+        // Lowering placeholder: actual print has type-dependent code paths.
+        // For Phase 1 we just emit a call to a hypothetical arrow_print.
+        return "call void @arrow_print(" + ir_render_typed_operand(inst.operands[0]) + ")";
+    }
+    if (op = "br") {
+        return "br " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "cond_br") {
+        cond <- inst.dst + ".cbc";
+        return cond + " = icmp ne i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  br i1 " + cond + ", " + ir_render_operand(inst.operands[1]) + ", " + ir_render_operand(inst.operands[2]);
+    }
+    if (op = "ret") {
+        return "ret i64 " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "ret_void") {
+        return "ret void";
+    }
+    if (op = "unreachable") {
+        return "unreachable";
+    }
+    if (op = "ptrtoint") {
+        return inst.dst + " = ptrtoint ptr " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "inttoptr") {
+        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr";
+    }
+    return "; UNHANDLED OP: " + op;
+}
+
+fn ir_render_block(bb): str {
+    s <- bb.label + ":\n";
+    i <- 0;
+    while (i < len(bb.insts)) {
+        s <- s + "  " + ir_render_inst(bb.insts[i]) + "\n";
+        i <- i + 1;
+    }
+    if (bb.terminator != false) {
+        s <- s + "  " + ir_render_inst(bb.terminator) + "\n";
+    }
+    return s;
+}
+
+fn ir_render_function(f): str {
+    // Signature
+    params_s <- "";
+    i <- 0;
+    while (i < len(f.params)) {
+        if (i > 0) { params_s <- params_s + ", "; }
+        params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
+        i <- i + 1;
+    }
+    s <- "define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {\n";
+    i <- 0;
+    while (i < len(f.blocks)) {
+        s <- s + ir_render_block(f.blocks[i]);
+        i <- i + 1;
+    }
+    s <- s + "}\n";
+    return s;
+}
+
+fn ir_render_module(m): str {
+    s <- "";
+    // Externs
+    i <- 0;
+    while (i < len(m.externs)) {
+        ex <- m.externs[i];
+        ps <- "";
+        j <- 0;
+        while (j < len(ex.params)) {
+            if (j > 0) { ps <- ps + ", "; }
+            ps <- ps + ir_llvm_type(ex.params[j]);
+            j <- j + 1;
+        }
+        if (ex.is_variadic = 1) {
+            if (len(ex.params) > 0) { ps <- ps + ", "; }
+            ps <- ps + "...";
+        }
+        s <- s + "declare " + ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")\n";
+        i <- i + 1;
+    }
+    // String table
+    i <- 0;
+    while (i < len(m.str_table)) {
+        ste <- m.str_table[i];
+        bytelen <- ir_str_len(ste.text);  // already includes the null terminator
+        s <- s + "@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"\n";
+        i <- i + 1;
+    }
+    // Globals
+    i <- 0;
+    while (i < len(m.globals)) {
+        s <- s + "@g_" + m.globals[i].name + " = global i64 0\n";
+        i <- i + 1;
+    }
+    if (len(m.externs) + len(m.str_table) + len(m.globals) > 0) { s <- s + "\n"; }
+    // Functions
+    i <- 0;
+    while (i < len(m.functions)) {
+        s <- s + ir_render_function(m.functions[i]) + "\n";
+        i <- i + 1;
+    }
+    return s;
+}
+
+// End-of-file dispatch for --ir-test (see run_ir_test above).
+if (ir_test_mode[0]) {
+    run_ir_test();
 }
