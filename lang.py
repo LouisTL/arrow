@@ -604,13 +604,27 @@ class Parser:
             elif tt == TokenType.RPAREN:
                 depth -= 1
                 if depth == 0:
-                    return (i + 1 < len(self.tokens)
-                            and self.tokens[i + 1].type == TokenType.FAT_ARROW)
+                    j = i + 1
+                    # Skip optional return-type annotation: ): TYPE =>
+                    if j < len(self.tokens) and self.tokens[j].type == TokenType.COLON:
+                        j += 1
+                        # Skip until we hit => or a block/statement terminator.
+                        while (j < len(self.tokens)
+                               and self.tokens[j].type not in (TokenType.FAT_ARROW,
+                                                                TokenType.LBRACE,
+                                                                TokenType.SEMI)):
+                            j += 1
+                    return (j < len(self.tokens)
+                            and self.tokens[j].type == TokenType.FAT_ARROW)
             i += 1
         return False
 
     def _arrow_fn(self) -> ArrowFn:
         params = self._param_list()
+        # Optional return type annotation: skip it (interpreter ignores types)
+        if self._current().type == TokenType.COLON:
+            self._eat(TokenType.COLON)
+            self._skip_type_ann()
         self._eat(TokenType.FAT_ARROW)
         if self._current().type == TokenType.LBRACE and not self._is_struct_literal():
             body = self._block()

@@ -84,13 +84,13 @@ fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="Ind
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){ln<-toks[pos[0]].line;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln};}
 fn pfd(){ln<-toks[pos[0]].line;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln};}
-fn ppl(){eat("LPAREN");p<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");pty();}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");pty();}}}eat("RPAREN");return p;}
+fn ppl(){eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
-fn iaf(): int{d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){if(i+1<len(toks)){return toks[i+1].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
-fn paf(){p<-ppl();eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:p,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:p,body:e,is_expr:true};}
+fn iaf(): int{d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
+fn paf(){pl<-ppl();rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
 fn por(){l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
 fn pan(){l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
 fn peq(){l<-pcm();while(ci("EQ")||ci("NEQ")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
@@ -443,7 +443,7 @@ fn set_fn_ret_type(name: str, rtype, rfields) {
             if (declared_fns[i].ret_type_ann.kind != "none") {
                 return false;
             }
-            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann};
+            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann, is_arrow_var: declared_fns[i].is_arrow_var};
             return false;
         }
         i <- i + 1;
@@ -714,7 +714,35 @@ fn scan_fns(stmts) {
             if (stmts[i].ret_type_ann.kind != "none") {
                 rt <- stmts[i].ret_type_ann;
             }
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann});
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
+        }
+        // Also register top-level arrow-fn assignments under the variable name.
+        // This lets the type checker resolve `myVar(args)` calls where myVar holds
+        // an ArrowFn. Uses the variable name directly (not the mangled "__arrow_N"
+        // name chosen later at emit time) because the checker runs before emit.
+        if (stmts[i].node = "Assignment") {
+            if (stmts[i].expr.node = "ArrowFn") {
+                afn <- stmts[i].expr;
+                apt <- [];
+                apt_ann <- [];
+                k <- 0;
+                while (k < len(afn.params)) {
+                    ann <- mk_none();
+                    if (k < len(afn.param_types_ann)) {
+                        ann <- afn.param_types_ann[k];
+                    }
+                    push(apt_ann, ann);
+                    if (ann.kind != "none") {
+                        push(apt, ann);
+                    } else {
+                        push(apt, mk_any());
+                    }
+                    k <- k + 1;
+                }
+                art <- mk_any();
+                if (afn.ret_type_ann.kind != "none") { art <- afn.ret_type_ann; }
+                push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
+            }
         }
         i <- i + 1;
     }
@@ -1162,7 +1190,12 @@ fn emit_call(nd) {
         }
 
         // User function call
+        // Note: find_fn may return an entry registered for an arrow-fn variable
+        // (from scan_fns's pre-pass, used by the type checker). Those entries
+        // have `is_arrow_var: true` — skip them so we fall through to the
+        // indirect-call branch which actually knows how to invoke closures.
         fi <- find_fn(nm);
+        if (fi != false && fi.is_arrow_var = true) { fi <- false; }
         if (fi != false) {
             args_str <- "";
             i <- 0;
@@ -2449,6 +2482,12 @@ fn check_expr(e) {
     if (e.node = "CallExpr") {
         if (e.callee.node = "Identifier") {
             fi <- find_fn(e.callee.name);
+            // If the direct lookup failed, the callee may be a variable holding
+            // an arrow function — look up via the var-name → fn-name mapping.
+            if (fi = false) {
+                afn_name <- get_arrow_fn_name(e.callee.name);
+                if (afn_name != "") { fi <- find_fn(afn_name); }
+            }
             if (fi != false) {
                 j <- 0;
                 while (j < len(e.args)) {
@@ -2597,16 +2636,32 @@ fn emit_arrow_fn(nd) {
     // Detect captures (before switching scope)
     captures <- find_captures(nd.body, nd.params, nd.is_expr);
 
-    // Register as a known function (param_count does NOT include env param)
+    // Register as a known function (param_count does NOT include env param).
+    // Pull user annotations from the AST (param_types_ann, ret_type_ann are
+    // present on ArrowFn as of the parser update; each defaults to mk_none()
+    // if absent). The `param_types` list tracks the working inferred type; it
+    // starts from the annotation when present, else mk_any().
     pt <- [];
     pt_ann <- [];
     j <- 0;
     while (j < len(nd.params)) {
-        push(pt, mk_any());
-        push(pt_ann, mk_none());
+        ann <- mk_none();
+        if (j < len(nd.param_types_ann)) {
+            ann <- nd.param_types_ann[j];
+        }
+        push(pt_ann, ann);
+        if (ann.kind != "none") {
+            push(pt, ann);
+        } else {
+            push(pt, mk_any());
+        }
         j <- j + 1;
     }
-    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: mk_any(), ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: mk_none()});
+    rt_ann <- mk_none();
+    if (nd.ret_type_ann.kind != "none") { rt_ann <- nd.ret_type_ann; }
+    rt <- mk_any();
+    if (rt_ann.kind != "none") { rt <- rt_ann; }
+    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: rt_ann, is_arrow_var: false});
 
     // Build env struct for captures (before switching emit target).
     // Also snapshot each capture's type from the outer scope so we can
