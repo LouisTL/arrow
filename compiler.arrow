@@ -3435,12 +3435,80 @@ fn run_ir_test() {
     print(ir_render_module(m));
 }
 
+// Phase-2 IR acceptance: hand-build is_digit via IR, render it plus a main
+// that exercises it. The output is a self-contained LLVM module that can
+// be fed to clang. Same IR shape as the existing emitter in principle;
+// register names may differ but semantics are equivalent.
+fn build_is_digit_ir() {
+    f <- ir_function("is_digit", [{name: "c", type: mk_int()}], mk_int());
+
+    // entry: set up c's slot, allocate and zero out the && result slot,
+    // evaluate the LHS (c >= 48), branch on truthiness.
+    b0 <- ir_block("entry");
+    ir_push_inst(b0, ii_alloca("%c", mk_int()));
+    ir_push_inst(b0, ii_store(ir_reg("%c.arg", mk_int()), ir_reg("%c", mk_int())));
+    ir_push_inst(b0, ii_alloca("%and_res", mk_int()));
+    ir_push_inst(b0, ii_store(ir_const_int(0), ir_reg("%and_res", mk_int())));
+    ir_push_inst(b0, ii_load("%ld1", mk_int(), ir_reg("%c", mk_int())));
+    ir_push_inst(b0, ii_icmp("%cmp1", "sge", ir_reg("%ld1", mk_int()), ir_const_int(48)));
+    ir_set_terminator(b0, ii_cond_br("%br1", ir_reg("%cmp1", mk_int()), "and_r1", "and_e2"));
+    ir_fn_add_block(f, b0);
+
+    // and_r1: the LHS was true, evaluate the RHS (c <= 57) and store it.
+    b1 <- ir_block("and_r1");
+    ir_push_inst(b1, ii_load("%ld2", mk_int(), ir_reg("%c", mk_int())));
+    ir_push_inst(b1, ii_icmp("%cmp2", "sle", ir_reg("%ld2", mk_int()), ir_const_int(57)));
+    ir_push_inst(b1, ii_store(ir_reg("%cmp2", mk_int()), ir_reg("%and_res", mk_int())));
+    ir_set_terminator(b1, ii_br("and_e2"));
+    ir_fn_add_block(f, b1);
+
+    // and_e2: load the joined result and return it.
+    b2 <- ir_block("and_e2");
+    ir_push_inst(b2, ii_load("%result", mk_int(), ir_reg("%and_res", mk_int())));
+    ir_set_terminator(b2, ii_ret(ir_reg("%result", mk_int())));
+    ir_fn_add_block(f, b2);
+
+    return f;
+}
+
+fn run_ir_is_digit() {
+    m <- ir_module();
+    ir_mod_add_function(m, build_is_digit_ir());
+
+    // Append a main that calls is_digit with several inputs and prints results.
+    main <- ir_function("main", [], mk_int());
+    mb <- ir_block("entry");
+    // Test 48 ('0'): expect 1
+    ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
+    ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
+    // Test 47 ('/'): expect 0
+    ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
+    ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
+    // Test 57 ('9'): expect 1
+    ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
+    ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
+    // Test 58 (':'): expect 0
+    ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
+    ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
+    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
+    ir_fn_add_block(main, mb);
+    ir_mod_add_function(m, main);
+
+    ir_mod_add_str_raw(m, "fmt", "%lld\n");
+    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+
+    print(ir_render_module(m));
+}
+
 ir_test_mode <- [false];
 if (args() > 0) {
     if (args(0) = "--ir-test") {
         ir_test_mode[0] <- true;
         // Call site moved to end-of-file. Setting the flag here is enough
         // to skip the real compile below.
+    }
+    if (args(0) = "--ir-is-digit") {
+        ir_test_mode[0] <- true;
     }
 }
 
@@ -3603,6 +3671,12 @@ fn ir_const_str(id: str) {
     return {kind: "const_str", id: id, type: mk_str()};
 }
 
+// Variant that takes a custom id (e.g. "fmt") rather than the auto-generated
+// "strN". Used by hand-built IR code that wants specific global names.
+fn ir_const_str_raw(id: str) {
+    return {kind: "const_str", id: id, type: mk_str()};
+}
+
 fn ir_label(name: str) {
     return {kind: "label", name: name};
 }
@@ -3690,6 +3764,14 @@ fn ir_mod_add_str(m, text: str): str {
     return id;
 }
 
+// Variant that takes an explicit id (e.g. "fmt"). Useful for hand-built
+// IR test code that wants specific names. Caller is responsible for
+// uniqueness.
+fn ir_mod_add_str_raw(m, id: str, text: str) {
+    push(m.str_table, {id: id, text: text});
+    return 0;
+}
+
 fn ir_mod_add_global(m, name: str, t) {
     push(m.globals, {name: name, type: t});
     return 0;
@@ -3771,8 +3853,10 @@ fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
 }
 
 fn ii_br(label: str)            { return ir_void_inst("br", [ir_label(label)], false); }
-fn ii_cond_br(cond, then_lbl: str, else_lbl: str) {
-    return ir_void_inst("cond_br", [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
+fn ii_cond_br(i1_reg: str, cond, then_lbl: str, else_lbl: str) {
+    // i1_reg is the name for the intermediate icmp-ne result (e.g. "%br1").
+    // Must be unique within the function — caller's responsibility.
+    return ir_inst("cond_br", i1_reg, mk_none(), [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
 }
 fn ii_ret(val)                  { return ir_void_inst("ret", [val], false); }
 fn ii_ret_void()                { return ir_void_inst("ret_void", [], false); }
@@ -3811,7 +3895,10 @@ fn ir_render_operand(v): str {
 }
 
 // Render a Value as a typed LLVM operand ("i64 %r", "i64 42", etc.).
+// String constants render as "ptr @id" since LLVM wants a pointer type at
+// call sites (printf / puts / our runtime helpers).
 fn ir_render_typed_operand(v): str {
+    if (v.kind = "const_str") { return "ptr @" + v.id; }
     return ir_llvm_type(v.type) + " " + ir_render_operand(v);
 }
 
@@ -3871,8 +3958,10 @@ fn ir_render_inst(inst): str {
         return "br " + ir_render_operand(inst.operands[0]);
     }
     if (op = "cond_br") {
-        cond <- inst.dst + ".cbc";
-        return cond + " = icmp ne i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  br i1 " + cond + ", " + ir_render_operand(inst.operands[1]) + ", " + ir_render_operand(inst.operands[2]);
+        // inst.dst is the fresh i1 register name supplied by the builder.
+        // This makes the intermediate register explicit rather than trying to
+        // synthesize one in the renderer (which can collide in the void case).
+        return inst.dst + " = icmp ne i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  br i1 " + inst.dst + ", " + ir_render_operand(inst.operands[1]) + ", " + ir_render_operand(inst.operands[2]);
     }
     if (op = "ret") {
         return "ret i64 " + ir_render_operand(inst.operands[0]);
@@ -3968,7 +4057,11 @@ fn ir_render_module(m): str {
     return s;
 }
 
-// End-of-file dispatch for --ir-test (see run_ir_test above).
+// End-of-file dispatch for --ir-test / --ir-is-digit (see build functions above).
 if (ir_test_mode[0]) {
-    run_ir_test();
+    if (args(0) = "--ir-is-digit") {
+        run_ir_is_digit();
+    } else {
+        run_ir_test();
+    }
 }
