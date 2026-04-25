@@ -596,6 +596,13 @@ fn mk_int() { return {kind: "int"}; }
 fn mk_str() { return {kind: "str"}; }
 fn mk_any() { return {kind: "any"}; }
 fn mk_struct() { return {kind: "struct"}; }
+// IR-only: an opaque LLVM `ptr`. Used for extern declarations that take
+// raw pointer args (printf, puts, fopen, etc.). Distinct from mk_str()
+// because the latter renders as i64 (Arrow's universal value width).
+fn mk_ptr() { return {kind: "ptr"}; }
+// IR-only: 32-bit integer for C-ABI return types (printf, puts, fflush all
+// return int, which is i32 on the platforms we target).
+fn mk_i32() { return {kind: "i32"}; }
 fn mk_fn() { return {kind: "fn"}; }
 fn mk_none() { return {kind: "none"}; }
 fn mk_array(elem) { return {kind: "array", elem: elem}; }
@@ -3452,7 +3459,7 @@ fn run_ir_test() {
     ir_mod_add_function(m, f);
     ir_mod_add_str(m, "hello");
     ir_mod_add_global(m, "counter", mk_int());
-    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
     print(ir_render_module(m));
 }
 
@@ -3516,7 +3523,7 @@ fn run_ir_is_digit() {
     ir_mod_add_function(m, main);
 
     ir_mod_add_str_raw(m, "fmt", "%lld\n");
-    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
 
     print(ir_render_module(m));
 }
@@ -3532,6 +3539,9 @@ if (args() > 0) {
         ir_test_mode[0] <- true;
     }
     if (args(0) = "--ir-from-ast") {
+        ir_test_mode[0] <- true;
+    }
+    if (args(0) = "--ir-cluster1") {
         ir_test_mode[0] <- true;
     }
 }
@@ -3886,7 +3896,19 @@ fn ii_ret(val)                  { return ir_void_inst("ret", [val], false); }
 fn ii_ret_void()                { return ir_void_inst("ret_void", [], false); }
 fn ii_unreachable()             { return ir_void_inst("unreachable", [], false); }
 
-fn ii_print(val)                { return ir_void_inst("print", [val], false); }
+// Print: separate ops for int and str so the lowering can use printf / puts
+// without re-deriving the value's type from operand metadata. The AST→IR
+// translator picks which one to emit using typeof_expr on the source node.
+fn ii_print_int(val)            { return ir_void_inst("print_int", [val], false); }
+fn ii_print_str(ptr_reg: str, val) {
+    // ptr_reg is the name for the intermediate inttoptr cast (e.g. "%pp1").
+    // Caller's responsibility to make it unique within the function.
+    return ir_inst("print_str", ptr_reg, mk_none(), [val], false);
+}
+fn ii_print(val)                { return ir_void_inst("print", [val], false); }  // legacy/placeholder; prefer the typed variants
+
+// Logical NOT: dst = (operand == 0) ? 1 : 0, i64. Used by UnaryOp("!").
+fn ii_lnot(dst: str, v)         { return ir_inst("lnot", dst, mk_int(), [v], false); }
 
 // Low-level escape hatches for the current runtime:
 fn ii_ptrtoint(dst: str, v)     { return ir_inst("ptrtoint", dst, mk_int(), [v], false); }
@@ -3905,6 +3927,8 @@ fn ir_llvm_type(t): str {
     // For now: nearly everything is i64. The exceptions are rendered inline
     // (alloca uses ptr types; string constants use [N x i8] arrays).
     if (t.kind = "none") { return "void"; }
+    if (t.kind = "ptr")  { return "ptr"; }
+    if (t.kind = "i32")  { return "i32"; }
     return "i64";
 }
 
@@ -3977,6 +4001,19 @@ fn ir_render_inst(inst): str {
         // Lowering placeholder: actual print has type-dependent code paths.
         // For Phase 1 we just emit a call to a hypothetical arrow_print.
         return "call void @arrow_print(" + ir_render_typed_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_int") {
+        // printf("%lld\n", val) followed by fflush(NULL)
+        return "call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + ir_render_operand(inst.operands[0]) + ")\n  call i32 @fflush(ptr null)";
+    }
+    if (op = "print_str") {
+        // The operand is an i64 holding a string pointer; cast to ptr then
+        // call puts. inst.dst is the fresh name for the cast register.
+        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  call i32 @puts(ptr " + inst.dst + ")\n  call i32 @fflush(ptr null)";
+    }
+    if (op = "lnot") {
+        // dst.lc = icmp eq i64 v, 0 ; dst = zext i1 dst.lc to i64
+        return inst.dst + ".lc = icmp eq i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  " + inst.dst + " = zext i1 " + inst.dst + ".lc to i64";
     }
     if (op = "br") {
         return "br " + ir_render_operand(inst.operands[0]);
@@ -4096,13 +4133,16 @@ fn ir_render_module(m): str {
 //  Each additional node is a small incremental extension in later phases.
 // ═══════════════════════════════════════════
 
-fn ir_builder_new(f, entry_bb) {
+fn ir_builder_new(f, entry_bb, mod) {
     return {
         func: f,
         cur_block: entry_bb,
         locals: [],
         tmp_counter: [0],
-        block_counter: [0]
+        block_counter: [0],
+        // The owning module — needed by emitters that allocate string
+        // constants or externs (e.g. StringLit, PrintStmt).
+        mod: mod
     };
 }
 
@@ -4151,6 +4191,22 @@ fn ir_emit_expr(b, nd) {
     if (nd.node = "NumberLit") {
         return ir_const_int(nd.value);
     }
+    if (nd.node = "StringLit") {
+        // Pool the string in the module table. Return a const_str value
+        // whose id refers to the pooled entry; render sites inttoptr or use
+        // ptr directly depending on context.
+        sid <- ir_mod_add_str(b.mod, nd.value);
+        // The const_str renders as `@<id>` — for use inside expression positions
+        // we need it as an i64 (the IR's universal integer for pointers). Emit
+        // a ptrtoint into a fresh register.
+        tmp <- ir_fresh_tmp(b, "s");
+        ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
+        return ir_reg(tmp, mk_str());
+    }
+    if (nd.node = "BoolLit") {
+        if (nd.value = "true") { return ir_const_int(1); }
+        return ir_const_int(0);
+    }
     if (nd.node = "Identifier") {
         slot <- ir_get_local_slot(b, nd.name);
         tmp <- ir_fresh_tmp(b, "ld");
@@ -4159,6 +4215,39 @@ fn ir_emit_expr(b, nd) {
     }
     if (nd.node = "BinOp") {
         return ir_emit_binop(b, nd);
+    }
+    if (nd.node = "UnaryOp") {
+        operand <- ir_emit_expr(b, nd.operand);
+        if (nd.op = "-") {
+            tmp <- ir_fresh_tmp(b, "neg");
+            ir_push_inst(b.cur_block, ii_neg(tmp, operand));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nd.op = "!") {
+            tmp <- ir_fresh_tmp(b, "not");
+            ir_push_inst(b.cur_block, ii_lnot(tmp, operand));
+            return ir_reg(tmp, mk_int());
+        }
+        print("ir_emit_expr UnaryOp: unsupported op " + nd.op);
+        return ir_const_int(0);
+    }
+    if (nd.node = "CallExpr") {
+        // User function calls only at this stage. Builtins (len, push, pop,
+        // print, etc.) are handled elsewhere as separate IR ops.
+        if (nd.callee.node != "Identifier") {
+            print("ir_emit_expr CallExpr: indirect calls not yet supported");
+            return ir_const_int(0);
+        }
+        // Evaluate arguments left-to-right (matches existing emitter).
+        args <- [];
+        i <- 0;
+        while (i < len(nd.args)) {
+            push(args, ir_emit_expr(b, nd.args[i]));
+            i <- i + 1;
+        }
+        tmp <- ir_fresh_tmp(b, "call");
+        ir_push_inst(b.cur_block, ii_call(tmp, mk_int(), nd.callee.name, args));
+        return ir_reg(tmp, mk_int());
     }
     // Fallback — unsupported node. Return a sentinel const_int(0) so that
     // we at least produce valid (but semantically wrong) IR. Future phases
@@ -4267,12 +4356,142 @@ fn ir_emit_stmt(b, stmt) {
         ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
         return 0;
     }
+    if (stmt.node = "PrintStmt") {
+        v <- ir_emit_expr(b, stmt.expr);
+        // Decide str vs int via typeof_expr, which consults var_types (set by
+        // scan_call_sites + infer_body in our prep pass) rather than just the
+        // surface AST. That way string-typed identifiers / params are
+        // recognized, not just literal StringLits.
+        et <- typeof_expr(stmt.expr);
+        if (et.kind = "str") {
+            cast_reg <- ir_fresh_tmp(b, "pp");
+            ir_push_inst(b.cur_block, ii_print_str(cast_reg, v));
+        } else {
+            ir_push_inst(b.cur_block, ii_print_int(v));
+        }
+        return 0;
+    }
+    if (stmt.node = "IfStmt") {
+        cond <- ir_emit_expr(b, stmt.cond);
+        then_lbl <- ir_fresh_block_lbl(b, "then");
+        end_lbl  <- ir_fresh_block_lbl(b, "ifend");
+        has_else <- len(stmt.else_body) > 0;
+        else_lbl <- end_lbl;
+        if (has_else) { else_lbl <- ir_fresh_block_lbl(b, "else"); }
+        br_tmp <- ir_fresh_tmp(b, "br");
+        ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, cond, then_lbl, else_lbl));
+
+        // then branch
+        then_bb <- ir_block(then_lbl);
+        ir_fn_add_block(b.func, then_bb);
+        b.cur_block <- then_bb;
+        i <- 0;
+        while (i < len(stmt.then_body)) {
+            ir_emit_stmt(b, stmt.then_body[i]);
+            i <- i + 1;
+        }
+        // If the then-body didn't terminate (e.g. ended with a return), branch
+        // to end. Otherwise the existing terminator stays. ir_set_terminator
+        // overwrites — protect with a check.
+        if (b.cur_block.terminator = false) {
+            ir_set_terminator(b.cur_block, ii_br(end_lbl));
+        }
+
+        // else branch (if any)
+        if (has_else) {
+            else_bb <- ir_block(else_lbl);
+            ir_fn_add_block(b.func, else_bb);
+            b.cur_block <- else_bb;
+            i <- 0;
+            while (i < len(stmt.else_body)) {
+                ir_emit_stmt(b, stmt.else_body[i]);
+                i <- i + 1;
+            }
+            if (b.cur_block.terminator = false) {
+                ir_set_terminator(b.cur_block, ii_br(end_lbl));
+            }
+        }
+
+        // join
+        end_bb <- ir_block(end_lbl);
+        ir_fn_add_block(b.func, end_bb);
+        b.cur_block <- end_bb;
+        return 0;
+    }
+    if (stmt.node = "WhileStmt") {
+        cond_lbl <- ir_fresh_block_lbl(b, "wc");
+        body_lbl <- ir_fresh_block_lbl(b, "wb");
+        end_lbl  <- ir_fresh_block_lbl(b, "we");
+
+        // jump from current block into the cond block
+        ir_set_terminator(b.cur_block, ii_br(cond_lbl));
+
+        // cond
+        cond_bb <- ir_block(cond_lbl);
+        ir_fn_add_block(b.func, cond_bb);
+        b.cur_block <- cond_bb;
+        cond <- ir_emit_expr(b, stmt.cond);
+        br_tmp <- ir_fresh_tmp(b, "br");
+        ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, cond, body_lbl, end_lbl));
+
+        // body
+        body_bb <- ir_block(body_lbl);
+        ir_fn_add_block(b.func, body_bb);
+        b.cur_block <- body_bb;
+        i <- 0;
+        while (i < len(stmt.body)) {
+            ir_emit_stmt(b, stmt.body[i]);
+            i <- i + 1;
+        }
+        if (b.cur_block.terminator = false) {
+            ir_set_terminator(b.cur_block, ii_br(cond_lbl));
+        }
+
+        // end
+        end_bb <- ir_block(end_lbl);
+        ir_fn_add_block(b.func, end_bb);
+        b.cur_block <- end_bb;
+        return 0;
+    }
+    if (stmt.node = "Block") {
+        i <- 0;
+        while (i < len(stmt.stmts)) {
+            ir_emit_stmt(b, stmt.stmts[i]);
+            i <- i + 1;
+        }
+        return 0;
+    }
+    if (stmt.node = "ExprStmt") {
+        // Evaluate for side effects; discard result.
+        ir_emit_expr(b, stmt.expr);
+        return 0;
+    }
+    // Bare expressions used as statements (the parser doesn't wrap them in
+    // ExprStmt — calls and similar appear directly). Reuse ir_emit_expr for
+    // anything that looks like an expression node.
+    if (stmt.node = "CallExpr"
+            || stmt.node = "BinOp"
+            || stmt.node = "UnaryOp"
+            || stmt.node = "NumberLit"
+            || stmt.node = "StringLit"
+            || stmt.node = "BoolLit"
+            || stmt.node = "Identifier") {
+        ir_emit_expr(b, stmt);
+        return 0;
+    }
     print("ir_emit_stmt: unsupported node " + stmt.node);
     return 0;
 }
 
-// Translate an AST FnDecl into an IR Function.
-fn emit_function_via_ir(nd) {
+// Translate an AST FnDecl into an IR Function. The owning Module is passed
+// so emitters that need to register string constants or externs can do so.
+// The caller is responsible for adding the returned Function to the Module.
+//
+// This function mirrors the prep dance done by the existing emit_function:
+// save the caller's type-tracking state, populate param types from the
+// call-site-analysis info, run infer_body to populate var_types for this
+// function's locals, then emit. State is restored on the way out.
+fn emit_function_via_ir(nd, mod) {
     params <- [];
     i <- 0;
     while (i < len(nd.params)) {
@@ -4283,7 +4502,34 @@ fn emit_function_via_ir(nd) {
 
     ent_bb <- ir_block("entry");
     ir_fn_add_block(f, ent_bb);
-    b <- ir_builder_new(f, ent_bb);
+    b <- ir_builder_new(f, ent_bb, mod);
+
+    // Save type-tracking state and start fresh for this function's body.
+    old_vars <- alloc_vars[0];
+    old_types <- var_types[0];
+    old_layouts <- struct_layouts[0];
+    old_arr_types <- array_elem_types[0];
+    alloc_vars[0] <- [];
+    var_types[0] <- [];
+    struct_layouts[0] <- [];
+    array_elem_types[0] <- [];
+    old_fn <- current_fn[0];
+    current_fn[0] <- nd.name;
+
+    // Populate param types from call-site analysis (already run by caller).
+    fi_info <- find_fn(nd.name);
+    i <- 0;
+    while (i < len(nd.params)) {
+        if (fi_info != false && i < len(fi_info.param_types)) {
+            set_var_type(nd.params[i], fi_info.param_types[i]);
+        } else {
+            set_var_type(nd.params[i], mk_any());
+        }
+        i <- i + 1;
+    }
+
+    // Run type inference on body to populate var_types before emission.
+    infer_body(nd.body);
 
     // Prologue: allocate each param's local slot and store the arg into it.
     i <- 0;
@@ -4301,60 +4547,111 @@ fn emit_function_via_ir(nd) {
         i <- i + 1;
     }
 
+    // If the source function fell off the end without an explicit return,
+    // close the final block with `ret i64 0` for IR well-formedness.
+    if (b.cur_block.terminator = false) {
+        ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
+    }
+
+    // Restore caller's type-tracking state.
+    alloc_vars[0] <- old_vars;
+    var_types[0] <- old_types;
+    struct_layouts[0] <- old_layouts;
+    array_elem_types[0] <- old_arr_types;
+    current_fn[0] <- old_fn;
+
     return f;
 }
 
-// Phase-3 acceptance: parse a fixed test source, find is_digit, run it through
-// the AST→IR translator, and print the result plus a main that exercises it.
-// Takes a pre-parsed stmts list (parsing at top-level so the global `toks` is set).
+// Phase-3 acceptance: translate every FnDecl in `stmts` through the AST→IR
+// translator and add them all to the module. If the source defines a
+// function called "main_logic", wrap a real main() around it that calls
+// main_logic and returns 0. Otherwise, append the original is_digit-style
+// main for backward compatibility.
 fn run_ir_from_ast(stmts) {
+    // Run the same pre-passes as compile() does so that param types and
+    // call-site inference are populated before we translate each function.
+    scan_fns(stmts);
+    scan_call_sites(stmts);
+
     m <- ir_module();
 
-    // Find is_digit and translate
-    found <- false;
+    // Translate every FnDecl in source order.
+    has_main_logic <- false;
+    has_is_digit <- false;
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            if (stmts[i].name = "is_digit") {
-                ir_mod_add_function(m, emit_function_via_ir(stmts[i]));
-                found <- true;
-            }
+            ir_mod_add_function(m, emit_function_via_ir(stmts[i], m));
+            if (stmts[i].name = "main_logic") { has_main_logic <- true; }
+            if (stmts[i].name = "is_digit")   { has_is_digit <- true; }
         }
         i <- i + 1;
     }
-    if (!found) {
-        print("; is_digit not found");
-        return 0;
-    }
 
-    // Add a main that exercises is_digit with 48, 47, 57, 58.
+    // Add an LLVM main that drives the translated code.
     main <- ir_function("main", [], mk_int());
     mb <- ir_block("entry");
-    ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
-    ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
-    ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
-    ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
-    ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
-    ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
-    ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
-    ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
+    if (has_main_logic) {
+        ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
+    } else {
+        if (!has_is_digit) {
+            print("; no main_logic or is_digit found");
+            return 0;
+        }
+        // is_digit acceptance: call with 48, 47, 57, 58 and printf each result.
+        ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
+        ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
+        ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
+        ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
+        ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
+        ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
+        ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
+        ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
+    }
     ir_set_terminator(mb, ii_ret(ir_const_int(0)));
     ir_fn_add_block(main, mb);
     ir_mod_add_function(m, main);
 
+    // Externs and string-table preamble. The print_int op references @fmt_int,
+    // and (for is_digit's main) we use @fmt directly. Both point at "%lld\n".
+    // print_str uses puts which doesn't need a format.
     ir_mod_add_str_raw(m, "fmt", "%lld\n");
-    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+    ir_mod_add_str_raw(m, "fmt_int", "%lld\n");
+    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
+    ir_mod_add_extern(m, "puts", [mk_ptr()], mk_i32(), 0);
+    ir_mod_add_extern(m, "fflush", [mk_ptr()], mk_i32(), 0);
 
     print(ir_render_module(m));
 }
 
-// End-of-file dispatch for --ir-test / --ir-is-digit / --ir-from-ast.
+// End-of-file dispatch for --ir-test / --ir-is-digit / --ir-from-ast / --ir-cluster1.
 if (ir_test_mode[0]) {
     if (args(0) = "--ir-is-digit") {
         run_ir_is_digit();
     } else if (args(0) = "--ir-from-ast") {
         // Parse at top level so the global `toks` is populated (pp reads it).
         toks <- tokenize("fn is_digit(c: int): int { return c >= 48 && c <= 57; }");
+        pos[0] <- 0;
+        stmts <- pp();
+        run_ir_from_ast(stmts);
+    } else if (args(0) = "--ir-cluster1") {
+        // A richer test: exercise StringLit, BoolLit, UnaryOp, IfStmt,
+        // WhileStmt, PrintStmt, CallExpr, plus all the cluster-0 nodes.
+        // The source defines `main_logic` which the generated main calls.
+        cluster1_src <- "fn classify(n: int): int { if (n = 0) { return 0; } if (n < 0) { return -1; } return 1; }\n" +
+                         "fn count_down(n: int): int { sum <- 0; while (n > 0) { sum <- sum + n; n <- n - 1; } return sum; }\n" +
+                         "fn show_int(label: str, value: int): int { print(label); print(value); return 0; }\n" +
+                         "fn main_logic(): int {\n" +
+                         "    show_int(\"classify(-5):\", classify(-5));\n" +
+                         "    show_int(\"classify(0):\",  classify(0));\n" +
+                         "    show_int(\"classify(7):\",  classify(7));\n" +
+                         "    show_int(\"count_down(5):\", count_down(5));\n" +
+                         "    print(!0);\n" +
+                         "    print(!1);\n" +
+                         "    return 0;\n" +
+                         "}";
+        toks <- tokenize(cluster1_src);
         pos[0] <- 0;
         stmts <- pp();
         run_ir_from_ast(stmts);
