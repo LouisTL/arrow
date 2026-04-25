@@ -128,8 +128,11 @@ ir_lines <- [""];  // init with "" so global type tracking knows it holds string
 deferred_ir <- [""];  // buffer for arrow function definitions
 emit_target <- [0];  // 0 = ir_lines, 1 = deferred_ir
 
-// Platform detection: 1 = Windows, 0 = Unix (Linux/Mac)
+// Platform detection. is_win = 1 on Windows; is_mac = 1 on macOS; both 0 on Linux.
+// is_mac matters because macOS doesn't expose `stdin` as a real symbol — the
+// underlying name is __stdinp.
 is_win <- [1]; // default Windows, overridden at startup
+is_mac <- [0];
 
 fn emit(s: str) {
     if (emit_target[0] = 0) {
@@ -3192,6 +3195,9 @@ fn emit_input_helper() {
     emit("  %buf = call ptr @malloc(i64 4096)");
     if (is_win[0] = 1) {
         emit("  %stdin = call ptr @__acrt_iob_func(i32 0)");
+    } else if (is_mac[0] = 1) {
+        // macOS exposes stdio as __stdinp / __stdoutp / __stderrp.
+        emit("  %stdin = load ptr, ptr @__stdinp");
     } else {
         emit("  %stdin = load ptr, ptr @stdin");
     }
@@ -3242,6 +3248,8 @@ fn compile(stmts) {
     emit("declare ptr @fgets(ptr, i32, ptr)");
     if (is_win[0] = 1) {
         emit("declare ptr @__acrt_iob_func(i32)");
+    } else if (is_mac[0] = 1) {
+        emit("@__stdinp = external global ptr");
     } else {
         emit("@stdin = external global ptr");
     }
@@ -3395,14 +3403,27 @@ fn compile(stmts) {
 //  MAIN — Read, lex, parse, compile, write, run clang
 // ═══════════════════════════════════════════
 
-// Detect platform: try "cmd /c exit 0" which only works on Windows
+// Detect platform: try "cmd /c exit 0" which only works on Windows; otherwise
+// check whether `uname -s` reports Darwin to identify macOS (which has its own
+// stdio symbol naming — __stdinp instead of stdin).
 is_win[0] <- 0;
+is_mac[0] <- 0;
 rc_detect <- exec_cmd("cmd /c exit 0 2>nul");
 if (rc_detect = 0) {
     is_win[0] <- 1;
 } else {
     // Clean up "nul" file created by redirect on Unix
     exec_cmd("rm -f nul 2>/dev/null");
+    // Probe for macOS via uname; redirect output to a temp file so we don't
+    // pollute stdout, then read it back.
+    exec_cmd("uname -s > /tmp/.arrow_uname 2>/dev/null");
+    uname_out <- read_file("/tmp/.arrow_uname");
+    if (str_len(uname_out) >= 6) {
+        if (substring(uname_out, 0, 6) = "Darwin") {
+            is_mac[0] <- 1;
+        }
+    }
+    exec_cmd("rm -f /tmp/.arrow_uname 2>/dev/null");
 }
 
 if (args() < 1) {
@@ -3508,6 +3529,9 @@ if (args() > 0) {
         // to skip the real compile below.
     }
     if (args(0) = "--ir-is-digit") {
+        ir_test_mode[0] <- true;
+    }
+    if (args(0) = "--ir-from-ast") {
         ir_test_mode[0] <- true;
     }
 }
@@ -4057,10 +4081,283 @@ fn ir_render_module(m): str {
     return s;
 }
 
-// End-of-file dispatch for --ir-test / --ir-is-digit (see build functions above).
+// ═══════════════════════════════════════════
+//  ARROW IR — Phase 3: AST → IR translator
+//
+//  A Builder struct carries state across an in-progress function build:
+//    fn           — the IR Function being populated
+//    cur_block    — the basic block currently receiving instructions
+//    locals       — list of {name, reg} mapping source var → alloca slot
+//    tmp_counter  — boxed int for fresh temporary register names
+//    block_counter— boxed int for fresh basic-block labels
+//
+//  The emitter covers the subset of AST nodes needed by is_digit:
+//  NumberLit, Identifier, BinOp (comparisons + &&), ReturnStmt, FnDecl.
+//  Each additional node is a small incremental extension in later phases.
+// ═══════════════════════════════════════════
+
+fn ir_builder_new(f, entry_bb) {
+    return {
+        func: f,
+        cur_block: entry_bb,
+        locals: [],
+        tmp_counter: [0],
+        block_counter: [0]
+    };
+}
+
+fn ir_fresh_tmp(b, prefix: str): str {
+    b.tmp_counter[0] <- b.tmp_counter[0] + 1;
+    return "%" + prefix + b.tmp_counter[0];
+}
+
+fn ir_fresh_block_lbl(b, prefix: str): str {
+    b.block_counter[0] <- b.block_counter[0] + 1;
+    return prefix + b.block_counter[0];
+}
+
+// Look up a local by name, allocating it (with an alloca in the entry block)
+// if this is the first reference. Returns the slot register name (e.g. "%c").
+fn ir_get_local_slot(b, name: str): str {
+    i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) { return b.locals[i].reg; }
+        i <- i + 1;
+    }
+    reg <- "%" + name;
+    push(b.locals, {name: name, reg: reg});
+    // Always emit allocas in the entry block (first block of the function).
+    // LLVM convention; also keeps alloca out of loops where it would reset each iter.
+    ir_push_inst(b.func.blocks[0], ii_alloca(reg, mk_int()));
+    return reg;
+}
+
+// Map an Arrow BinOp comparison op to the LLVM icmp predicate suffix.
+fn ir_cmp_op(op: str): str {
+    if (op = "=")  { return "eq"; }
+    if (op = "!=") { return "ne"; }
+    if (op = "<")  { return "slt"; }
+    if (op = "<=") { return "sle"; }
+    if (op = ">")  { return "sgt"; }
+    if (op = ">=") { return "sge"; }
+    return "";
+}
+
+fn ir_is_cmp_op(op: str): int {
+    return op = "=" || op = "!=" || op = "<" || op = "<=" || op = ">" || op = ">=";
+}
+
+fn ir_emit_expr(b, nd) {
+    if (nd.node = "NumberLit") {
+        return ir_const_int(nd.value);
+    }
+    if (nd.node = "Identifier") {
+        slot <- ir_get_local_slot(b, nd.name);
+        tmp <- ir_fresh_tmp(b, "ld");
+        ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg(slot, mk_int())));
+        return ir_reg(tmp, mk_int());
+    }
+    if (nd.node = "BinOp") {
+        return ir_emit_binop(b, nd);
+    }
+    // Fallback — unsupported node. Return a sentinel const_int(0) so that
+    // we at least produce valid (but semantically wrong) IR. Future phases
+    // will extend this with the full node set.
+    print("ir_emit_expr: unsupported node " + nd.node);
+    return ir_const_int(0);
+}
+
+fn ir_emit_binop(b, nd) {
+    op <- nd.op;
+
+    if (op = "&&") {
+        // Short-circuit: allocate a result slot (entry-block alloca), store 0,
+        // eval LHS, branch on truthiness; true path evaluates RHS and stores;
+        // join block loads the result.
+        res_slot_name <- ir_fresh_tmp(b, "and_res");
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, mk_int()));
+        ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, mk_int())));
+
+        lhs <- ir_emit_expr(b, nd.left);
+
+        rhs_lbl <- ir_fresh_block_lbl(b, "and_r");
+        end_lbl <- ir_fresh_block_lbl(b, "and_e");
+        br_tmp  <- ir_fresh_tmp(b, "br");
+        ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, lhs, rhs_lbl, end_lbl));
+
+        rhs_bb <- ir_block(rhs_lbl);
+        ir_fn_add_block(b.func, rhs_bb);
+        b.cur_block <- rhs_bb;
+        rhs <- ir_emit_expr(b, nd.right);
+        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, mk_int())));
+        ir_set_terminator(b.cur_block, ii_br(end_lbl));
+
+        end_bb <- ir_block(end_lbl);
+        ir_fn_add_block(b.func, end_bb);
+        b.cur_block <- end_bb;
+
+        result_tmp <- ir_fresh_tmp(b, "andres");
+        ir_push_inst(b.cur_block, ii_load(result_tmp, mk_int(), ir_reg(res_slot_name, mk_int())));
+        return ir_reg(result_tmp, mk_int());
+    }
+
+    if (op = "||") {
+        // Mirror of && with the default set to 1; LHS true short-circuits to end.
+        res_slot_name <- ir_fresh_tmp(b, "or_res");
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, mk_int()));
+        ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, mk_int())));
+
+        lhs <- ir_emit_expr(b, nd.left);
+
+        rhs_lbl <- ir_fresh_block_lbl(b, "or_r");
+        end_lbl <- ir_fresh_block_lbl(b, "or_e");
+        br_tmp  <- ir_fresh_tmp(b, "br");
+        // LHS true → skip to end; LHS false → compute RHS.
+        ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, lhs, end_lbl, rhs_lbl));
+
+        rhs_bb <- ir_block(rhs_lbl);
+        ir_fn_add_block(b.func, rhs_bb);
+        b.cur_block <- rhs_bb;
+        rhs <- ir_emit_expr(b, nd.right);
+        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, mk_int())));
+        ir_set_terminator(b.cur_block, ii_br(end_lbl));
+
+        end_bb <- ir_block(end_lbl);
+        ir_fn_add_block(b.func, end_bb);
+        b.cur_block <- end_bb;
+
+        result_tmp <- ir_fresh_tmp(b, "orres");
+        ir_push_inst(b.cur_block, ii_load(result_tmp, mk_int(), ir_reg(res_slot_name, mk_int())));
+        return ir_reg(result_tmp, mk_int());
+    }
+
+    // Arithmetic and comparison — both operands are eagerly evaluated.
+    lhs <- ir_emit_expr(b, nd.left);
+    rhs <- ir_emit_expr(b, nd.right);
+
+    if (ir_is_cmp_op(op)) {
+        tmp <- ir_fresh_tmp(b, "cmp");
+        ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
+        return ir_reg(tmp, mk_int());
+    }
+    if (op = "+") { tmp <- ir_fresh_tmp(b, "add"); ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+    if (op = "-") { tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+    if (op = "*") { tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+    if (op = "/") { tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+    if (op = "%") { tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+
+    print("ir_emit_binop: unsupported op " + op);
+    return ir_const_int(0);
+}
+
+fn ir_emit_stmt(b, stmt) {
+    if (stmt.node = "ReturnStmt") {
+        if (stmt.expr = false) {
+            // bare `return;` — still require a terminator for well-formed IR.
+            ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
+        } else {
+            v <- ir_emit_expr(b, stmt.expr);
+            ir_set_terminator(b.cur_block, ii_ret(v));
+        }
+        return 0;
+    }
+    if (stmt.node = "Assignment") {
+        slot <- ir_get_local_slot(b, stmt.name);
+        v <- ir_emit_expr(b, stmt.expr);
+        ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+        return 0;
+    }
+    print("ir_emit_stmt: unsupported node " + stmt.node);
+    return 0;
+}
+
+// Translate an AST FnDecl into an IR Function.
+fn emit_function_via_ir(nd) {
+    params <- [];
+    i <- 0;
+    while (i < len(nd.params)) {
+        push(params, {name: nd.params[i], type: mk_int()});
+        i <- i + 1;
+    }
+    f <- ir_function(nd.name, params, mk_int());
+
+    ent_bb <- ir_block("entry");
+    ir_fn_add_block(f, ent_bb);
+    b <- ir_builder_new(f, ent_bb);
+
+    // Prologue: allocate each param's local slot and store the arg into it.
+    i <- 0;
+    while (i < len(nd.params)) {
+        pname <- nd.params[i];
+        slot <- ir_get_local_slot(b, pname);
+        ir_push_inst(b.cur_block, ii_store(ir_reg("%" + pname + ".arg", mk_int()), ir_reg(slot, mk_int())));
+        i <- i + 1;
+    }
+
+    // Body
+    i <- 0;
+    while (i < len(nd.body)) {
+        ir_emit_stmt(b, nd.body[i]);
+        i <- i + 1;
+    }
+
+    return f;
+}
+
+// Phase-3 acceptance: parse a fixed test source, find is_digit, run it through
+// the AST→IR translator, and print the result plus a main that exercises it.
+// Takes a pre-parsed stmts list (parsing at top-level so the global `toks` is set).
+fn run_ir_from_ast(stmts) {
+    m <- ir_module();
+
+    // Find is_digit and translate
+    found <- false;
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            if (stmts[i].name = "is_digit") {
+                ir_mod_add_function(m, emit_function_via_ir(stmts[i]));
+                found <- true;
+            }
+        }
+        i <- i + 1;
+    }
+    if (!found) {
+        print("; is_digit not found");
+        return 0;
+    }
+
+    // Add a main that exercises is_digit with 48, 47, 57, 58.
+    main <- ir_function("main", [], mk_int());
+    mb <- ir_block("entry");
+    ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
+    ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
+    ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
+    ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
+    ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
+    ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
+    ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
+    ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
+    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
+    ir_fn_add_block(main, mb);
+    ir_mod_add_function(m, main);
+
+    ir_mod_add_str_raw(m, "fmt", "%lld\n");
+    ir_mod_add_extern(m, "printf", [mk_any()], mk_int(), 1);
+
+    print(ir_render_module(m));
+}
+
+// End-of-file dispatch for --ir-test / --ir-is-digit / --ir-from-ast.
 if (ir_test_mode[0]) {
     if (args(0) = "--ir-is-digit") {
         run_ir_is_digit();
+    } else if (args(0) = "--ir-from-ast") {
+        // Parse at top level so the global `toks` is populated (pp reads it).
+        toks <- tokenize("fn is_digit(c: int): int { return c >= 48 && c <= 57; }");
+        pos[0] <- 0;
+        stmts <- pp();
+        run_ir_from_ast(stmts);
     } else {
         run_ir_test();
     }
