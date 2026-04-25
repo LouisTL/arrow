@@ -3544,6 +3544,9 @@ if (args() > 0) {
     if (args(0) = "--ir-cluster1") {
         ir_test_mode[0] <- true;
     }
+    if (args(0) = "--ir-cluster2") {
+        ir_test_mode[0] <- true;
+    }
 }
 
 if (args() > 0 && !ir_test_mode[0]) {
@@ -3853,7 +3856,12 @@ fn ii_array_len(dst: str, arr) { return ir_inst("array_len", dst, mk_int(), [arr
 fn ii_array_get(dst: str, elem_type, arr, idx) {
     return ir_inst("array_get", dst, elem_type, [arr, idx], false);
 }
-fn ii_array_set(arr, idx, val)  { return ir_void_inst("array_set", [arr, idx, val], false); }
+fn ii_array_set(prefix: str, arr, idx, val) {
+    // prefix is a fresh register-name root used by the renderer to synthesize
+    // the intermediate cast/GEP/store registers. Caller's responsibility to
+    // make it unique within the function (e.g. ir_fresh_tmp(b, "aset")).
+    return ir_inst("array_set", prefix, mk_none(), [arr, idx, val], false);
+}
 fn ii_array_push(dst: str, arr, val) {
     // Returns updated array pointer (realloc may move it)
     return ir_inst("array_push", dst, arr.type, [arr, val], false);
@@ -3869,8 +3877,8 @@ fn ii_struct_new(dst: str, fields) {
 fn ii_struct_get(dst: str, field_type, s, field: str) {
     return ir_inst("struct_get", dst, field_type, [s], field);
 }
-fn ii_struct_set(s, field: str, val) {
-    return ir_void_inst("struct_set", [s, val], field);
+fn ii_struct_set(prefix: str, s, field: str, val) {
+    return ir_inst("struct_set", prefix, mk_none(), [s, val], field);
 }
 fn ii_struct_keys(dst: str, s) {
     return ir_inst("struct_keys", dst, mk_array(mk_str()), [s], false);
@@ -4039,6 +4047,120 @@ fn ir_render_inst(inst): str {
     if (op = "inttoptr") {
         return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr";
     }
+
+    // ── Collection ops ──
+    // Each lowering matches the layout used by the existing emitter so the
+    // runtime helpers (@arrow_push, @arrow_pop, @arrow_keys, @arrow_struct_find,
+    // @arena_alloc, @malloc) can be linked verbatim.
+
+    if (op = "array_new") {
+        // operands = [elem0, elem1, ...]
+        // Layout: [len (i64), cap (i64), e0 (i64), e1 (i64), ...]
+        // Allocate cap = max(n, 4096) slots; only fill the first n.
+        n <- len(inst.operands);
+        cap <- n;
+        if (cap < 4096) { cap <- 4096; }
+        total <- 2 + cap;
+        bytes <- total * 8;
+        s <- inst.dst + ".sz = mul i64 " + bytes + ", 1\n";
+        s <- s + "  " + inst.dst + ".p = call ptr @malloc(i64 " + bytes + ")\n";
+        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
+        s <- s + "  " + inst.dst + ".cp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
+        s <- s + "  store i64 " + cap + ", ptr " + inst.dst + ".cp\n";
+        i <- 0;
+        while (i < n) {
+            slot <- i + 2;
+            s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+        return s;
+    }
+    if (op = "array_len") {
+        // The array's len is the first slot. Cast i64→ptr, load i64.
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
+        return s;
+    }
+    if (op = "array_get") {
+        // operands = [arr, idx]; element at slot idx+2.
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
+        return s;
+    }
+    if (op = "array_set") {
+        // operands = [arr, idx, val]; void.
+        // dst is the synth-name prefix (caller picks something like "%aset1").
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[2]) + ", ptr " + inst.dst + ".ep";
+        return s;
+    }
+    if (op = "array_push") {
+        // operands = [arr, val]; runtime call returns updated arr pointer (realloc may move it).
+        return inst.dst + " = call i64 @arrow_push(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "array_pop") {
+        return inst.dst + " = call i64 @arrow_pop(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "struct_new") {
+        // extra = [{key: str, val: Value}, ...]; layout = [count, v0..v_{n-1}, name0..name_{n-1}]
+        fields <- inst.extra;
+        n <- len(fields);
+        total <- 1 + n * 2;
+        bytes <- total * 8;
+        s <- inst.dst + ".p = call ptr @arena_alloc(i64 " + bytes + ")\n";
+        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
+        i <- 0;
+        while (i < n) {
+            slot <- i + 1;
+            s <- s + "  " + inst.dst + ".vp" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + ir_render_operand(fields[i].val) + ", ptr " + inst.dst + ".vp" + i + "\n";
+            i <- i + 1;
+        }
+        // Field names: each `key` is a plain Arrow string → must already be in the module's
+        // string table. The struct_new builder pools them with ir_mod_add_str, returning the
+        // generated id which gets stored in fields[i].key_id (a const_str-like id reference).
+        i <- 0;
+        while (i < n) {
+            slot <- 1 + n + i;
+            s <- s + "  " + inst.dst + ".ni" + i + " = ptrtoint ptr @" + fields[i].key_id + " to i64\n";
+            s <- s + "  " + inst.dst + ".np" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + inst.dst + ".ni" + i + ", ptr " + inst.dst + ".np" + i + "\n";
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+        return s;
+    }
+    if (op = "struct_get") {
+        // operands = [s_ptr, name_id_value]; extra = field_name_id (string-table id)
+        // Lower: cast obj to ptr, find field via @arrow_struct_find, GEP at slot count+1+idx, load.
+        // We need the count too (slot 0). Simpler: lower exactly like emit_dot_expr.
+        s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
+        s <- s + "  " + inst.dst + ".cn = load i64, ptr " + inst.dst + ".op\n";
+        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
+        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".vp";
+        return s;
+    }
+    if (op = "struct_set") {
+        // operands = [s_ptr, val]; extra = field_name_id
+        s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
+        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
+        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[1]) + ", ptr " + inst.dst + ".vp";
+        return s;
+    }
+    if (op = "struct_keys") {
+        return inst.dst + " = call i64 @arrow_keys(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+
     return "; UNHANDLED OP: " + op;
 }
 
@@ -4232,12 +4354,56 @@ fn ir_emit_expr(b, nd) {
         return ir_const_int(0);
     }
     if (nd.node = "CallExpr") {
-        // User function calls only at this stage. Builtins (len, push, pop,
-        // print, etc.) are handled elsewhere as separate IR ops.
+        // User function calls (and recognized built-ins). Indirect calls are
+        // not yet supported in this phase.
         if (nd.callee.node != "Identifier") {
             print("ir_emit_expr CallExpr: indirect calls not yet supported");
             return ir_const_int(0);
         }
+        nm <- nd.callee.name;
+
+        // Built-ins that map to dedicated IR ops.
+        if (nm = "len") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            // Strings: strlen via existing helper (renderer handles strlen op).
+            // Arrays: array_len op (loads slot 0 of the array layout).
+            argt <- typeof_expr(nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "len");
+            if (argt.kind = "str") {
+                ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
+            } else {
+                ir_push_inst(b.cur_block, ii_array_len(tmp, arg));
+            }
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "push") {
+            arr <- ir_emit_expr(b, nd.args[0]);
+            val <- ir_emit_expr(b, nd.args[1]);
+            tmp <- ir_fresh_tmp(b, "push");
+            ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
+            // push mutates and returns the (possibly relocated) array pointer;
+            // store it back into the source variable so subsequent reads see
+            // the new pointer. Matches existing emitter's semantics.
+            if (nd.args[0].node = "Identifier") {
+                slot <- ir_get_local_slot(b, nd.args[0].name);
+                ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg(slot, mk_int())));
+            }
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "pop") {
+            arr <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "pop");
+            ir_push_inst(b.cur_block, ii_array_pop(tmp, mk_int(), arr));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "keys") {
+            s <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "keys");
+            ir_push_inst(b.cur_block, ii_struct_keys(tmp, s));
+            return ir_reg(tmp, mk_array(mk_str()));
+        }
+
+        // Generic user-function call.
         // Evaluate arguments left-to-right (matches existing emitter).
         args <- [];
         i <- 0;
@@ -4246,8 +4412,58 @@ fn ir_emit_expr(b, nd) {
             i <- i + 1;
         }
         tmp <- ir_fresh_tmp(b, "call");
-        ir_push_inst(b.cur_block, ii_call(tmp, mk_int(), nd.callee.name, args));
+        ir_push_inst(b.cur_block, ii_call(tmp, mk_int(), nm, args));
         return ir_reg(tmp, mk_int());
+    }
+    if (nd.node = "ArrayLit") {
+        elems <- [];
+        i <- 0;
+        while (i < len(nd.elements)) {
+            push(elems, ir_emit_expr(b, nd.elements[i]));
+            i <- i + 1;
+        }
+        tmp <- ir_fresh_tmp(b, "arr");
+        ir_push_inst(b.cur_block, ii_array_new(tmp, mk_int(), elems));
+        return ir_reg(tmp, mk_array(mk_int()));
+    }
+    if (nd.node = "IndexExpr") {
+        obj <- ir_emit_expr(b, nd.obj);
+        idx <- ir_emit_expr(b, nd.index);
+        // String indexing follows char_at semantics — the existing emit_index
+        // dispatches on static type. We mirror: if obj is statically str, do
+        // a char-at via a strcat-style helper or via a tiny inline byte-load.
+        // For now we cover the array case; string indexing falls through to
+        // array, which is incorrect for strings — left as a known limitation
+        // until a `string_index` op is added (later in this phase).
+        tmp <- ir_fresh_tmp(b, "idx");
+        ir_push_inst(b.cur_block, ii_array_get(tmp, mk_int(), obj, idx));
+        return ir_reg(tmp, mk_int());
+    }
+    if (nd.node = "DotExpr") {
+        obj <- ir_emit_expr(b, nd.obj);
+        // Pool the field name in the module's string table.
+        fid <- ir_mod_add_str(b.mod, nd.field);
+        tmp <- ir_fresh_tmp(b, "dot");
+        ir_push_inst(b.cur_block, ii_struct_get(tmp, mk_int(), obj, fid));
+        return ir_reg(tmp, mk_int());
+    }
+    if (nd.node = "StructLit") {
+        // Pool field names; build the struct_new instruction with {key_id, val} entries.
+        fields <- [];
+        i <- 0;
+        while (i < len(nd.fields)) {
+            // Each AST field is {key: <str>, val: <expr>}; pool the name and
+            // emit the value expression.
+            key_id <- ir_mod_add_str(b.mod, nd.fields[i].key);
+            val <- ir_emit_expr(b, nd.fields[i].val);
+            push(fields, {key_id: key_id, val: val});
+            i <- i + 1;
+        }
+        tmp <- ir_fresh_tmp(b, "sl");
+        // Replace the operands list with [] since the renderer reads from extra.
+        inst <- ir_inst("struct_new", tmp, mk_struct(), [], fields);
+        ir_push_inst(b.cur_block, inst);
+        return ir_reg(tmp, mk_struct());
     }
     // Fallback — unsupported node. Return a sentinel const_int(0) so that
     // we at least produce valid (but semantically wrong) IR. Future phases
@@ -4354,6 +4570,22 @@ fn ir_emit_stmt(b, stmt) {
         slot <- ir_get_local_slot(b, stmt.name);
         v <- ir_emit_expr(b, stmt.expr);
         ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+        return 0;
+    }
+    if (stmt.node = "IndexAssign") {
+        obj <- ir_emit_expr(b, stmt.obj);
+        idx <- ir_emit_expr(b, stmt.index);
+        val <- ir_emit_expr(b, stmt.value);
+        prefix <- ir_fresh_tmp(b, "aset");
+        ir_push_inst(b.cur_block, ii_array_set(prefix, obj, idx, val));
+        return 0;
+    }
+    if (stmt.node = "DotAssign") {
+        obj <- ir_emit_expr(b, stmt.obj);
+        val <- ir_emit_expr(b, stmt.value);
+        fid <- ir_mod_add_str(b.mod, stmt.field);
+        prefix <- ir_fresh_tmp(b, "sset");
+        ir_push_inst(b.cur_block, ii_struct_set(prefix, obj, fid, val));
         return 0;
     }
     if (stmt.node = "PrintStmt") {
@@ -4625,7 +4857,88 @@ fn run_ir_from_ast(stmts) {
     print(ir_render_module(m));
 }
 
-// End-of-file dispatch for --ir-test / --ir-is-digit / --ir-from-ast / --ir-cluster1.
+// Phase-3 cluster-2 acceptance: collections (arrays + structs + builtins).
+// Builds and renders an IR module from a fixed source program, then appends
+// the runtime helpers (arrow_push, arrow_pop, arrow_keys, arena_alloc, etc.)
+// by calling the existing emit_*_helper() functions which write to ir_lines.
+// The combined output is a self-contained LLVM module clang can compile.
+fn run_ir_cluster2_impl(stmts) {
+    scan_fns(stmts);
+    scan_call_sites(stmts);
+
+    m <- ir_module();
+
+    // Translate every FnDecl
+    has_main_logic <- false;
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            ir_mod_add_function(m, emit_function_via_ir(stmts[i], m));
+            if (stmts[i].name = "main_logic") { has_main_logic <- true; }
+        }
+        i <- i + 1;
+    }
+    if (!has_main_logic) {
+        print("; cluster2: source must define main_logic()");
+        return 0;
+    }
+
+    // LLVM main calls main_logic.
+    main <- ir_function("main", [], mk_int());
+    mb <- ir_block("entry");
+    ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
+    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
+    ir_fn_add_block(main, mb);
+    ir_mod_add_function(m, main);
+
+    // Module-level constants the IR ops reference.
+    ir_mod_add_str_raw(m, "fmt_int", "%lld\n");
+    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
+    ir_mod_add_extern(m, "puts", [mk_ptr()], mk_i32(), 0);
+    ir_mod_add_extern(m, "fflush", [mk_ptr()], mk_i32(), 0);
+
+    // Render the IR portion. The renderer emits its own externs and string
+    // table — but we ALSO need the externs the runtime helpers reference
+    // (malloc, realloc, free, strlen, ...). We'll prepend those to the output.
+    ir_text <- ir_render_module(m);
+
+    // Capture the runtime helper text. The existing emit_*_helper fns push
+    // into the global ir_lines array. We snapshot its length, call the
+    // helpers, then read everything appended since the snapshot. (We don't
+    // restore — the IR-test mode never uses the existing compile pipeline
+    // after this, so leaking these lines into ir_lines is harmless.)
+    snap_len <- len(ir_lines);
+    emit_arena_helper();
+    emit_safe_strcmp_helper();
+    emit_push_helper();
+    emit_pop_helper();
+    emit_keys_helper();
+    emit_struct_find_helper();
+    emit_itoa_helper();
+    runtime_text <- "";
+    j <- snap_len;
+    while (j < len(ir_lines)) {
+        runtime_text <- runtime_text + ir_lines[j] + "\n";
+        j <- j + 1;
+    }
+
+    // Print the externs the runtime + IR ops need (the IR renderer's extern
+    // list only covers what we explicitly added — printf/puts/fflush).
+    print("declare ptr @malloc(i64)");
+    print("declare ptr @realloc(ptr, i64)");
+    print("declare void @free(ptr)");
+    print("declare i64 @strlen(ptr)");
+    print("declare i32 @strcmp(ptr, ptr)");
+    print("declare void @exit(i32)");
+    print("");
+
+    // The IR text (which includes its own printf/puts/fflush externs and the
+    // module's translated functions).
+    print(ir_text);
+
+    // The runtime body.
+    print(runtime_text);
+}
 if (ir_test_mode[0]) {
     if (args(0) = "--ir-is-digit") {
         run_ir_is_digit();
@@ -4655,6 +4968,42 @@ if (ir_test_mode[0]) {
         pos[0] <- 0;
         stmts <- pp();
         run_ir_from_ast(stmts);
+    } else if (args(0) = "--ir-cluster2") {
+        // Cluster 2: collections. Exercises ArrayLit, IndexExpr, len(), push(),
+        // pop(), StructLit, DotExpr, keys(), and the assignment forms (a[i] <- v,
+        // s.f <- v). The source defines main_logic.
+        cluster2_src <- "fn sum_arr(a): int {\n" +
+                         "    total <- 0;\n" +
+                         "    i <- 0;\n" +
+                         "    while (i < len(a)) {\n" +
+                         "        total <- total + a[i];\n" +
+                         "        i <- i + 1;\n" +
+                         "    }\n" +
+                         "    return total;\n" +
+                         "}\n" +
+                         "fn main_logic(): int {\n" +
+                         "    nums <- [10, 20, 30, 40];\n" +
+                         "    print(len(nums));\n" +
+                         "    print(sum_arr(nums));\n" +
+                         "    push(nums, 50);\n" +
+                         "    print(len(nums));\n" +
+                         "    print(sum_arr(nums));\n" +
+                         "    last <- pop(nums);\n" +
+                         "    print(last);\n" +
+                         "    print(len(nums));\n" +
+                         "    nums[0] <- 999;\n" +
+                         "    print(nums[0]);\n" +
+                         "    point <- {x: 3, y: 4};\n" +
+                         "    print(point.x);\n" +
+                         "    print(point.y);\n" +
+                         "    point.x <- 100;\n" +
+                         "    print(point.x);\n" +
+                         "    return 0;\n" +
+                         "}";
+        toks <- tokenize(cluster2_src);
+        pos[0] <- 0;
+        stmts <- pp();
+        run_ir_cluster2_impl(stmts);
     } else {
         run_ir_test();
     }
