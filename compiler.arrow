@@ -2262,15 +2262,18 @@ fn typeof_expr(nd) {
         return mk_array(et);
     }
     if (nd.node = "IndexExpr") {
-        // Prefer the array's Type if we know it
+        // Indexing a string yields a single-char string (char_at semantics).
+        // Indexing an array yields the element type. Anything else is unknown.
         if (nd.obj.node = "Identifier") {
             ot <- get_var_type(nd.obj.name);
+            if (ot.kind = "str") { return mk_str(); }
             if (ot.kind = "array") { return ot.elem; }
             // Fall back to the side table for arrays we set up before var_types existed
             return get_array_elem_type(nd.obj.name);
         }
         // Index into a non-Identifier (e.g. nested [[int]] subscript)
         ot <- typeof_expr(nd.obj);
+        if (ot.kind = "str") { return mk_str(); }
         if (ot.kind = "array") { return ot.elem; }
         return mk_any();
     }
@@ -3128,6 +3131,46 @@ fn emit_keys_helper() {
     emit("");
 }
 
+// ── Emit substring helper ───────────────
+// Used by the IR-emitter's `substring` op so that the rendered IR stays
+// linear (no copy loop inlined per call site). Same semantics as the
+// existing inlined version: arena-allocate end-start+1 bytes, byte-copy
+// from src+start..src+end, null-terminate, return the new string ptr.
+//
+// Signature: i64 @arrow_substring(i64 %s, i64 %start, i64 %end)
+fn emit_substring_helper() {
+    emit("define i64 @arrow_substring(i64 %si, i64 %start, i64 %end) {");
+    emit("entry:");
+    emit("  %sp = inttoptr i64 %si to ptr");
+    emit("  %sl = sub i64 %end, %start");
+    emit("  %bs = add i64 %sl, 1");
+    emit("  %buf = call ptr @arena_alloc(i64 %bs)");
+    emit("  %src = getelementptr i8, ptr %sp, i64 %start");
+    emit("  %idx = alloca i64");
+    emit("  store i64 0, ptr %idx");
+    emit("  br label %cond");
+    emit("cond:");
+    emit("  %i = load i64, ptr %idx");
+    emit("  %cmp = icmp slt i64 %i, %sl");
+    emit("  br i1 %cmp, label %body, label %done");
+    emit("body:");
+    emit("  %i2 = load i64, ptr %idx");
+    emit("  %sep = getelementptr i8, ptr %src, i64 %i2");
+    emit("  %sch = load i8, ptr %sep");
+    emit("  %dep = getelementptr i8, ptr %buf, i64 %i2");
+    emit("  store i8 %sch, ptr %dep");
+    emit("  %inc = add i64 %i2, 1");
+    emit("  store i64 %inc, ptr %idx");
+    emit("  br label %cond");
+    emit("done:");
+    emit("  %ntp = getelementptr i8, ptr %buf, i64 %sl");
+    emit("  store i8 0, ptr %ntp");
+    emit("  %ri = ptrtoint ptr %buf to i64");
+    emit("  ret i64 %ri");
+    emit("}");
+    emit("");
+}
+
 // ── Emit read_file helper ───────────────
 
 fn emit_read_file_helper() {
@@ -3547,6 +3590,9 @@ if (args() > 0) {
     if (args(0) = "--ir-cluster2") {
         ir_test_mode[0] <- true;
     }
+    if (args(0) = "--ir-cluster3") {
+        ir_test_mode[0] <- true;
+    }
 }
 
 if (args() > 0 && !ir_test_mode[0]) {
@@ -3847,6 +3893,24 @@ fn ii_store(val, ptr)           { return ir_void_inst("store",              [val
 fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, mk_str(), [l, r], false); }
 fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, mk_int(), [s],    false); }
 fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, mk_str(), [n], false); }
+
+// Cluster-3 string ops. Each one's runtime equivalent is what the existing
+// emitter inlines; the renderer here mirrors that codegen so behaviour is
+// byte-for-byte identical.
+fn ii_char_code(dst: str, s)        { return ir_inst("char_code", dst, mk_int(), [s], false); }
+fn ii_char_at(dst: str, s, idx)     { return ir_inst("char_at",   dst, mk_str(), [s, idx], false); }
+fn ii_from_char_code(dst: str, n)   { return ir_inst("from_char_code", dst, mk_str(), [n], false); }
+// substring is delegated to a runtime helper @arrow_substring (defined alongside
+// the other helpers) — keeps the IR linear instead of generating a copy loop.
+fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, mk_str(), [s, st, ed], false); }
+
+// IO ops — each calls into the existing arrow_* runtime helpers.
+fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, mk_str(), [path], false); }
+fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, mk_int(), [p, c], false); }
+fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, mk_int(), [p, c], false); }
+fn ii_exec_cmd(dst: str, c)         { return ir_inst("exec_cmd",    dst, mk_int(), [c], false); }
+fn ii_input(dst: str)               { return ir_inst("input",       dst, mk_str(), [],   false); }
+fn ii_input_with_prompt(dst: str, p) { return ir_inst("input",       dst, mk_str(), [p],  false); }
 
 fn ii_array_new(dst: str, elem_type, elems) {
     // elems is [Value]; elem_type is a Type (element kind)
@@ -4161,6 +4225,81 @@ fn ir_render_inst(inst): str {
         return inst.dst + " = call i64 @arrow_keys(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
 
+    // ── Cluster-3 string + IO ops ──
+
+    if (op = "char_code") {
+        // operand = string ptr (i64); load first byte and zext to i64.
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".v = load i8, ptr " + inst.dst + ".p\n";
+        s <- s + "  " + inst.dst + " = zext i8 " + inst.dst + ".v to i64";
+        return s;
+    }
+    if (op = "char_at") {
+        // operands = [s_ptr, idx]; allocate 2-byte arena buffer with [byte, 0].
+        s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i8, ptr " + inst.dst + ".sp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + ".ch = load i8, ptr " + inst.dst + ".ep\n";
+        s <- s + "  " + inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
+        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
+        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
+        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
+        return s;
+    }
+    if (op = "from_char_code") {
+        // operand = code (i64); allocate a 2-byte buffer with [low_byte, 0].
+        s <- inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
+        s <- s + "  " + inst.dst + ".ch = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i8\n";
+        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
+        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
+        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
+        return s;
+    }
+    if (op = "substring") {
+        // Delegate to a runtime helper. Operands = [s, start, end].
+        return inst.dst + " = call i64 @arrow_substring(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ", i64 " + ir_render_operand(inst.operands[2]) + ")";
+    }
+    if (op = "read_file") {
+        // operand = path (i64 holding ptr); helper returns a ptr.
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".r = call ptr @arrow_read_file(ptr " + inst.dst + ".p)\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+        return s;
+    }
+    if (op = "write_file") {
+        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = call i64 @arrow_write_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
+        return s;
+    }
+    if (op = "append_file") {
+        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = call i64 @arrow_append_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
+        return s;
+    }
+    if (op = "exec_cmd") {
+        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".r32 = call i32 @system(ptr " + inst.dst + ".p)\n";
+        s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".r32 to i64";
+        return s;
+    }
+    if (op = "input") {
+        // No-prompt form: just call the helper. With-prompt: emit a printf
+        // first using the operand as the format string.
+        if (len(inst.operands) > 0) {
+            s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+            s <- s + "  call i32 (ptr, ...) @printf(ptr " + inst.dst + ".pp)\n";
+            s <- s + "  " + inst.dst + ".r = call ptr @arrow_input()\n";
+            s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+            return s;
+        }
+        s <- inst.dst + ".r = call ptr @arrow_input()\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+        return s;
+    }
+
     return "; UNHANDLED OP: " + op;
 }
 
@@ -4403,6 +4542,77 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, mk_array(mk_str()));
         }
 
+        // Cluster-3 string + IO builtins.
+        if (nm = "str_len") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "sl");
+            ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "char_code") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "cc");
+            ir_push_inst(b.cur_block, ii_char_code(tmp, arg));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "char_at") {
+            sarg <- ir_emit_expr(b, nd.args[0]);
+            iarg <- ir_emit_expr(b, nd.args[1]);
+            tmp <- ir_fresh_tmp(b, "ca");
+            ir_push_inst(b.cur_block, ii_char_at(tmp, sarg, iarg));
+            return ir_reg(tmp, mk_str());
+        }
+        if (nm = "from_char_code") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "fcc");
+            ir_push_inst(b.cur_block, ii_from_char_code(tmp, arg));
+            return ir_reg(tmp, mk_str());
+        }
+        if (nm = "substring") {
+            sarg <- ir_emit_expr(b, nd.args[0]);
+            stargv <- ir_emit_expr(b, nd.args[1]);
+            edarg <- ir_emit_expr(b, nd.args[2]);
+            tmp <- ir_fresh_tmp(b, "sub");
+            ir_push_inst(b.cur_block, ii_substring(tmp, sarg, stargv, edarg));
+            return ir_reg(tmp, mk_str());
+        }
+        if (nm = "read_file") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "rf");
+            ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
+            return ir_reg(tmp, mk_str());
+        }
+        if (nm = "write_file") {
+            parg <- ir_emit_expr(b, nd.args[0]);
+            carg <- ir_emit_expr(b, nd.args[1]);
+            tmp <- ir_fresh_tmp(b, "wf");
+            ir_push_inst(b.cur_block, ii_write_file(tmp, parg, carg));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "append_file") {
+            parg <- ir_emit_expr(b, nd.args[0]);
+            carg <- ir_emit_expr(b, nd.args[1]);
+            tmp <- ir_fresh_tmp(b, "af");
+            ir_push_inst(b.cur_block, ii_append_file(tmp, parg, carg));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "exec_cmd") {
+            arg <- ir_emit_expr(b, nd.args[0]);
+            tmp <- ir_fresh_tmp(b, "ec");
+            ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
+            return ir_reg(tmp, mk_int());
+        }
+        if (nm = "input") {
+            tmp <- ir_fresh_tmp(b, "in");
+            if (len(nd.args) >= 1) {
+                parg <- ir_emit_expr(b, nd.args[0]);
+                ir_push_inst(b.cur_block, ii_input_with_prompt(tmp, parg));
+            } else {
+                ir_push_inst(b.cur_block, ii_input(tmp));
+            }
+            return ir_reg(tmp, mk_str());
+        }
+
         // Generic user-function call.
         // Evaluate arguments left-to-right (matches existing emitter).
         args <- [];
@@ -4427,14 +4637,18 @@ fn ir_emit_expr(b, nd) {
         return ir_reg(tmp, mk_array(mk_int()));
     }
     if (nd.node = "IndexExpr") {
+        // Dispatch on the object's static type (via typeof_expr — populated
+        // by infer_body and friends in the prep dance). Strings get char_at
+        // semantics, arrays get array_get. Anything else falls back to array
+        // since `any`-typed values are most commonly arrays in practice.
         obj <- ir_emit_expr(b, nd.obj);
         idx <- ir_emit_expr(b, nd.index);
-        // String indexing follows char_at semantics — the existing emit_index
-        // dispatches on static type. We mirror: if obj is statically str, do
-        // a char-at via a strcat-style helper or via a tiny inline byte-load.
-        // For now we cover the array case; string indexing falls through to
-        // array, which is incorrect for strings — left as a known limitation
-        // until a `string_index` op is added (later in this phase).
+        ot <- typeof_expr(nd.obj);
+        if (ot.kind = "str") {
+            tmp <- ir_fresh_tmp(b, "ca");
+            ir_push_inst(b.cur_block, ii_char_at(tmp, obj, idx));
+            return ir_reg(tmp, mk_str());
+        }
         tmp <- ir_fresh_tmp(b, "idx");
         ir_push_inst(b.cur_block, ii_array_get(tmp, mk_int(), obj, idx));
         return ir_reg(tmp, mk_int());
@@ -4857,12 +5071,12 @@ fn run_ir_from_ast(stmts) {
     print(ir_render_module(m));
 }
 
-// Phase-3 cluster-2 acceptance: collections (arrays + structs + builtins).
-// Builds and renders an IR module from a fixed source program, then appends
-// the runtime helpers (arrow_push, arrow_pop, arrow_keys, arena_alloc, etc.)
-// by calling the existing emit_*_helper() functions which write to ir_lines.
-// The combined output is a self-contained LLVM module clang can compile.
-fn run_ir_cluster2_impl(stmts) {
+// Phase-3 helper used by cluster-2 / cluster-3 acceptance: build IR from
+// `stmts` and append the runtime helpers (arrow_push, arrow_pop, arrow_keys,
+// arena_alloc, etc.) by calling the existing emit_*_helper functions which
+// write to ir_lines. The combined output is a self-contained LLVM module
+// clang can compile.
+fn run_ir_with_runtime(stmts) {
     scan_fns(stmts);
     scan_call_sites(stmts);
 
@@ -4915,6 +5129,11 @@ fn run_ir_cluster2_impl(stmts) {
     emit_keys_helper();
     emit_struct_find_helper();
     emit_itoa_helper();
+    emit_substring_helper();
+    emit_read_file_helper();
+    emit_write_file_helper();
+    emit_append_file_helper();
+    emit_input_helper();
     runtime_text <- "";
     j <- snap_len;
     while (j < len(ir_lines)) {
@@ -4930,6 +5149,27 @@ fn run_ir_cluster2_impl(stmts) {
     print("declare i64 @strlen(ptr)");
     print("declare i32 @strcmp(ptr, ptr)");
     print("declare void @exit(i32)");
+    print("declare i32 @system(ptr)");
+    print("declare ptr @fopen(ptr, ptr)");
+    print("declare i32 @fclose(ptr)");
+    print("declare i64 @fread(ptr, i64, i64, ptr)");
+    print("declare i64 @fwrite(ptr, i64, i64, ptr)");
+    print("declare i32 @fseek(ptr, i64, i32)");
+    print("declare i64 @ftell(ptr)");
+    print("declare ptr @fgets(ptr, i32, ptr)");
+    if (is_win[0] = 1) {
+        print("declare ptr @__acrt_iob_func(i32)");
+    } else if (is_mac[0] = 1) {
+        print("@__stdinp = external global ptr");
+    } else {
+        print("@stdin = external global ptr");
+    }
+    // Constant strings used by the runtime helpers themselves: file mode
+    // arguments to fopen. (The pop-empty error string is declared inside
+    // emit_pop_helper's body, so we don't duplicate it here.)
+    print("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
+    print("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+    print("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
     print("");
 
     // The IR text (which includes its own printf/puts/fflush externs and the
@@ -5003,7 +5243,31 @@ if (ir_test_mode[0]) {
         toks <- tokenize(cluster2_src);
         pos[0] <- 0;
         stmts <- pp();
-        run_ir_cluster2_impl(stmts);
+        run_ir_with_runtime(stmts);
+    } else if (args(0) = "--ir-cluster3") {
+        // Cluster 3: strings + IO. Exercises str_len, char_code, char_at,
+        // from_char_code, substring, string indexing via s[i], and the
+        // simpler string-side of read_file/write_file (paired so the test is
+        // hermetic — no external file dependencies). Avoids exec_cmd and
+        // input() since both have side effects we don't want during tests.
+        cluster3_src <- "fn main_logic(): int {\n" +
+                         "    s <- \"Hello, Arrow!\";\n" +
+                         "    print(str_len(s));\n" +
+                         "    print(char_code(s));\n" +              // 'H' = 72
+                         "    print(char_at(s, 7));\n" +              // 'A'
+                         "    print(s[0]);\n" +                       // 'H' via string index
+                         "    print(from_char_code(72));\n" +         // 'H'
+                         "    print(substring(s, 7, 12));\n" +        // 'Arrow'
+                         "    write_file(\"/tmp/arrow_c3.txt\", \"hello from cluster3\");\n" +
+                         "    contents <- read_file(\"/tmp/arrow_c3.txt\");\n" +
+                         "    print(contents);\n" +
+                         "    print(str_len(contents));\n" +
+                         "    return 0;\n" +
+                         "}";
+        toks <- tokenize(cluster3_src);
+        pos[0] <- 0;
+        stmts <- pp();
+        run_ir_with_runtime(stmts);
     } else {
         run_ir_test();
     }
