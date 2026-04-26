@@ -2643,7 +2643,87 @@ fn find_captures(body, params, is_expr: int) {
     return caps;
 }
 
-// ── Emit arrow function ────────────────
+// IR-local find_captures: same logic as the existing find_captures but checks
+// the IR builder's locals list (and current_fn's params via the builder's
+// closure_vars / locals) rather than the existing emitter's alloc_vars side
+// state. Used by the AST→IR translator.
+fn ir_find_captures(b, body, params, is_expr: int) {
+    refs <- [];
+    work <- [];
+    if (is_expr = false) {
+        i <- 0;
+        while (i < len(body)) { push(work, body[i]); i <- i + 1; }
+    } else {
+        push(work, body);
+    }
+    wi <- 0;
+    while (wi < len(work)) {
+        nd <- work[wi];
+        wi <- wi + 1;
+        if (nd.node = "Identifier") {
+            if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
+        }
+        // Walk children — same shape-walking as the existing find_captures.
+        if (nd.node = "BinOp")    { push(work, nd.left); push(work, nd.right); }
+        if (nd.node = "UnaryOp")  { push(work, nd.operand); }
+        if (nd.node = "Assignment") {
+            if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
+            push(work, nd.expr);
+        }
+        if (nd.node = "ReturnStmt" && nd.expr != false) { push(work, nd.expr); }
+        if (nd.node = "PrintStmt") { push(work, nd.expr); }
+        if (nd.node = "IfStmt")    {
+            push(work, nd.cond);
+            i <- 0; while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
+            i <- 0; while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
+        }
+        if (nd.node = "WhileStmt") {
+            push(work, nd.cond);
+            i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+        }
+        if (nd.node = "ForInStmt") {
+            push(work, nd.iterable);
+            i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+        }
+        if (nd.node = "Block") {
+            i <- 0; while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
+        }
+        if (nd.node = "CallExpr") {
+            push(work, nd.callee);
+            i <- 0; while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
+        }
+        if (nd.node = "ArrayLit") {
+            i <- 0; while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
+        }
+        if (nd.node = "IndexExpr")    { push(work, nd.obj); push(work, nd.index); }
+        if (nd.node = "IndexAssign")  { push(work, nd.obj); push(work, nd.index); push(work, nd.value); }
+        if (nd.node = "DotExpr")      { push(work, nd.obj); }
+        if (nd.node = "DotAssign")    { push(work, nd.obj); push(work, nd.value); }
+        if (nd.node = "StructLit")    {
+            i <- 0; while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
+        }
+        // ArrowFn nested inside arrow fn — not handled here. Future work.
+    }
+    // Filter: keep refs that are NOT params and ARE in the current builder's locals.
+    caps <- [];
+    i <- 0;
+    while (i < len(refs)) {
+        if (!var_exists(params, refs[i])) {
+            // Check builder's locals list.
+            j <- 0;
+            found <- false;
+            while (j < len(b.locals)) {
+                if (b.locals[j].name = refs[i]) { found <- true; }
+                j <- j + 1;
+            }
+            if (found) { push(caps, refs[i]); }
+        }
+        i <- i + 1;
+    }
+    return caps;
+}
+
+// ── Emit arrow function (existing emitter, used by the legacy compile path) ────
 fn emit_arrow_fn(nd) {
     // Generate unique name
     arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
@@ -3593,6 +3673,9 @@ if (args() > 0) {
     if (args(0) = "--ir-cluster3") {
         ir_test_mode[0] <- true;
     }
+    if (args(0) = "--ir-cluster4") {
+        ir_test_mode[0] <- true;
+    }
 }
 
 if (args() > 0 && !ir_test_mode[0]) {
@@ -3958,6 +4041,21 @@ fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
     return ir_inst("indirect_call", dst, ret_type, ops, false);
 }
 
+// Closure ops. A closure is represented as a 2-slot heap pair [fn_ptr, env_ptr].
+// `closure_make`: build the pair. operands = captured Values; extra = fn_name.
+// Returns the pair pointer as i64.
+// `closure_call`: load fn_ptr + env_ptr from a pair, indirect-call with env
+// prepended to the user args. operands = [pair_ptr, arg0, arg1, ...].
+fn ii_closure_make(dst: str, fn_name: str, captures) {
+    return ir_inst("closure_make", dst, mk_int(), captures, fn_name);
+}
+fn ii_closure_call(dst: str, ret_type, pair_val, args) {
+    ops <- [pair_val];
+    i <- 0;
+    while (i < len(args)) { push(ops, args[i]); i <- i + 1; }
+    return ir_inst("closure_call", dst, ret_type, ops, false);
+}
+
 fn ii_br(label: str)            { return ir_void_inst("br", [ir_label(label)], false); }
 fn ii_cond_br(i1_reg: str, cond, then_lbl: str, else_lbl: str) {
     // i1_reg is the name for the intermediate icmp-ne result (e.g. "%br1").
@@ -4110,6 +4208,22 @@ fn ir_render_inst(inst): str {
     }
     if (op = "inttoptr") {
         return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr";
+    }
+    if (op = "gep_i64") {
+        // operands = [base_i64, index]; computes base+index*8 as i64.
+        // Used by closure capture loading where we need GEP into an env array.
+        s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".ep to i64";
+        return s;
+    }
+    if (op = "closure_load_cap") {
+        // operands = [env_i64, index]; loads the i64 at env_ptr + index*8.
+        // Single op so we don't have to chain gep+inttoptr+load.
+        s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
+        return s;
     }
 
     // ── Collection ops ──
@@ -4300,6 +4414,59 @@ fn ir_render_inst(inst): str {
         return s;
     }
 
+    // ── Closure ops ──
+    // Layout matches the existing emitter: heap pair [fn_ptr, env_ptr], where
+    // env_ptr points at an arena-allocated array of i64s holding captures.
+    if (op = "closure_make") {
+        // operands = captured Values (already evaluated by the caller).
+        // extra    = fn_name (the top-level IR Function for this closure).
+        // Allocate env (8 bytes per capture, or 0-len env_ptr=null if no captures)
+        // and pair (16 bytes), store [fn_ptr, env_ptr], return pair pointer i64.
+        n <- len(inst.operands);
+        s <- "";
+        if (n > 0) {
+            ebytes <- n * 8;
+            s <- inst.dst + ".env = call ptr @arena_alloc(i64 " + ebytes + ")\n";
+            i <- 0;
+            while (i < n) {
+                s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".env, i64 " + i + "\n";
+                s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
+                i <- i + 1;
+            }
+            s <- s + "  " + inst.dst + ".envi = ptrtoint ptr " + inst.dst + ".env to i64\n";
+        } else {
+            // No captures — env_ptr = 0 (null sentinel).
+            s <- inst.dst + ".envi = add i64 0, 0\n";
+        }
+        // Pair: [fn_ptr_i64, env_ptr_i64]
+        s <- s + "  " + inst.dst + ".pair = call ptr @arena_alloc(i64 16)\n";
+        s <- s + "  " + inst.dst + ".fnpi = ptrtoint ptr @" + inst.extra + " to i64\n";
+        s <- s + "  store i64 " + inst.dst + ".fnpi, ptr " + inst.dst + ".pair\n";
+        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pair, i64 1\n";
+        s <- s + "  store i64 " + inst.dst + ".envi, ptr " + inst.dst + ".envslot\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".pair to i64";
+        return s;
+    }
+    if (op = "closure_call") {
+        // operands = [pair_val, arg0, arg1, ...]
+        // Load fn_ptr and env_ptr from the pair, then indirect-call
+        // (i64, ...args) returning i64.
+        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".fni = load i64, ptr " + inst.dst + ".pp\n";
+        s <- s + "  " + inst.dst + ".fnp = inttoptr i64 " + inst.dst + ".fni to ptr\n";
+        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pp, i64 1\n";
+        s <- s + "  " + inst.dst + ".envi = load i64, ptr " + inst.dst + ".envslot\n";
+        // Build arg list: env first, then user args.
+        args_str <- "i64 " + inst.dst + ".envi";
+        i <- 1;
+        while (i < len(inst.operands)) {
+            args_str <- args_str + ", i64 " + ir_render_operand(inst.operands[i]);
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = call i64 " + inst.dst + ".fnp(" + args_str + ")";
+        return s;
+    }
+
     return "; UNHANDLED OP: " + op;
 }
 
@@ -4403,8 +4570,28 @@ fn ir_builder_new(f, entry_bb, mod) {
         block_counter: [0],
         // The owning module — needed by emitters that allocate string
         // constants or externs (e.g. StringLit, PrintStmt).
-        mod: mod
+        mod: mod,
+        // Per-builder map: variable name → {fn_name, param_count} for variables
+        // that hold a closure value. Set by Assignment when rhs is an ArrowFn,
+        // consulted by CallExpr to emit an indirect call instead of a direct one.
+        closure_vars: []
     };
+}
+
+// Look up whether a variable holds a closure (was assigned an ArrowFn).
+// Returns the {fn_name, param_count} record, or false if not a closure.
+fn ir_get_closure(b, name: str) {
+    i <- 0;
+    while (i < len(b.closure_vars)) {
+        if (b.closure_vars[i].name = name) { return b.closure_vars[i]; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn ir_set_closure(b, name: str, fn_name: str, param_count: int) {
+    push(b.closure_vars, {name: name, fn_name: fn_name, param_count: param_count});
+    return 0;
 }
 
 fn ir_fresh_tmp(b, prefix: str): str {
@@ -4613,6 +4800,27 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, mk_str());
         }
 
+        // Closure invocation: if `nm` was assigned an ArrowFn earlier in this
+        // function, it holds a closure pair. Load the pair, unpack [fn_ptr,
+        // env_ptr], and indirect-call with env prepended to args.
+        cinfo <- ir_get_closure(b, nm);
+        if (cinfo != false) {
+            // Load the closure pair pointer from the variable's slot.
+            slot <- ir_get_local_slot(b, nm);
+            pair_tmp <- ir_fresh_tmp(b, "pair");
+            ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+            // Evaluate user args.
+            args <- [];
+            i <- 0;
+            while (i < len(nd.args)) {
+                push(args, ir_emit_expr(b, nd.args[i]));
+                i <- i + 1;
+            }
+            tmp <- ir_fresh_tmp(b, "cc");
+            ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), ir_reg(pair_tmp, mk_int()), args));
+            return ir_reg(tmp, mk_int());
+        }
+
         // Generic user-function call.
         // Evaluate arguments left-to-right (matches existing emitter).
         args <- [];
@@ -4679,6 +4887,132 @@ fn ir_emit_expr(b, nd) {
         ir_push_inst(b.cur_block, inst);
         return ir_reg(tmp, mk_struct());
     }
+    if (nd.node = "ArrowFn") {
+        // 1) Find captures in the body.
+        // 2) Build a new IR Function with `env` as first param + user params.
+        //    The Function body loads each capture from env into a local, then
+        //    runs the body via ir_emit_stmt.
+        // 3) In the current block, emit a closure_make instruction that
+        //    allocates the env array (storing the captures' current values)
+        //    and the [fn_ptr, env_ptr] pair. Returns the pair pointer.
+        captures <- ir_find_captures(b, nd.body, nd.params, nd.is_expr);
+
+        // Mint a unique name. arrow_fn_counter is the same global the existing
+        // emitter uses; in IR-test mode the existing emitter never runs so
+        // there's no collision risk.
+        arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
+        afn_name <- "__arrow_" + arrow_fn_counter[0];
+
+        // Build the IR Function. Param list = [env, user params...].
+        ir_params <- [{name: "env", type: mk_int()}];
+        i <- 0;
+        while (i < len(nd.params)) {
+            push(ir_params, {name: nd.params[i], type: mk_int()});
+            i <- i + 1;
+        }
+        afn <- ir_function(afn_name, ir_params, mk_int());
+        afn_entry <- ir_block("entry");
+        ir_fn_add_block(afn, afn_entry);
+
+        // Sub-builder for the closure body. Reuses the outer module so
+        // string constants pool together.
+        sub <- ir_builder_new(afn, afn_entry, b.mod);
+
+        // Save the outer var-types so we can restore later. We need fresh
+        // var_types for the closure scope (params + captures + locals).
+        // Captures keep their outer types so subsequent typeof_expr in body
+        // sees them correctly.
+        old_vars <- alloc_vars[0];
+        old_types <- var_types[0];
+        old_layouts <- struct_layouts[0];
+        old_arr_types <- array_elem_types[0];
+        cap_outer_types <- [];
+        i <- 0;
+        while (i < len(captures)) {
+            push(cap_outer_types, get_var_type(captures[i]));
+            i <- i + 1;
+        }
+        alloc_vars[0] <- [];
+        var_types[0] <- [];
+        struct_layouts[0] <- [];
+        array_elem_types[0] <- [];
+
+        // Param prologue: allocate a slot for each user param and copy the arg in.
+        i <- 0;
+        while (i < len(nd.params)) {
+            pname <- nd.params[i];
+            pslot <- ir_get_local_slot(sub, pname);
+            ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", mk_int()), ir_reg(pslot, mk_int())));
+            // Default param type = any. (We could plumb param_types_ann later.)
+            set_var_type(pname, mk_any());
+            i <- i + 1;
+        }
+
+        // Capture prologue: load each capture from env into a local slot.
+        if (len(captures) > 0) {
+            i <- 0;
+            while (i < len(captures)) {
+                cname <- captures[i];
+                cslot <- ir_get_local_slot(sub, cname);
+                load_reg <- ir_fresh_tmp(sub, "cval");
+                ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, mk_int(), [ir_reg("%env.arg", mk_int()), ir_const_int(i)], false));
+                ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, mk_int()), ir_reg(cslot, mk_int())));
+                set_var_type(cname, cap_outer_types[i]);
+                i <- i + 1;
+            }
+        }
+
+        // Body. ArrowFn bodies can be either a list of statements (block form)
+        // or a single expression (expression form).
+        if (nd.is_expr) {
+            v <- ir_emit_expr(sub, nd.body);
+            ir_set_terminator(sub.cur_block, ii_ret(v));
+        } else {
+            i <- 0;
+            while (i < len(nd.body)) {
+                ir_emit_stmt(sub, nd.body[i]);
+                i <- i + 1;
+            }
+            if (sub.cur_block.terminator = false) {
+                ir_set_terminator(sub.cur_block, ii_ret(ir_const_int(0)));
+            }
+        }
+
+        // Restore outer compilation state.
+        alloc_vars[0] <- old_vars;
+        var_types[0] <- old_types;
+        struct_layouts[0] <- old_layouts;
+        array_elem_types[0] <- old_arr_types;
+
+        // Add the new function to the module.
+        ir_mod_add_function(b.mod, afn);
+
+        // Now emit closure_make in the OUTER (current) block. Captures' values
+        // are loaded from outer locals.
+        cap_vals <- [];
+        i <- 0;
+        while (i < len(captures)) {
+            cap_slot <- ir_get_local_slot(b, captures[i]);
+            cap_tmp <- ir_fresh_tmp(b, "cap");
+            ir_push_inst(b.cur_block, ii_load(cap_tmp, mk_int(), ir_reg(cap_slot, mk_int())));
+            push(cap_vals, ir_reg(cap_tmp, mk_int()));
+            i <- i + 1;
+        }
+        cm_tmp <- ir_fresh_tmp(b, "cm");
+        ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, afn_name, cap_vals));
+        // Stash {pair_value, fn_name, param_count} in a side struct so the
+        // surrounding Assignment can record it as a closure variable.
+        return {
+            kind: "reg",
+            name: cm_tmp,
+            type: mk_int(),
+            // Marker so ir_emit_stmt's Assignment branch recognizes this came
+            // from an ArrowFn and registers a closure_var entry.
+            arrow_fn_name: afn_name,
+            arrow_param_count: len(nd.params)
+        };
+    }
+
     // Fallback — unsupported node. Return a sentinel const_int(0) so that
     // we at least produce valid (but semantically wrong) IR. Future phases
     // will extend this with the full node set.
@@ -4784,6 +5118,12 @@ fn ir_emit_stmt(b, stmt) {
         slot <- ir_get_local_slot(b, stmt.name);
         v <- ir_emit_expr(b, stmt.expr);
         ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+        // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
+        // record this var as holding a closure so future CallExpr on this name
+        // emit closure_call instead of a direct call.
+        if (stmt.expr.node = "ArrowFn") {
+            ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
+        }
         return 0;
     }
     if (stmt.node = "IndexAssign") {
@@ -4905,6 +5245,55 @@ fn ir_emit_stmt(b, stmt) {
             ir_emit_stmt(b, stmt.stmts[i]);
             i <- i + 1;
         }
+        return 0;
+    }
+    if (stmt.node = "ForInStmt") {
+        // Desugar `for (x in coll) { body }` into:
+        //
+        //     _for_idx <- 0;
+        //     while (_for_idx < len(coll)) {
+        //         x <- coll[_for_idx];
+        //         body...
+        //         _for_idx <- _for_idx + 1;
+        //     }
+        //
+        // We construct synthetic AST nodes and recurse through ir_emit_stmt /
+        // ir_emit_expr. Length, indexing, and inc/cmp all reuse the existing
+        // emitter paths, so str-vs-array dispatch comes for free.
+        idx_init <- {node: "Assignment", name: "_for_idx", expr: {node: "NumberLit", value: 0}, type_ann: mk_none()};
+        ir_emit_stmt(b, idx_init);
+
+        // condition: _for_idx < len(coll)
+        cond <- {
+            node: "BinOp",
+            op: "<",
+            left: {node: "Identifier", name: "_for_idx"},
+            right: {node: "CallExpr", callee: {node: "Identifier", name: "len"}, args: [stmt.iterable]}
+        };
+
+        // body: x <- coll[_for_idx]; <user body>; _for_idx <- _for_idx + 1;
+        bind_x <- {
+            node: "Assignment",
+            name: stmt.var_name,
+            expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: "_for_idx"}},
+            type_ann: mk_none()
+        };
+        inc_idx <- {
+            node: "Assignment",
+            name: "_for_idx",
+            expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: "_for_idx"}, right: {node: "NumberLit", value: 1}},
+            type_ann: mk_none()
+        };
+        new_body <- [bind_x];
+        i <- 0;
+        while (i < len(stmt.body)) {
+            push(new_body, stmt.body[i]);
+            i <- i + 1;
+        }
+        push(new_body, inc_idx);
+
+        while_stmt <- {node: "WhileStmt", cond: cond, body: new_body};
+        ir_emit_stmt(b, while_stmt);
         return 0;
     }
     if (stmt.node = "ExprStmt") {
@@ -5265,6 +5654,31 @@ if (ir_test_mode[0]) {
                          "    return 0;\n" +
                          "}";
         toks <- tokenize(cluster3_src);
+        pos[0] <- 0;
+        stmts <- pp();
+        run_ir_with_runtime(stmts);
+    } else if (args(0) = "--ir-cluster4") {
+        // Cluster 4: ForInStmt + ArrowFn (closures with capture) + indirect calls.
+        cluster4_src <- "fn main_logic(): int {\n" +
+                         "    nums <- [10, 20, 30];\n" +
+                         "    total <- 0;\n" +
+                         "    for (n in nums) {\n" +
+                         "        total <- total + n;\n" +
+                         "    }\n" +
+                         "    print(total);\n" +
+                         "    s <- \"abc\";\n" +
+                         "    for (c in s) {\n" +
+                         "        print(c);\n" +
+                         "    }\n" +
+                         "    add <- (a: int, b: int) => { return a + b; };\n" +
+                         "    print(add(7, 35));\n" +
+                         "    n <- 100;\n" +
+                         "    add_n <- (x: int) => { return x + n; };\n" +
+                         "    print(add_n(5));\n" +
+                         "    print(add_n(50));\n" +
+                         "    return 0;\n" +
+                         "}";
+        toks <- tokenize(cluster4_src);
         pos[0] <- 0;
         stmts <- pp();
         run_ir_with_runtime(stmts);
