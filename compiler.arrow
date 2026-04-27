@@ -3281,20 +3281,17 @@ fn emit_substring_helper() {
 
 // ── Emit strcat helper ─────────────────
 // Used by the IR translator's `+` of strings (op = "strcat" in the IR).
-// Mirrors the behaviour of the existing emit_strcat function but as a
-// standalone runtime helper. Treats both operands as i64 pointers — for
-// "any" or int operands the IR translator must convert to string first
-// via int_to_str (which it doesn't yet — known limitation, all cases in
-// the existing compiler pass through `+` with statically-typed strings).
+// Each operand is run through @arrow_to_str first, so this works for any
+// combination of str / int / any operands. Matches the existing emitter's
+// behaviour, which dispatches similar cases at compile-time.
 //
 // Signature: i64 @arrow_strcat(i64 %li, i64 %ri)
 fn emit_strcat_helper() {
-    emit("declare ptr @strcpy(ptr, ptr)");
-    emit("declare ptr @strcat(ptr, ptr)");
+    // Note: @strcpy / @strcat are declared in the module preamble, not here.
     emit("define i64 @arrow_strcat(i64 %li, i64 %ri) {");
     emit("entry:");
-    emit("  %lp = inttoptr i64 %li to ptr");
-    emit("  %rp = inttoptr i64 %ri to ptr");
+    emit("  %lp = call ptr @arrow_to_str(i64 %li)");
+    emit("  %rp = call ptr @arrow_to_str(i64 %ri)");
     emit("  %ll = call i64 @strlen(ptr %lp)");
     emit("  %rl = call i64 @strlen(ptr %rp)");
     emit("  %tl = add i64 %ll, %rl");
@@ -3734,6 +3731,9 @@ if (args() > 0) {
         ir_test_mode[0] <- true;
     }
     if (args(0) = "--ir-translate-fns") {
+        ir_test_mode[0] <- true;
+    }
+    if (args(0) = "--ir-self") {
         ir_test_mode[0] <- true;
     }
 }
@@ -4202,6 +4202,18 @@ fn ir_render_inst(inst): str {
     if (op = "icmp") {
         tmp <- inst.dst + ".cmp";
         return inst.dst + ".cmp = icmp " + inst.extra + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
+    }
+    if (op = "strcmp") {
+        // Compare two string pointers via @arrow_safe_strcmp, then icmp the
+        // result against 0 with the requested cmp op (eq/ne/slt/sle/sgt/sge).
+        // Renders multiple lines in one go — same trick the icmp branch uses.
+        // operands[0] and operands[1] are both i64 pointer values (str-typed).
+        s1 <- inst.dst + ".lp";
+        s2 <- inst.dst + ".rp";
+        sc <- inst.dst + ".sc";
+        sc64 <- inst.dst + ".sc64";
+        cmp <- inst.dst + ".cmp";
+        return s1 + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + s2 + " = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  " + sc + " = call i32 @arrow_safe_strcmp(ptr " + s1 + ", ptr " + s2 + ")\n  " + sc64 + " = sext i32 " + sc + " to i64\n  " + cmp + " = icmp " + inst.extra + " i64 " + sc64 + ", 0\n  " + inst.dst + " = zext i1 " + cmp + " to i64";
     }
     if (op = "alloca") {
         return inst.dst + " = alloca i64";
@@ -4817,6 +4829,20 @@ fn ir_emit_expr(b, nd) {
         return ir_const_int(0);
     }
     if (nd.node = "Identifier") {
+        // Locals shadow globals — same as the existing emitter's find_var
+        // lookup. Scan builder's locals first; only treat as global if not
+        // found locally.
+        is_loc <- false;
+        j <- 0;
+        while (j < len(b.locals)) {
+            if (b.locals[j].name = nd.name) { is_loc <- true; }
+            j <- j + 1;
+        }
+        if (!is_loc && is_global(nd.name)) {
+            tmp <- ir_fresh_tmp(b, "ld");
+            ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg("@g_" + nd.name, mk_int())));
+            return ir_reg(tmp, mk_int());
+        }
         slot <- ir_get_local_slot(b, nd.name);
         tmp <- ir_fresh_tmp(b, "ld");
         ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg(slot, mk_int())));
@@ -4873,8 +4899,12 @@ fn ir_emit_expr(b, nd) {
             // this, the source variable still holds the old pointer after a
             // realloc — which silently shrinks the array next time it's read.
             if (nd.args[0].node = "Identifier") {
-                slot <- ir_get_local_slot(b, nd.args[0].name);
-                ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg(slot, mk_int())));
+                if (is_global(nd.args[0].name)) {
+                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg("@g_" + nd.args[0].name, mk_int())));
+                } else {
+                    slot <- ir_get_local_slot(b, nd.args[0].name);
+                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg(slot, mk_int())));
+                }
             } else if (nd.args[0].node = "DotExpr") {
                 // Re-evaluate the obj. Reusing the earlier-evaluated `arr`
                 // would point at the *old* pointer; we need the obj struct.
@@ -4992,10 +5022,15 @@ fn ir_emit_expr(b, nd) {
         // env_ptr], and indirect-call with env prepended to args.
         cinfo <- ir_get_closure(b, nm);
         if (cinfo != false) {
-            // Load the closure pair pointer from the variable's slot.
-            slot <- ir_get_local_slot(b, nm);
+            // Load the closure pair pointer from wherever the variable lives —
+            // global @g_<n> or a local alloca slot.
             pair_tmp <- ir_fresh_tmp(b, "pair");
-            ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+            if (is_global(nm)) {
+                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
+            } else {
+                slot <- ir_get_local_slot(b, nm);
+                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+            }
             // Evaluate user args.
             args <- [];
             i <- 0;
@@ -5006,6 +5041,46 @@ fn ir_emit_expr(b, nd) {
             tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), ir_reg(pair_tmp, mk_int()), args));
             return ir_reg(tmp, mk_int());
+        }
+
+        // Indirect call via variable: if `nm` isn't a known top-level fn but
+        // matches a local var or a global, treat it as holding a closure pair
+        // value (e.g. assigned from another fn that returns a closure).
+        // Mirrors the existing emitter's `find_var(nm) != ""` path.
+        fi_lookup <- find_fn(nm);
+        is_known_fn <- false;
+        if (fi_lookup != false) {
+            // is_arrow_var entries are top-level arrow-fn assignments; they
+            // ARE callable via closure_call too, so still go through the
+            // indirect path. Plain FnDecls are direct calls.
+            if (!fi_lookup.is_arrow_var) { is_known_fn <- true; }
+        }
+        if (!is_known_fn) {
+            // Find where the closure pair lives — local slot or global.
+            is_loc <- false;
+            j <- 0;
+            while (j < len(b.locals)) {
+                if (b.locals[j].name = nm) { is_loc <- true; }
+                j <- j + 1;
+            }
+            if (is_loc || is_global(nm)) {
+                pair_tmp <- ir_fresh_tmp(b, "pair");
+                if (is_global(nm)) {
+                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
+                } else {
+                    slot <- ir_get_local_slot(b, nm);
+                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+                }
+                args <- [];
+                i <- 0;
+                while (i < len(nd.args)) {
+                    push(args, ir_emit_expr(b, nd.args[i]));
+                    i <- i + 1;
+                }
+                tmp <- ir_fresh_tmp(b, "cc");
+                ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), ir_reg(pair_tmp, mk_int()), args));
+                return ir_reg(tmp, mk_int());
+            }
         }
 
         // Generic user-function call.
@@ -5124,6 +5199,19 @@ fn ir_emit_expr(b, nd) {
         struct_layouts[0] <- [];
         array_elem_types[0] <- [];
 
+        // Preserve type info for top-level globals into the arrow fn scope.
+        // Inside a closure, references to top-level vars resolve to @g_<n>
+        // loads; typeof_expr needs to see their types so that e.g. `prefix +
+        // msg` (string global + any param) typechecks as str-concat instead of
+        // int-add.
+        gi <- 0;
+        while (gi < len(old_types)) {
+            if (is_global(old_types[gi].name)) {
+                push(var_types[0], old_types[gi]);
+            }
+            gi <- gi + 1;
+        }
+
         // Param prologue: allocate a slot for each user param and copy the arg in.
         i <- 0;
         while (i < len(nd.params)) {
@@ -5151,10 +5239,35 @@ fn ir_emit_expr(b, nd) {
 
         // Body. ArrowFn bodies can be either a list of statements (block form)
         // or a single expression (expression form).
+        ret_type_inferred <- mk_any();
         if (nd.is_expr) {
             v <- ir_emit_expr(sub, nd.body);
             ir_set_terminator(sub.cur_block, ii_ret(v));
+            // Observe the expression's static type for the body's return type.
+            // typeof_expr consults var_types populated during emission.
+            ret_type_inferred <- typeof_expr(nd.body);
         } else {
+            // Block form: temporarily set current_fn[0] so set_fn_ret_type
+            // calls (triggered by infer_body's ReturnStmt branch) record
+            // against this arrow fn's mangled name.
+            old_cur <- current_fn[0];
+            current_fn[0] <- afn_name;
+            infer_body(nd.body);
+            current_fn[0] <- old_cur;
+
+            // Pre-populate sub.locals with all assigned-to names in the body.
+            // Mirrors the same fix applied to regular FnDecls — ensures that
+            // names which happen to also be globals resolve as locals when
+            // referenced inside the closure body.
+            body_vars <- [];
+            collect_vars(nd.body, body_vars);
+            i <- 0;
+            while (i < len(body_vars)) {
+                ir_get_local_slot(sub, body_vars[i]);
+                i <- i + 1;
+            }
+            ir_get_local_slot(sub, "_for_idx");
+
             i <- 0;
             while (i < len(nd.body)) {
                 ir_emit_stmt(sub, nd.body[i]);
@@ -5163,6 +5276,10 @@ fn ir_emit_expr(b, nd) {
             if (sub.cur_block.terminator = false) {
                 ir_set_terminator(sub.cur_block, ii_ret(ir_const_int(0)));
             }
+            // After infer_body, declared_fns[afn_name].ret_type holds the
+            // inferred return type (or any if inference couldn't decide).
+            fi_after <- find_fn(afn_name);
+            if (fi_after != false) { ret_type_inferred <- fi_after.ret_type; }
         }
 
         // Restore outer compilation state.
@@ -5187,8 +5304,30 @@ fn ir_emit_expr(b, nd) {
         }
         cm_tmp <- ir_fresh_tmp(b, "cm");
         ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, afn_name, cap_vals));
-        // Stash {pair_value, fn_name, param_count} in a side struct so the
-        // surrounding Assignment can record it as a closure variable.
+
+        // Register the arrow fn's mangled name in declared_fns with the
+        // inferred return type. This lets typeof_expr resolve the correct
+        // return type when the call is made via the var the closure is
+        // assigned to (the surrounding Assignment will mirror this onto the
+        // var's entry too).
+        if (find_fn(afn_name) = false) {
+            push(declared_fns, {
+                name: afn_name,
+                param_count: len(nd.params),
+                ret_type: ret_type_inferred,
+                ret_fields: false,
+                param_types: [],
+                param_types_ann: [],
+                ret_type_ann: mk_none(),
+                is_arrow_var: false
+            });
+        } else {
+            set_fn_ret_type(afn_name, ret_type_inferred, false);
+        }
+
+        // Stash {pair_value, fn_name, param_count, ret_type} in a side struct
+        // so the surrounding Assignment can record it as a closure variable
+        // and mirror the ret_type onto the var's declared_fns entry.
         return {
             kind: "reg",
             name: cm_tmp,
@@ -5196,7 +5335,8 @@ fn ir_emit_expr(b, nd) {
             // Marker so ir_emit_stmt's Assignment branch recognizes this came
             // from an ArrowFn and registers a closure_var entry.
             arrow_fn_name: afn_name,
-            arrow_param_count: len(nd.params)
+            arrow_param_count: len(nd.params),
+            arrow_ret_type: ret_type_inferred
         };
     }
 
@@ -5276,6 +5416,17 @@ fn ir_emit_binop(b, nd) {
     rhs <- ir_emit_expr(b, nd.right);
 
     if (ir_is_cmp_op(op)) {
+        // Like the existing emitter, we use @arrow_safe_strcmp when either
+        // side is statically a str — else integer icmp. For "any vs any" we
+        // also route through strcmp because the safe variant tolerates
+        // either pointer or int operands (matches existing behaviour).
+        lt <- typeof_expr(nd.left);
+        rt <- typeof_expr(nd.right);
+        if (lt.kind = "str" || rt.kind = "str" || (lt.kind = "any" && rt.kind = "any")) {
+            tmp <- ir_fresh_tmp(b, "scmp");
+            ir_push_inst(b.cur_block, ii_strcmp(tmp, ir_cmp_op(op), lhs, rhs));
+            return ir_reg(tmp, mk_int());
+        }
         tmp <- ir_fresh_tmp(b, "cmp");
         ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
         return ir_reg(tmp, mk_int());
@@ -5284,12 +5435,26 @@ fn ir_emit_binop(b, nd) {
         // Distinguish string concat from integer add via static typing.
         // typeof_expr knows `+` of any-strings returns str; for the IR layer
         // this means emitting a strcat (call to @arrow_strcat) rather than
-        // an integer add.
+        // an integer add. Mixed str+int is supported by converting the int
+        // operand to a string via int_to_str (mirrors the existing emitter's
+        // behaviour where ensure_str does the same).
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str") {
+            lhs_s <- lhs;
+            rhs_s <- rhs;
+            if (lt.kind = "int") {
+                t <- ir_fresh_tmp(b, "i2s");
+                ir_push_inst(b.cur_block, ii_int_to_str(t, lhs));
+                lhs_s <- ir_reg(t, mk_str());
+            }
+            if (rt.kind = "int") {
+                t <- ir_fresh_tmp(b, "i2s");
+                ir_push_inst(b.cur_block, ii_int_to_str(t, rhs));
+                rhs_s <- ir_reg(t, mk_str());
+            }
             tmp <- ir_fresh_tmp(b, "scat");
-            ir_push_inst(b.cur_block, ii_strcat(tmp, lhs, rhs));
+            ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, mk_str());
         }
         tmp <- ir_fresh_tmp(b, "add");
@@ -5317,14 +5482,33 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "Assignment") {
-        slot <- ir_get_local_slot(b, stmt.name);
         v <- ir_emit_expr(b, stmt.expr);
-        ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+        // A name resolves to its global @g_<n> only inside __main_logic (which
+        // wraps the program's top-level statements). Inside any other function,
+        // an assignment to that name shadows the global with a function-local
+        // alloca. This matches lexical scoping in every other Arrow construct
+        // and avoids cross-function aliasing on names like `i` that compiler
+        // code happens to use both at top level and inside function bodies.
+        is_top_level <- (b.func.name = "__main_logic");
+        if (is_global(stmt.name) && is_top_level) {
+            ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, mk_int())));
+        } else {
+            slot <- ir_get_local_slot(b, stmt.name);
+            ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+        }
         // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
         // record this var as holding a closure so future CallExpr on this name
-        // emit closure_call instead of a direct call.
+        // emit closure_call instead of a direct call. Also mirror the inferred
+        // return type onto the var's declared_fns entry so typeof_expr at call
+        // sites returns the right kind (str / int / array etc).
         if (stmt.expr.node = "ArrowFn") {
             ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
+            // Both the existing emitter and our type checker consult find_fn(varname);
+            // make sure that entry's ret_type matches what the body actually returns.
+            set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
+            // Also wire up the var → mangled-name map (some codegen paths
+            // consult get_arrow_fn_name to find param-type info).
+            set_arrow_fn_var(stmt.name, v.arrow_fn_name);
         }
         return 0;
     }
@@ -5553,6 +5737,34 @@ fn emit_function_via_ir(nd, mod) {
     old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
+    // Preserve type info for top-level globals into this function's scope.
+    // Mirrors what the existing compile() does implicitly via shared state —
+    // typeof_expr inside the body needs to see e.g. tmp_counter as an int
+    // array global, not as `any`, so `prefix + tmp_counter[0]` correctly
+    // routes to strcat-with-int-conversion rather than int-add.
+    gi <- 0;
+    while (gi < len(old_types)) {
+        if (is_global(old_types[gi].name)) {
+            push(var_types[0], old_types[gi]);
+        }
+        gi <- gi + 1;
+    }
+    // Same for array element types and struct layouts of globals.
+    gi <- 0;
+    while (gi < len(old_arr_types)) {
+        if (is_global(old_arr_types[gi].var_name)) {
+            push(array_elem_types[0], old_arr_types[gi]);
+        }
+        gi <- gi + 1;
+    }
+    gi <- 0;
+    while (gi < len(old_layouts)) {
+        if (is_global(old_layouts[gi].var_name)) {
+            push(struct_layouts[0], old_layouts[gi]);
+        }
+        gi <- gi + 1;
+    }
+
     // Populate param types from call-site analysis (already run by caller).
     fi_info <- find_fn(nd.name);
     i <- 0;
@@ -5575,6 +5787,26 @@ fn emit_function_via_ir(nd, mod) {
         slot <- ir_get_local_slot(b, pname);
         ir_push_inst(b.cur_block, ii_store(ir_reg("%" + pname + ".arg", mk_int()), ir_reg(slot, mk_int())));
         i <- i + 1;
+    }
+
+    // For non-main functions, pre-populate b.locals with every name assigned
+    // to in the body (including for-in loop vars). This ensures that any
+    // shadowed-by-name globals resolve to the local slot when read, not the
+    // global. The legacy emitter does the same via its collect_vars pre-pass
+    // and upfront alloca emission. Without this, a body that reads `i`
+    // before assigning it would load from @g_i — even if a later Assignment
+    // creates the local. (In __main_logic, top-level global names should
+    // resolve to globals, so we skip this step there.)
+    if (nd.name != "__main_logic") {
+        body_vars <- [];
+        collect_vars(nd.body, body_vars);
+        i <- 0;
+        while (i < len(body_vars)) {
+            ir_get_local_slot(b, body_vars[i]);
+            i <- i + 1;
+        }
+        // for-in loops use a synthetic _for_idx counter — pre-allocate that too.
+        ir_get_local_slot(b, "_for_idx");
     }
 
     // Body
@@ -5722,6 +5954,8 @@ fn run_ir_with_runtime(stmts) {
     emit("declare i32 @fseek(ptr, i64, i32)");
     emit("declare i64 @ftell(ptr)");
     emit("declare ptr @fgets(ptr, i32, ptr)");
+    emit("declare ptr @strcpy(ptr, ptr)");
+    emit("declare ptr @strcat(ptr, ptr)");
     if (is_win[0] = 1) {
         emit("declare ptr @__acrt_iob_func(i32)");
     } else if (is_mac[0] = 1) {
@@ -5875,11 +6109,8 @@ if (ir_test_mode[0]) {
         stmts <- pp();
         run_ir_with_runtime(stmts);
     } else if (args(0) = "--ir-translate-fns") {
-        // Phase 4 stepping stone: read a source file, translate every FnDecl
-        // through the AST→IR pipeline, render, and dump. Runtime is appended.
-        // No top-level handling yet — files with significant top-level code
-        // won't produce a runnable binary, but the IR text alone tells us
-        // whether the translator handles every node it encounters.
+        // Phase-4 stepping stone: translate every FnDecl in a source file
+        // through the AST→IR pipeline, render, append runtime, dump.
         if (args() < 2) {
             print("; --ir-translate-fns requires a source file path");
         } else {
@@ -5889,7 +6120,208 @@ if (ir_test_mode[0]) {
             stmts <- pp();
             run_ir_with_runtime(stmts);
         }
+    } else if (args(0) = "--ir-self") {
+        // Phase-4 cutover: full pipeline through IR. Reads the source file,
+        // runs compile_via_ir, writes the .ll, invokes clang. Equivalent to
+        // running `arrow <input>` but routing through the IR translator.
+        if (args() < 2) {
+            print("; --ir-self requires a source file path");
+        } else {
+            src <- read_file(args(1));
+            toks <- tokenize(src);
+            pos[0] <- 0;
+            stmts <- pp();
+
+            // Output paths: same defaults as the regular CLI. Strip extension
+            // to derive the .ll and .exe names; -o overrides the exe path.
+            in_path <- args(1);
+            base <- in_path;
+            // Strip ".arrow" suffix if present.
+            if (str_len(base) > 6) {
+                tail6 <- substring(base, str_len(base) - 6, str_len(base));
+                if (tail6 = ".arrow") {
+                    base <- substring(base, 0, str_len(base) - 6);
+                }
+            }
+            ll_file <- base + ".ll";
+            exe_file <- base;
+            if (is_win[0] = 1) { exe_file <- exe_file + ".exe"; }
+            // Honour `-o <name>` if present.
+            i <- 2;
+            while (i < args()) {
+                if (args(i) = "-o" && i + 1 < args()) {
+                    exe_file <- args(i + 1);
+                }
+                i <- i + 1;
+            }
+
+            compile_via_ir(stmts);
+            write_ir_lines(ll_file);
+
+            if (is_win[0] = 1) {
+                clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+            } else {
+                clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
+            }
+            rc <- exec_cmd(clang_cmd);
+            if (rc = 0) {
+                print("Compiled " + exe_file + " successfully (via IR)");
+                // KEEPING .ll for debug
+            } else {
+                print("Clang failed with exit code " + rc);
+                print("IR written to " + ll_file);
+            }
+        }
     } else {
         run_ir_test();
     }
+}
+
+// ═══════════════════════════════════════════
+//  Phase-4 cutover: compile_via_ir
+//
+//  Mirrors compile() exactly, but routes user functions through the IR
+//  pipeline (parse → emit_function_via_ir → render) instead of through
+//  the legacy emit_function. Top-level statements get wrapped into a
+//  synthetic __main_logic FnDecl and translated through the same path.
+//  Runtime helpers, globals, and the C main wrapper are emitted the same
+//  way as compile() so the resulting LLVM is drop-in compatible.
+// ═══════════════════════════════════════════
+
+fn compile_via_ir(stmts) {
+    emit("; Arrow Lang -- compiled by self-hosted compiler (IR pipeline)");
+    emit("");
+
+    // External declarations (matches compile() byte-for-byte)
+    emit("declare i32 @printf(ptr, ...)");
+    emit("declare i32 @puts(ptr)");
+    emit("declare i32 @fflush(ptr)");
+    emit("declare ptr @malloc(i64)");
+    emit("declare ptr @realloc(ptr, i64)");
+    emit("declare void @free(ptr)");
+    emit("declare i64 @strlen(ptr)");
+    emit("declare ptr @strcpy(ptr, ptr)");
+    emit("declare ptr @strcat(ptr, ptr)");
+    emit("declare i32 @strcmp(ptr, ptr)");
+    emit("declare void @exit(i32)");
+    emit("declare i32 @system(ptr)");
+    emit("declare ptr @fopen(ptr, ptr)");
+    emit("declare i32 @fclose(ptr)");
+    emit("declare i64 @fread(ptr, i64, i64, ptr)");
+    emit("declare i64 @fwrite(ptr, i64, i64, ptr)");
+    emit("declare i32 @fseek(ptr, i64, i32)");
+    emit("declare i64 @ftell(ptr)");
+    emit("declare ptr @fgets(ptr, i32, ptr)");
+    if (is_win[0] = 1) {
+        emit("declare ptr @__acrt_iob_func(i32)");
+    } else if (is_mac[0] = 1) {
+        emit("@__stdinp = external global ptr");
+    } else {
+        emit("@stdin = external global ptr");
+    }
+    emit("");
+
+    // Pre-passes: function table, call-site type inference, globals.
+    scan_fns(stmts);
+    scan_call_sites(stmts);
+
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            scan_globals(stmts[i]);
+        }
+        i <- i + 1;
+    }
+
+    // Globals as @g_*.
+    i <- 0;
+    while (i < len(global_vars)) {
+        emit("@g_" + global_vars[i] + " = global i64 0");
+        i <- i + 1;
+    }
+    emit("@g_argc = global i64 0");
+    emit("@g_argv = global i64 0");
+    emit("");
+
+    // Build an IR module and translate every user FnDecl into it. The IR
+    // path emits via ir_render_function_to_lines below, which writes
+    // line-by-line into ir_lines.
+    m <- ir_module();
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            ir_mod_add_function(m, emit_function_via_ir(stmts[i], m));
+        }
+        i <- i + 1;
+    }
+
+    // Wrap top-level non-FnDecl stmts into a synthetic __main_logic fn so the
+    // same IR translator handles them. The fn returns int; ret 0 is appended
+    // by emit_function_via_ir if the body falls off the end without one.
+    top_stmts <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node != "FnDecl") {
+            push(top_stmts, stmts[i]);
+        }
+        i <- i + 1;
+    }
+    main_logic_fn <- {
+        node: "FnDecl",
+        name: "__main_logic",
+        params: [],
+        param_types_ann: [],
+        ret_type: mk_int(),
+        body: top_stmts
+    };
+    // Register __main_logic in the function table so calls / lookups resolve.
+    push(declared_fns, {
+        name: "__main_logic",
+        param_count: 0,
+        ret_type: mk_int(),
+        ret_fields: [],
+        param_types: [],
+        param_types_ann: [],
+        ret_type_ann: mk_none(),
+        is_arrow_var: false
+    });
+    ir_mod_add_function(m, emit_function_via_ir(main_logic_fn, m));
+
+    // Render module functions and string table into ir_lines.
+    ir_render_module_to_lines(m);
+
+    // Runtime helpers — same set the existing compile() emits.
+    emit_arena_helper();
+    emit_safe_strcmp_helper();
+    emit_push_helper();
+    emit_pop_helper();
+    emit_keys_helper();
+    emit_struct_find_helper();
+    emit_itoa_helper();
+    emit_substring_helper();
+    emit_strcat_helper();
+    emit_read_file_helper();
+    emit_write_file_helper();
+    emit_append_file_helper();
+    emit_input_helper();
+
+    // C main: arena init, capture argc/argv, call __main_logic, return 0.
+    emit("define i64 @main(i32 %argc, ptr %argv) {");
+    emit("entry:");
+    emit("  %argc64 = sext i32 %argc to i64");
+    emit("  store i64 %argc64, ptr @g_argc");
+    emit("  %argv64 = ptrtoint ptr %argv to i64");
+    emit("  store i64 %argv64, ptr @g_argv");
+    emit("  call void @arena_init(i64 268435456)");
+    emit("  %ml = call i64 @__main_logic()");
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // File-mode constants and the legacy fmt_int label. The IR module's
+    // string table already pools any user-supplied StringLits.
+    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
+    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
+    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
 }
