@@ -1259,12 +1259,40 @@ fn emit_call(nd) {
             vt_val <- emit_expr(nd.args[1]);
             rp <- fresh("%push_r");
             emit("  " + rp + " = call i64 @arrow_push(i64 " + vt_arr.reg + ", i64 " + vt_val.reg + ")");
-            // Store the (possibly reallocated) array pointer back
+            // Store the (possibly reallocated) array pointer back. Without
+            // this store-back the variable would still hold the old pointer
+            // after a realloc, which is the source of subtle "list shrinks
+            // unexpectedly" bugs once the list grows past its initial cap.
             if (nd.args[0].node = "Identifier") {
                 arr_reg <- find_var(nd.args[0].name);
                 if (arr_reg != "") {
                     emit("  store i64 " + rp + ", ptr " + arr_reg);
                 }
+            } else if (nd.args[0].node = "DotExpr") {
+                // push(struct.field, val): the (possibly new) array pointer
+                // needs to be written back to the struct's field slot.
+                fid_de <- add_string(nd.args[0].field);
+                obj_de <- emit_expr(nd.args[0].obj);
+                op_de <- fresh("%pushdaop");
+                emit("  " + op_de + " = inttoptr i64 " + obj_de.reg + " to ptr");
+                idx_de <- fresh("%pushdaidx");
+                emit("  " + idx_de + " = call i64 @arrow_struct_find(ptr " + op_de + ", ptr @" + fid_de + ")");
+                slot_de <- fresh("%pushdaslot");
+                vp_de <- fresh("%pushdavp");
+                emit("  " + slot_de + " = add i64 " + idx_de + ", 1");
+                emit("  " + vp_de + " = getelementptr i64, ptr " + op_de + ", i64 " + slot_de);
+                emit("  store i64 " + rp + ", ptr " + vp_de);
+            } else if (nd.args[0].node = "IndexExpr") {
+                // push(arr[i], val): write the new pointer back into arr[i].
+                obj_ie <- emit_expr(nd.args[0].obj);
+                idx_ie <- emit_expr(nd.args[0].index);
+                op_ie <- fresh("%pushiaop");
+                off_ie <- fresh("%pushiaoff");
+                ep_ie <- fresh("%pushiaep");
+                emit("  " + op_ie + " = inttoptr i64 " + obj_ie.reg + " to ptr");
+                emit("  " + off_ie + " = add i64 " + idx_ie.reg + ", 2");
+                emit("  " + ep_ie + " = getelementptr i64, ptr " + op_ie + ", i64 " + off_ie);
+                emit("  store i64 " + rp + ", ptr " + ep_ie);
             }
             return tv(vt_val.reg, vt_val.type);
         }
@@ -3251,6 +3279,35 @@ fn emit_substring_helper() {
     emit("");
 }
 
+// ── Emit strcat helper ─────────────────
+// Used by the IR translator's `+` of strings (op = "strcat" in the IR).
+// Mirrors the behaviour of the existing emit_strcat function but as a
+// standalone runtime helper. Treats both operands as i64 pointers — for
+// "any" or int operands the IR translator must convert to string first
+// via int_to_str (which it doesn't yet — known limitation, all cases in
+// the existing compiler pass through `+` with statically-typed strings).
+//
+// Signature: i64 @arrow_strcat(i64 %li, i64 %ri)
+fn emit_strcat_helper() {
+    emit("declare ptr @strcpy(ptr, ptr)");
+    emit("declare ptr @strcat(ptr, ptr)");
+    emit("define i64 @arrow_strcat(i64 %li, i64 %ri) {");
+    emit("entry:");
+    emit("  %lp = inttoptr i64 %li to ptr");
+    emit("  %rp = inttoptr i64 %ri to ptr");
+    emit("  %ll = call i64 @strlen(ptr %lp)");
+    emit("  %rl = call i64 @strlen(ptr %rp)");
+    emit("  %tl = add i64 %ll, %rl");
+    emit("  %bs = add i64 %tl, 1");
+    emit("  %buf = call ptr @arena_alloc(i64 %bs)");
+    emit("  call ptr @strcpy(ptr %buf, ptr %lp)");
+    emit("  call ptr @strcat(ptr %buf, ptr %rp)");
+    emit("  %res = ptrtoint ptr %buf to i64");
+    emit("  ret i64 %res");
+    emit("}");
+    emit("");
+}
+
 // ── Emit read_file helper ───────────────
 
 fn emit_read_file_helper() {
@@ -3676,6 +3733,9 @@ if (args() > 0) {
     if (args(0) = "--ir-cluster4") {
         ir_test_mode[0] <- true;
     }
+    if (args(0) = "--ir-translate-fns") {
+        ir_test_mode[0] <- true;
+    }
 }
 
 if (args() > 0 && !ir_test_mode[0]) {
@@ -3914,7 +3974,11 @@ fn ir_module() {
         functions: [],
         str_table: [],
         globals: [],
-        externs: []
+        externs: [],
+        // Counter for unique str ids. Using a separate boxed counter (not
+        // len(str_table)) sidesteps any quirk in len() called on a struct
+        // field after intervening allocations.
+        next_str_id: [0]
     };
 }
 
@@ -3924,8 +3988,12 @@ fn ir_mod_add_function(m, f) {
 }
 
 fn ir_mod_add_str(m, text: str): str {
-    // Return the id used to refer to this string via ir_const_str.
-    id <- "str" + len(m.str_table);
+    // Return the id used to refer to this string via ir_const_str. We use
+    // a separate next_str_id counter rather than len(m.str_table) for the
+    // id generation — the latter was historically fragile under realloc.
+    next_id <- m.next_str_id[0];
+    id <- "str" + next_id;
+    m.next_str_id[0] <- next_id + 1;
     push(m.str_table, {id: id, text: text});
     return id;
 }
@@ -4413,6 +4481,22 @@ fn ir_render_inst(inst): str {
         s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
         return s;
     }
+    if (op = "args_count") {
+        // Mirror the existing emit_call args() with no-args path: argc - 1.
+        s <- inst.dst + ".ac = load i64, ptr @g_argc\n";
+        s <- s + "  " + inst.dst + " = sub i64 " + inst.dst + ".ac, 1";
+        return s;
+    }
+    if (op = "args_get") {
+        // operand = N (i64); return argv[N+1] as string ptr (i64).
+        s <- inst.dst + ".ai = add i64 " + ir_render_operand(inst.operands[0]) + ", 1\n";
+        s <- s + "  " + inst.dst + ".av = load i64, ptr @g_argv\n";
+        s <- s + "  " + inst.dst + ".avp = inttoptr i64 " + inst.dst + ".av to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr ptr, ptr " + inst.dst + ".avp, i64 " + inst.dst + ".ai\n";
+        s <- s + "  " + inst.dst + ".sp = load ptr, ptr " + inst.dst + ".ep\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".sp to i64";
+        return s;
+    }
 
     // ── Closure ops ──
     // Layout matches the existing emitter: heap pair [fn_ptr, env_ptr], where
@@ -4544,6 +4628,83 @@ fn ir_render_module(m): str {
         i <- i + 1;
     }
     return s;
+}
+
+// Render a Module by pushing line-by-line into ir_lines (the existing emitter's
+// line buffer). Avoids the O(N²) string-concat blowup that ir_render_module
+// hits for large modules like compiler.arrow itself. Output is functionally
+// identical — just streamed through ir_lines instead of returned as one big
+// string.
+fn ir_render_module_to_lines(m) {
+    // Externs
+    i <- 0;
+    while (i < len(m.externs)) {
+        ex <- m.externs[i];
+        ps <- "";
+        j <- 0;
+        while (j < len(ex.params)) {
+            if (j > 0) { ps <- ps + ", "; }
+            ps <- ps + ir_llvm_type(ex.params[j]);
+            j <- j + 1;
+        }
+        if (ex.is_variadic = 1) {
+            if (len(ex.params) > 0) { ps <- ps + ", "; }
+            ps <- ps + "...";
+        }
+        emit("declare " + ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")");
+        i <- i + 1;
+    }
+    // String table
+    i <- 0;
+    while (i < len(m.str_table)) {
+        ste <- m.str_table[i];
+        bytelen <- ir_str_len(ste.text);
+        emit("@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"");
+        i <- i + 1;
+    }
+    // Globals
+    i <- 0;
+    while (i < len(m.globals)) {
+        emit("@g_" + m.globals[i].name + " = global i64 0");
+        i <- i + 1;
+    }
+    if (len(m.externs) + len(m.str_table) + len(m.globals) > 0) { emit(""); }
+    // Functions — render each function's body line-by-line.
+    i <- 0;
+    while (i < len(m.functions)) {
+        ir_render_function_to_lines(m.functions[i]);
+        emit("");
+        i <- i + 1;
+    }
+}
+
+fn ir_render_function_to_lines(f) {
+    params_s <- "";
+    i <- 0;
+    while (i < len(f.params)) {
+        if (i > 0) { params_s <- params_s + ", "; }
+        params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
+        i <- i + 1;
+    }
+    emit("define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {");
+    i <- 0;
+    while (i < len(f.blocks)) {
+        ir_render_block_to_lines(f.blocks[i]);
+        i <- i + 1;
+    }
+    emit("}");
+}
+
+fn ir_render_block_to_lines(bb) {
+    emit(bb.label + ":");
+    i <- 0;
+    while (i < len(bb.insts)) {
+        emit("  " + ir_render_inst(bb.insts[i]));
+        i <- i + 1;
+    }
+    if (bb.terminator != false) {
+        emit("  " + ir_render_inst(bb.terminator));
+    }
 }
 
 // ═══════════════════════════════════════════
@@ -4708,11 +4869,24 @@ fn ir_emit_expr(b, nd) {
             tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;
-            // store it back into the source variable so subsequent reads see
-            // the new pointer. Matches existing emitter's semantics.
+            // store it back into wherever the source array lives. Without
+            // this, the source variable still holds the old pointer after a
+            // realloc — which silently shrinks the array next time it's read.
             if (nd.args[0].node = "Identifier") {
                 slot <- ir_get_local_slot(b, nd.args[0].name);
                 ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg(slot, mk_int())));
+            } else if (nd.args[0].node = "DotExpr") {
+                // Re-evaluate the obj. Reusing the earlier-evaluated `arr`
+                // would point at the *old* pointer; we need the obj struct.
+                obj_v <- ir_emit_expr(b, nd.args[0].obj);
+                fid <- ir_mod_add_str(b.mod, nd.args[0].field);
+                prefix <- ir_fresh_tmp(b, "pset");
+                ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, ir_reg(tmp, mk_int())));
+            } else if (nd.args[0].node = "IndexExpr") {
+                obj_v <- ir_emit_expr(b, nd.args[0].obj);
+                idx_v <- ir_emit_expr(b, nd.args[0].index);
+                prefix <- ir_fresh_tmp(b, "paset");
+                ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, mk_int())));
             }
             return ir_reg(tmp, mk_int());
         }
@@ -4797,6 +4971,19 @@ fn ir_emit_expr(b, nd) {
             } else {
                 ir_push_inst(b.cur_block, ii_input(tmp));
             }
+            return ir_reg(tmp, mk_str());
+        }
+        if (nm = "args") {
+            // Two forms: args() returns argc-1 (script arg count, excluding
+            // program name); args(N) returns argv[N+1] as a string. Both use
+            // the @g_argc / @g_argv globals populated by main.
+            tmp <- ir_fresh_tmp(b, "args");
+            if (len(nd.args) = 0) {
+                ir_push_inst(b.cur_block, ir_inst("args_count", tmp, mk_int(), [], false));
+                return ir_reg(tmp, mk_int());
+            }
+            iarg <- ir_emit_expr(b, nd.args[0]);
+            ir_push_inst(b.cur_block, ir_inst("args_get", tmp, mk_str(), [iarg], false));
             return ir_reg(tmp, mk_str());
         }
 
@@ -5093,7 +5280,22 @@ fn ir_emit_binop(b, nd) {
         ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
         return ir_reg(tmp, mk_int());
     }
-    if (op = "+") { tmp <- ir_fresh_tmp(b, "add"); ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+    if (op = "+") {
+        // Distinguish string concat from integer add via static typing.
+        // typeof_expr knows `+` of any-strings returns str; for the IR layer
+        // this means emitting a strcat (call to @arrow_strcat) rather than
+        // an integer add.
+        lt <- typeof_expr(nd.left);
+        rt <- typeof_expr(nd.right);
+        if (lt.kind = "str" || rt.kind = "str") {
+            tmp <- ir_fresh_tmp(b, "scat");
+            ir_push_inst(b.cur_block, ii_strcat(tmp, lhs, rhs));
+            return ir_reg(tmp, mk_str());
+        }
+        tmp <- ir_fresh_tmp(b, "add");
+        ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs));
+        return ir_reg(tmp, mk_int());
+    }
     if (op = "-") { tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
     if (op = "*") { tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
     if (op = "/") { tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
@@ -5481,18 +5683,17 @@ fn run_ir_with_runtime(stmts) {
         }
         i <- i + 1;
     }
-    if (!has_main_logic) {
-        print("; cluster2: source must define main_logic()");
-        return 0;
+    // Only emit the LLVM main wrapper when main_logic is defined. For
+    // --ir-translate-fns mode (run on real source files like compiler.arrow
+    // which don't have main_logic) this lets us still get the FnDecl IR out.
+    if (has_main_logic) {
+        main <- ir_function("main", [], mk_int());
+        mb <- ir_block("entry");
+        ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
+        ir_set_terminator(mb, ii_ret(ir_const_int(0)));
+        ir_fn_add_block(main, mb);
+        ir_mod_add_function(m, main);
     }
-
-    // LLVM main calls main_logic.
-    main <- ir_function("main", [], mk_int());
-    mb <- ir_block("entry");
-    ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
-    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
-    ir_fn_add_block(main, mb);
-    ir_mod_add_function(m, main);
 
     // Module-level constants the IR ops reference.
     ir_mod_add_str_raw(m, "fmt_int", "%lld\n");
@@ -5503,14 +5704,41 @@ fn run_ir_with_runtime(stmts) {
     // Render the IR portion. The renderer emits its own externs and string
     // table — but we ALSO need the externs the runtime helpers reference
     // (malloc, realloc, free, strlen, ...). We'll prepend those to the output.
-    ir_text <- ir_render_module(m);
-
-    // Capture the runtime helper text. The existing emit_*_helper fns push
-    // into the global ir_lines array. We snapshot its length, call the
-    // helpers, then read everything appended since the snapshot. (We don't
-    // restore — the IR-test mode never uses the existing compile pipeline
-    // after this, so leaking these lines into ir_lines is harmless.)
+    // Snapshot ir_lines length so we can dump exactly the lines we add below.
     snap_len <- len(ir_lines);
+
+    // Externs the runtime + IR ops need.
+    emit("declare ptr @malloc(i64)");
+    emit("declare ptr @realloc(ptr, i64)");
+    emit("declare void @free(ptr)");
+    emit("declare i64 @strlen(ptr)");
+    emit("declare i32 @strcmp(ptr, ptr)");
+    emit("declare void @exit(i32)");
+    emit("declare i32 @system(ptr)");
+    emit("declare ptr @fopen(ptr, ptr)");
+    emit("declare i32 @fclose(ptr)");
+    emit("declare i64 @fread(ptr, i64, i64, ptr)");
+    emit("declare i64 @fwrite(ptr, i64, i64, ptr)");
+    emit("declare i32 @fseek(ptr, i64, i32)");
+    emit("declare i64 @ftell(ptr)");
+    emit("declare ptr @fgets(ptr, i32, ptr)");
+    if (is_win[0] = 1) {
+        emit("declare ptr @__acrt_iob_func(i32)");
+    } else if (is_mac[0] = 1) {
+        emit("@__stdinp = external global ptr");
+    } else {
+        emit("@stdin = external global ptr");
+    }
+    // File-mode constants used by the read/write/append_file helpers.
+    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
+    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
+    emit("");
+
+    // Module body — externs, str table, globals, fns — emitted line-by-line.
+    ir_render_module_to_lines(m);
+
+    // Runtime helpers (each emit_*_helper pushes its IR into ir_lines).
     emit_arena_helper();
     emit_safe_strcmp_helper();
     emit_push_helper();
@@ -5519,54 +5747,18 @@ fn run_ir_with_runtime(stmts) {
     emit_struct_find_helper();
     emit_itoa_helper();
     emit_substring_helper();
+    emit_strcat_helper();
     emit_read_file_helper();
     emit_write_file_helper();
     emit_append_file_helper();
     emit_input_helper();
-    runtime_text <- "";
+
+    // Dump the lines we added.
     j <- snap_len;
     while (j < len(ir_lines)) {
-        runtime_text <- runtime_text + ir_lines[j] + "\n";
+        print(ir_lines[j]);
         j <- j + 1;
     }
-
-    // Print the externs the runtime + IR ops need (the IR renderer's extern
-    // list only covers what we explicitly added — printf/puts/fflush).
-    print("declare ptr @malloc(i64)");
-    print("declare ptr @realloc(ptr, i64)");
-    print("declare void @free(ptr)");
-    print("declare i64 @strlen(ptr)");
-    print("declare i32 @strcmp(ptr, ptr)");
-    print("declare void @exit(i32)");
-    print("declare i32 @system(ptr)");
-    print("declare ptr @fopen(ptr, ptr)");
-    print("declare i32 @fclose(ptr)");
-    print("declare i64 @fread(ptr, i64, i64, ptr)");
-    print("declare i64 @fwrite(ptr, i64, i64, ptr)");
-    print("declare i32 @fseek(ptr, i64, i32)");
-    print("declare i64 @ftell(ptr)");
-    print("declare ptr @fgets(ptr, i32, ptr)");
-    if (is_win[0] = 1) {
-        print("declare ptr @__acrt_iob_func(i32)");
-    } else if (is_mac[0] = 1) {
-        print("@__stdinp = external global ptr");
-    } else {
-        print("@stdin = external global ptr");
-    }
-    // Constant strings used by the runtime helpers themselves: file mode
-    // arguments to fopen. (The pop-empty error string is declared inside
-    // emit_pop_helper's body, so we don't duplicate it here.)
-    print("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
-    print("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
-    print("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
-    print("");
-
-    // The IR text (which includes its own printf/puts/fflush externs and the
-    // module's translated functions).
-    print(ir_text);
-
-    // The runtime body.
-    print(runtime_text);
 }
 if (ir_test_mode[0]) {
     if (args(0) = "--ir-is-digit") {
@@ -5682,6 +5874,21 @@ if (ir_test_mode[0]) {
         pos[0] <- 0;
         stmts <- pp();
         run_ir_with_runtime(stmts);
+    } else if (args(0) = "--ir-translate-fns") {
+        // Phase 4 stepping stone: read a source file, translate every FnDecl
+        // through the AST→IR pipeline, render, and dump. Runtime is appended.
+        // No top-level handling yet — files with significant top-level code
+        // won't produce a runnable binary, but the IR text alone tells us
+        // whether the translator handles every node it encounters.
+        if (args() < 2) {
+            print("; --ir-translate-fns requires a source file path");
+        } else {
+            src <- read_file(args(1));
+            toks <- tokenize(src);
+            pos[0] <- 0;
+            stmts <- pp();
+            run_ir_with_runtime(stmts);
+        }
     } else {
         run_ir_test();
     }

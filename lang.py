@@ -895,7 +895,7 @@ class Interpreter:
                 while self._truthy(self._eval(cond)):
                     for s in body: self._exec(s)
                     iterations += 1
-                    if iterations > 100_000:
+                    if iterations > 10_000_000:
                         raise RuntimeError_("Infinite loop detected")
 
             case ForInStmt(var_name, iterable, body):
