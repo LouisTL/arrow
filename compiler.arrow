@@ -897,128 +897,6 @@ fn cv_expr(nd, work, vars) {
 // ── Emit LLVM IR for expression ─────────
 // Returns {reg, type} where type is "int" or "str"
 
-fn emit_expr(nd) {
-    if (nd.node = "NumberLit") {
-        return tv_int(nd.value); // literal integer
-    }
-    if (nd.node = "StringLit") {
-        id <- add_string(nd.value);
-        r <- fresh("%s");
-        emit("  " + r + " = ptrtoint ptr @" + id + " to i64");
-        return tv_str(r);
-    }
-    if (nd.node = "BoolLit") {
-        if (nd.value = "true") { return tv_int("1"); }
-        return tv_int("0");
-    }
-    if (nd.node = "Identifier") {
-        reg <- find_var(nd.name);
-        if (reg = "") {
-            // Might be a function reference
-            fi <- find_fn(nd.name);
-            if (fi != false) {
-                r <- fresh("%fref");
-                emit("  " + r + " = ptrtoint ptr @" + nd.name + " to i64");
-                return tv_int(r);
-            }
-            print("Error: undefined var " + nd.name);
-            return tv_int("0");
-        }
-        r <- fresh("%ld");
-        emit("  " + r + " = load i64, ptr " + reg);
-        return tv(r, get_var_type(nd.name).kind);
-    }
-    if (nd.node = "BinOp") {
-        return emit_binop(nd);
-    }
-    if (nd.node = "UnaryOp") {
-        vt <- emit_expr(nd.operand);
-        if (nd.op = "-") {
-            r <- fresh("%neg");
-            emit("  " + r + " = sub i64 0, " + vt.reg);
-            return tv_int(r);
-        }
-        if (nd.op = "!") {
-            r1 <- fresh("%cmp");
-            r2 <- fresh("%not");
-            emit("  " + r1 + " = icmp eq i64 " + vt.reg + ", 0");
-            emit("  " + r2 + " = zext i1 " + r1 + " to i64");
-            return tv_int(r2);
-        }
-        return tv_int("0");
-    }
-    if (nd.node = "CallExpr") {
-        return emit_call(nd);
-    }
-    if (nd.node = "ArrayLit") {
-        return tv_int(emit_array_lit(nd));
-    }
-    if (nd.node = "IndexExpr") {
-        return emit_index(nd);
-    }
-    if (nd.node = "StructLit") {
-        return emit_struct_lit(nd);
-    }
-    if (nd.node = "DotExpr") {
-        return emit_dot_expr(nd);
-    }
-    if (nd.node = "ArrowFn") {
-        return emit_arrow_fn(nd);
-    }
-    print("Emit error: unsupported expr " + nd.node);
-    return tv_int("0");
-}
-
-fn emit_binop(nd) {
-    if (nd.op = "&&") {
-        return emit_and(nd);
-    }
-    if (nd.op = "||") {
-        return emit_or(nd);
-    }
-
-    // Emit both sides and use tracked types for decisions
-    l <- emit_expr(nd.left);
-    r <- emit_expr(nd.right);
-
-    if (nd.op = "+") {
-        // String concatenation when either side is tracked as "str"
-        if (l.type = "str" || r.type = "str") {
-            return emit_strcat(l, r);
-        }
-        res <- fresh("%add");
-        emit("  " + res + " = add i64 " + l.reg + ", " + r.reg);
-        return tv_int(res);
-    }
-    if (nd.op = "-") { res <- fresh("%sub"); emit("  " + res + " = sub i64 " + l.reg + ", " + r.reg); return tv_int(res); }
-    if (nd.op = "*") { res <- fresh("%mul"); emit("  " + res + " = mul i64 " + l.reg + ", " + r.reg); return tv_int(res); }
-    if (nd.op = "/") { res <- fresh("%div"); emit("  " + res + " = sdiv i64 " + l.reg + ", " + r.reg); return tv_int(res); }
-    if (nd.op = "%") { res <- fresh("%rem"); emit("  " + res + " = srem i64 " + l.reg + ", " + r.reg); return tv_int(res); }
-
-    // Comparisons — always return int (0 or 1)
-    cmp_op <- "";
-    if (nd.op = "=") { cmp_op <- "eq"; }
-    else if (nd.op = "!=") { cmp_op <- "ne"; }
-    else if (nd.op = "<") { cmp_op <- "slt"; }
-    else if (nd.op = ">") { cmp_op <- "sgt"; }
-    else if (nd.op = "<=") { cmp_op <- "sle"; }
-    else if (nd.op = ">=") { cmp_op <- "sge"; }
-
-    if (cmp_op != "") {
-        // Use strcmp when either side is "str", or both are "any"
-        // arrow_safe_strcmp handles the case where values might be integers
-        if (l.type = "str" || r.type = "str" || (l.type = "any" && r.type = "any")) {
-            return emit_strcmp(l, r, cmp_op);
-        }
-        r1 <- fresh("%cmp");
-        r2 <- fresh("%ext");
-        emit("  " + r1 + " = icmp " + cmp_op + " i64 " + l.reg + ", " + r.reg);
-        emit("  " + r2 + " = zext i1 " + r1 + " to i64");
-        return tv_int(r2);
-    }
-    return tv_int("0");
-}
-
 // Check if an AST expression node is known to be a string
 fn is_str_expr(nd): int {
     if (nd.node = "StringLit") { return true; }
@@ -1048,946 +926,13 @@ fn is_str_expr(nd): int {
 }
 
 // ── String concatenation ────────────────
-fn emit_strcat(l, r) {
-    // "str" → use as string pointer directly
-    // "any" → runtime check via arrow_to_str (itoa if small int, use as ptr otherwise)
-    // "int" → convert via itoa at compile time
-    if (l.type = "str") {
-        lp <- fresh("%scl");
-        emit("  " + lp + " = inttoptr i64 " + l.reg + " to ptr");
-    } else if (l.type = "any") {
-        lp <- fresh("%scl");
-        emit("  " + lp + " = call ptr @arrow_to_str(i64 " + l.reg + ")");
-    } else {
-        ls <- ensure_str(l);
-        lp <- fresh("%scl");
-        emit("  " + lp + " = inttoptr i64 " + ls + " to ptr");
-    }
-    if (r.type = "str") {
-        rp <- fresh("%scr");
-        emit("  " + rp + " = inttoptr i64 " + r.reg + " to ptr");
-    } else if (r.type = "any") {
-        rp <- fresh("%scr");
-        emit("  " + rp + " = call ptr @arrow_to_str(i64 " + r.reg + ")");
-    } else {
-        rs <- ensure_str(r);
-        rp <- fresh("%scr");
-        emit("  " + rp + " = inttoptr i64 " + rs + " to ptr");
-    }
-
-    // Get lengths
-    ll <- fresh("%sll");
-    rl <- fresh("%srl");
-    emit("  " + ll + " = call i64 @strlen(ptr " + lp + ")");
-    emit("  " + rl + " = call i64 @strlen(ptr " + rp + ")");
-
-    // Allocate buffer: len_l + len_r + 1
-    tl <- fresh("%stl");
-    bs <- fresh("%sbs");
-    buf <- fresh("%sbuf");
-    emit("  " + tl + " = add i64 " + ll + ", " + rl);
-    emit("  " + bs + " = add i64 " + tl + ", 1");
-    emit("  " + buf + " = call ptr @arena_alloc(i64 " + bs + ")");
-
-    // strcpy + strcat
-    emit("  call ptr @strcpy(ptr " + buf + ", ptr " + lp + ")");
-    emit("  call ptr @strcat(ptr " + buf + ", ptr " + rp + ")");
-
-    // Return as i64
-    res <- fresh("%scres");
-    emit("  " + res + " = ptrtoint ptr " + buf + " to i64");
-    return tv_str(res);
-}
-
 // ── String comparison ───────────────────
-fn emit_strcmp(l, r, cmp_op: str) {
-    // In strcmp context, both values must be string pointers
-    ls <- as_str_ptr(l);
-    rs <- as_str_ptr(r);
-
-    lp <- fresh("%csl");
-    rp <- fresh("%csr");
-    emit("  " + lp + " = inttoptr i64 " + ls + " to ptr");
-    emit("  " + rp + " = inttoptr i64 " + rs + " to ptr");
-
-    sc <- fresh("%scmp");
-    emit("  " + sc + " = call i32 @arrow_safe_strcmp(ptr " + lp + ", ptr " + rp + ")");
-
-    // strcmp returns <0, 0, >0 — compare against 0
-    r1 <- fresh("%scr");
-    r2 <- fresh("%sce");
-    // Use if/else to avoid cmp_op string concat (param type not tracked as str)
-    if (cmp_op = "eq") {
-        emit("  " + r1 + " = icmp eq i32 " + sc + ", 0");
-    }
-    if (cmp_op = "ne") {
-        emit("  " + r1 + " = icmp ne i32 " + sc + ", 0");
-    }
-    if (cmp_op = "slt") {
-        emit("  " + r1 + " = icmp slt i32 " + sc + ", 0");
-    }
-    if (cmp_op = "sgt") {
-        emit("  " + r1 + " = icmp sgt i32 " + sc + ", 0");
-    }
-    if (cmp_op = "sle") {
-        emit("  " + r1 + " = icmp sle i32 " + sc + ", 0");
-    }
-    if (cmp_op = "sge") {
-        emit("  " + r1 + " = icmp sge i32 " + sc + ", 0");
-    }
-    emit("  " + r2 + " = zext i1 " + r1 + " to i64");
-    return tv_int(r2);
-}
-
-fn emit_and(nd) {
-    // Use alloca approach to avoid phi block tracking issues
-    res_ptr <- fresh("%and_res");
-    emit("  " + res_ptr + " = alloca i64");
-    emit("  store i64 0, ptr " + res_ptr);
-    l <- emit_expr(nd.left);
-    lbl_right <- fresh_lbl("and_r");
-    lbl_end <- fresh_lbl("and_e");
-    lc <- fresh("%ac");
-    emit("  " + lc + " = icmp ne i64 " + l.reg + ", 0");
-    emit("  br i1 " + lc + ", label %" + lbl_right + ", label %" + lbl_end);
-    emit(lbl_right + ":");
-    r <- emit_expr(nd.right);
-    rc <- fresh("%arc");
-    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
-    rext <- fresh("%arext");
-    emit("  " + rext + " = zext i1 " + rc + " to i64");
-    emit("  store i64 " + rext + ", ptr " + res_ptr);
-    emit("  br label %" + lbl_end);
-    emit(lbl_end + ":");
-    res <- fresh("%aphi");
-    emit("  " + res + " = load i64, ptr " + res_ptr);
-    return tv_int(res);
-}
-
-fn emit_or(nd) {
-    // Use alloca approach to avoid phi block tracking issues
-    res_ptr <- fresh("%or_res");
-    emit("  " + res_ptr + " = alloca i64");
-    emit("  store i64 1, ptr " + res_ptr); // default true
-    l <- emit_expr(nd.left);
-    lbl_right <- fresh_lbl("or_r");
-    lbl_end <- fresh_lbl("or_e");
-    lc <- fresh("%oc");
-    emit("  " + lc + " = icmp ne i64 " + l.reg + ", 0");
-    emit("  br i1 " + lc + ", label %" + lbl_end + ", label %" + lbl_right);
-    emit(lbl_right + ":");
-    r <- emit_expr(nd.right);
-    rc <- fresh("%orc");
-    emit("  " + rc + " = icmp ne i64 " + r.reg + ", 0");
-    rext <- fresh("%orext");
-    emit("  " + rext + " = zext i1 " + rc + " to i64");
-    emit("  store i64 " + rext + ", ptr " + res_ptr);
-    emit("  br label %" + lbl_end);
-    emit(lbl_end + ":");
-    res <- fresh("%ophi");
-    emit("  " + res + " = load i64, ptr " + res_ptr);
-    return tv_int(res);
-}
-
-fn emit_call(nd) {
-    // Builtins
-    if (nd.callee.node = "Identifier") {
-        nm <- nd.callee.name;
-
-        if (nm = "print") {
-            // Should not get here — print is a statement
-            return tv_int("0");
-        }
-
-        // User function call
-        // Note: find_fn may return an entry registered for an arrow-fn variable
-        // (from scan_fns's pre-pass, used by the type checker). Those entries
-        // have `is_arrow_var: true` — skip them so we fall through to the
-        // indirect-call branch which actually knows how to invoke closures.
-        fi <- find_fn(nm);
-        if (fi != false && fi.is_arrow_var = true) { fi <- false; }
-        if (fi != false) {
-            args_str <- "";
-            i <- 0;
-            while (i < len(nd.args)) {
-                if (i > 0) { args_str <- args_str + ", "; }
-                vt <- emit_expr(nd.args[i]);
-                args_str <- args_str + "i64 " + vt.reg;
-                // Emit-time param type propagation: use actual tracked types
-                // This catches cases scan_call_sites misses (Identifiers with type "str")
-                if (i < fi.param_count) {
-                    if (vt.type = "str") {
-                        set_fn_param_type(fi.name, i, mk_str());
-                    }
-                }
-                i <- i + 1;
-            }
-            r <- fresh("%call");
-            emit("  " + r + " = call i64 @" + nm + "(" + args_str + ")");
-            if (fi.ret_type.kind = "struct") {
-                return {reg: r, type: "struct", fields: fi.ret_fields};
-            }
-            return tv(r, fi.ret_type.kind);
-        }
-
-        // Builtin len
-        if (nm = "len") {
-            vt <- emit_expr(nd.args[0]);
-            // Dispatch on static type: strings use strlen, arrays/any read the
-            // length word at offset 0. Defaulting non-str to the array path
-            // preserves existing behavior for arrays whose variable was typed
-            // as "any" (happens when arrays flow through generic helpers).
-            if (vt.type = "str") {
-                sp <- fresh("%lsp");
-                sl <- fresh("%lsr");
-                emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-                emit("  " + sl + " = call i64 @strlen(ptr " + sp + ")");
-                return tv_int(sl);
-            }
-            ap <- fresh("%ap");
-            lp <- fresh("%lp");
-            lv <- fresh("%lv");
-            emit("  " + ap + " = inttoptr i64 " + vt.reg + " to ptr");
-            emit("  " + lp + " = getelementptr i64, ptr " + ap + ", i64 0");
-            emit("  " + lv + " = load i64, ptr " + lp);
-            return tv_int(lv);
-        }
-
-        // Builtin push
-        if (nm = "push") {
-            vt_arr <- emit_expr(nd.args[0]);
-            vt_val <- emit_expr(nd.args[1]);
-            rp <- fresh("%push_r");
-            emit("  " + rp + " = call i64 @arrow_push(i64 " + vt_arr.reg + ", i64 " + vt_val.reg + ")");
-            // Store the (possibly reallocated) array pointer back. Without
-            // this store-back the variable would still hold the old pointer
-            // after a realloc, which is the source of subtle "list shrinks
-            // unexpectedly" bugs once the list grows past its initial cap.
-            if (nd.args[0].node = "Identifier") {
-                arr_reg <- find_var(nd.args[0].name);
-                if (arr_reg != "") {
-                    emit("  store i64 " + rp + ", ptr " + arr_reg);
-                }
-            } else if (nd.args[0].node = "DotExpr") {
-                // push(struct.field, val): the (possibly new) array pointer
-                // needs to be written back to the struct's field slot.
-                fid_de <- add_string(nd.args[0].field);
-                obj_de <- emit_expr(nd.args[0].obj);
-                op_de <- fresh("%pushdaop");
-                emit("  " + op_de + " = inttoptr i64 " + obj_de.reg + " to ptr");
-                idx_de <- fresh("%pushdaidx");
-                emit("  " + idx_de + " = call i64 @arrow_struct_find(ptr " + op_de + ", ptr @" + fid_de + ")");
-                slot_de <- fresh("%pushdaslot");
-                vp_de <- fresh("%pushdavp");
-                emit("  " + slot_de + " = add i64 " + idx_de + ", 1");
-                emit("  " + vp_de + " = getelementptr i64, ptr " + op_de + ", i64 " + slot_de);
-                emit("  store i64 " + rp + ", ptr " + vp_de);
-            } else if (nd.args[0].node = "IndexExpr") {
-                // push(arr[i], val): write the new pointer back into arr[i].
-                obj_ie <- emit_expr(nd.args[0].obj);
-                idx_ie <- emit_expr(nd.args[0].index);
-                op_ie <- fresh("%pushiaop");
-                off_ie <- fresh("%pushiaoff");
-                ep_ie <- fresh("%pushiaep");
-                emit("  " + op_ie + " = inttoptr i64 " + obj_ie.reg + " to ptr");
-                emit("  " + off_ie + " = add i64 " + idx_ie.reg + ", 2");
-                emit("  " + ep_ie + " = getelementptr i64, ptr " + op_ie + ", i64 " + off_ie);
-                emit("  store i64 " + rp + ", ptr " + ep_ie);
-            }
-            return tv(vt_val.reg, vt_val.type);
-        }
-
-        // Builtin pop — returns last element, decrements array len in place.
-        // No pointer store-back needed: arrow_pop shrinks in place and never reallocs.
-        if (nm = "pop") {
-            vt_arr <- emit_expr(nd.args[0]);
-            rp <- fresh("%pop_r");
-            emit("  " + rp + " = call i64 @arrow_pop(i64 " + vt_arr.reg + ")");
-            // Element type from the full typeof_expr pipeline (which reads var_types
-            // populated by infer_body). Avoids dropping structural types that
-            // emit-time codegen doesn't carry on typed values.
-            at <- typeof_expr(nd.args[0]);
-            et_kind <- "any";
-            if (at.kind = "array") { et_kind <- at.elem.kind; }
-            return tv(rp, et_kind);
-        }
-
-        // Builtin keys — returns [str] of a struct's field names.
-        if (nm = "keys") {
-            vt_s <- emit_expr(nd.args[0]);
-            rp <- fresh("%keys_r");
-            emit("  " + rp + " = call i64 @arrow_keys(i64 " + vt_s.reg + ")");
-            // Result is a [str]. Tag the value as "int" (pointer) — the structural
-            // type info lives in var_types once assigned (preserved by the
-            // infer_body/emit_stmt harmony fix from the pop work).
-            return tv_int(rp);
-        }
-
-        // Builtin str_len
-        if (nm = "str_len") {
-            vt <- emit_expr(nd.args[0]);
-            sp <- fresh("%slp");
-            sl <- fresh("%slr");
-            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-            emit("  " + sl + " = call i64 @strlen(ptr " + sp + ")");
-            return tv_int(sl);
-        }
-
-        // Builtin char_code
-        if (nm = "char_code") {
-            vt <- emit_expr(nd.args[0]);
-            sp <- fresh("%ccp");
-            ch <- fresh("%ccv");
-            r <- fresh("%ccr");
-            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-            emit("  " + ch + " = load i8, ptr " + sp);
-            emit("  " + r + " = zext i8 " + ch + " to i64");
-            return tv_int(r);
-        }
-
-        // Builtin from_char_code
-        if (nm = "from_char_code") {
-            vt <- emit_expr(nd.args[0]);
-            buf <- fresh("%fcc");
-            ch <- fresh("%fcch");
-            r <- fresh("%fccr");
-            np <- fresh("%fccn");
-            emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
-            emit("  " + ch + " = trunc i64 " + vt.reg + " to i8");
-            emit("  store i8 " + ch + ", ptr " + buf);
-            emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
-            emit("  store i8 0, ptr " + np);
-            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
-            return tv_str(r);
-        }
-
-        // Builtin char_at
-        if (nm = "char_at") {
-            vt_s <- emit_expr(nd.args[0]);
-            vt_i <- emit_expr(nd.args[1]);
-            sp <- fresh("%cap");
-            ep <- fresh("%caep");
-            ch <- fresh("%cach");
-            buf <- fresh("%cabuf");
-            np <- fresh("%canp");
-            r <- fresh("%car");
-            emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
-            emit("  " + ep + " = getelementptr i8, ptr " + sp + ", i64 " + vt_i.reg);
-            emit("  " + ch + " = load i8, ptr " + ep);
-            emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
-            emit("  store i8 " + ch + ", ptr " + buf);
-            emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
-            emit("  store i8 0, ptr " + np);
-            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
-            return tv_str(r);
-        }
-
-        // Builtin substring
-        if (nm = "substring") {
-            vt_s <- emit_expr(nd.args[0]);
-            vt_start <- emit_expr(nd.args[1]);
-            vt_end <- emit_expr(nd.args[2]);
-            sp <- fresh("%ssp");
-            sl <- fresh("%ssl");
-            bs <- fresh("%sbs");
-            buf <- fresh("%sbf");
-            src <- fresh("%ssrc");
-            emit("  " + sp + " = inttoptr i64 " + vt_s.reg + " to ptr");
-            emit("  " + sl + " = sub i64 " + vt_end.reg + ", " + vt_start.reg);
-            emit("  " + bs + " = add i64 " + sl + ", 1");
-            emit("  " + buf + " = call ptr @arena_alloc(i64 " + bs + ")");
-            emit("  " + src + " = getelementptr i8, ptr " + sp + ", i64 " + vt_start.reg);
-            // Copy loop
-            idx_r <- fresh("%ssi");
-            emit("  " + idx_r + " = alloca i64");
-            emit("  store i64 0, ptr " + idx_r);
-            lbl_c <- fresh_lbl("ssc");
-            lbl_b <- fresh_lbl("ssb");
-            lbl_e <- fresh_lbl("sse");
-            emit("  br label %" + lbl_c);
-            emit(lbl_c + ":");
-            ci2 <- fresh("%ssci");
-            cmp <- fresh("%sscmp");
-            emit("  " + ci2 + " = load i64, ptr " + idx_r);
-            emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + sl);
-            emit("  br i1 " + cmp + ", label %" + lbl_b + ", label %" + lbl_e);
-            emit(lbl_b + ":");
-            ci3 <- fresh("%ssci2");
-            sep2 <- fresh("%ssep");
-            sch <- fresh("%ssch");
-            dep <- fresh("%ssdep");
-            emit("  " + ci3 + " = load i64, ptr " + idx_r);
-            emit("  " + sep2 + " = getelementptr i8, ptr " + src + ", i64 " + ci3);
-            emit("  " + sch + " = load i8, ptr " + sep2);
-            emit("  " + dep + " = getelementptr i8, ptr " + buf + ", i64 " + ci3);
-            emit("  store i8 " + sch + ", ptr " + dep);
-            ci4 <- fresh("%ssinc");
-            emit("  " + ci4 + " = add i64 " + ci3 + ", 1");
-            emit("  store i64 " + ci4 + ", ptr " + idx_r);
-            emit("  br label %" + lbl_c);
-            emit(lbl_e + ":");
-            // Null terminate
-            ntp <- fresh("%ssnt");
-            emit("  " + ntp + " = getelementptr i8, ptr " + buf + ", i64 " + sl);
-            emit("  store i8 0, ptr " + ntp);
-            r <- fresh("%ssr");
-            emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
-            return tv_str(r);
-        }
-
-        // Builtin read_file
-        if (nm = "read_file") {
-            vt <- emit_expr(nd.args[0]);
-            sp <- fresh("%rfp");
-            r <- fresh("%rfr");
-            ri <- fresh("%rfi");
-            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-            emit("  " + r + " = call ptr @arrow_read_file(ptr " + sp + ")");
-            emit("  " + ri + " = ptrtoint ptr " + r + " to i64");
-            return tv_str(ri);
-        }
-
-        // Builtin write_file
-        if (nm = "write_file") {
-            vt_path <- emit_expr(nd.args[0]);
-            vt_content <- emit_expr(nd.args[1]);
-            pp <- fresh("%wfp");
-            cp <- fresh("%wfc");
-            r <- fresh("%wfr");
-            emit("  " + pp + " = inttoptr i64 " + vt_path.reg + " to ptr");
-            emit("  " + cp + " = inttoptr i64 " + vt_content.reg + " to ptr");
-            emit("  " + r + " = call i64 @arrow_write_file(ptr " + pp + ", ptr " + cp + ")");
-            return tv_int(r);
-        }
-
-        // Builtin append_file
-        if (nm = "append_file") {
-            vt_path <- emit_expr(nd.args[0]);
-            vt_content <- emit_expr(nd.args[1]);
-            pp <- fresh("%afp");
-            cp <- fresh("%afc");
-            r <- fresh("%afr");
-            emit("  " + pp + " = inttoptr i64 " + vt_path.reg + " to ptr");
-            emit("  " + cp + " = inttoptr i64 " + vt_content.reg + " to ptr");
-            emit("  " + r + " = call i64 @arrow_append_file(ptr " + pp + ", ptr " + cp + ")");
-            return tv_int(r);
-        }
-
-        // Builtin exec_cmd
-        if (nm = "exec_cmd") {
-            vt <- emit_expr(nd.args[0]);
-            sp <- fresh("%ecp");
-            r <- fresh("%ecr");
-            emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-            emit("  " + r + " = call i32 @system(ptr " + sp + ")");
-            ri <- fresh("%ecri");
-            emit("  " + ri + " = sext i32 " + r + " to i64");
-            return tv_int(ri);
-        }
-
-        // Builtin input
-        if (nm = "input") {
-            if (len(nd.args) >= 1) {
-                vt <- emit_expr(nd.args[0]);
-                sp <- fresh("%inp");
-                emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-                emit("  call i32 (ptr, ...) @printf(ptr " + sp + ")");
-            }
-            r <- fresh("%inr");
-            ri <- fresh("%inri");
-            emit("  " + r + " = call ptr @arrow_input()");
-            emit("  " + ri + " = ptrtoint ptr " + r + " to i64");
-            return tv_str(ri);
-        }
-
-        // Builtin args — access command line arguments
-        if (nm = "args") {
-            if (len(nd.args) = 0) {
-                // args() with no arguments — return argc - 1 (number of script args)
-                ac <- fresh("%argc");
-                ar <- fresh("%argr");
-                emit("  " + ac + " = load i64, ptr @g_argc");
-                emit("  " + ar + " = sub i64 " + ac + ", 1");
-                return tv_int(ar);
-            }
-            // args(N) — return argv[N+1] as string
-            vt <- emit_expr(nd.args[0]);
-            ai <- fresh("%argi");
-            emit("  " + ai + " = add i64 " + vt.reg + ", 1"); // skip program name
-            av <- fresh("%argv");
-            emit("  " + av + " = load i64, ptr @g_argv");
-            avp <- fresh("%argvp");
-            emit("  " + avp + " = inttoptr i64 " + av + " to ptr");
-            ep <- fresh("%argep");
-            emit("  " + ep + " = getelementptr ptr, ptr " + avp + ", i64 " + ai);
-            sp <- fresh("%argsp");
-            emit("  " + sp + " = load ptr, ptr " + ep);
-            ri <- fresh("%argri");
-            emit("  " + ri + " = ptrtoint ptr " + sp + " to i64");
-            return tv_str(ri);
-        }
-
-        // Indirect call via variable (arrow function stored in variable)
-        fn_reg <- find_var(nm);
-        if (fn_reg != "") {
-            // Look up arrow function info for param type propagation
-            afn_name <- get_arrow_fn_name(nm);
-            afn_info <- false;
-            if (afn_name != "") {
-                afn_info <- find_fn(afn_name);
-            }
-
-            // Load closure pair [fn_ptr, env_ptr]
-            pair_val <- fresh("%pld");
-            emit("  " + pair_val + " = load i64, ptr " + fn_reg);
-            pair_ptr <- fresh("%pptr");
-            emit("  " + pair_ptr + " = inttoptr i64 " + pair_val + " to ptr");
-            // Extract fn_ptr (slot 0)
-            fn_i64 <- fresh("%fni");
-            emit("  " + fn_i64 + " = load i64, ptr " + pair_ptr);
-            fn_ptr <- fresh("%fnp");
-            emit("  " + fn_ptr + " = inttoptr i64 " + fn_i64 + " to ptr");
-            // Extract env_ptr (slot 1)
-            env_slot <- fresh("%esl");
-            env_i64 <- fresh("%eni");
-            emit("  " + env_slot + " = getelementptr i64, ptr " + pair_ptr + ", i64 1");
-            emit("  " + env_i64 + " = load i64, ptr " + env_slot);
-
-            // Build args: env first, then user args
-            args_str <- "i64 " + env_i64;
-            i <- 0;
-            while (i < len(nd.args)) {
-                args_str <- args_str + ", ";
-                vt <- emit_expr(nd.args[i]);
-                args_str <- args_str + "i64 " + vt.reg;
-                if (afn_info != false && i < afn_info.param_count) {
-                    if (vt.type = "str") {
-                        set_fn_param_type(afn_info.name, i, mk_str());
-                    }
-                }
-                i <- i + 1;
-            }
-            r <- fresh("%icall");
-            emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
-            if (afn_info != false) {
-                return tv(r, afn_info.ret_type.kind);
-            }
-            return tv(r, "any");
-        }
-
-        print("Error: unknown function " + nm);
-        return tv_int("0");
-    }
-
-    // Indirect call via expression (e.g. make_fn()(args))
-    fn_vt <- emit_expr(nd.callee);
-    // Unpack closure pair [fn_ptr, env_ptr]
-    pair_ptr <- fresh("%pptr");
-    emit("  " + pair_ptr + " = inttoptr i64 " + fn_vt.reg + " to ptr");
-    fn_i64 <- fresh("%fni");
-    emit("  " + fn_i64 + " = load i64, ptr " + pair_ptr);
-    fn_ptr <- fresh("%fnp");
-    emit("  " + fn_ptr + " = inttoptr i64 " + fn_i64 + " to ptr");
-    env_slot <- fresh("%esl");
-    env_i64 <- fresh("%eni");
-    emit("  " + env_slot + " = getelementptr i64, ptr " + pair_ptr + ", i64 1");
-    emit("  " + env_i64 + " = load i64, ptr " + env_slot);
-
-    args_str <- "i64 " + env_i64;
-    i <- 0;
-    while (i < len(nd.args)) {
-        args_str <- args_str + ", ";
-        vt <- emit_expr(nd.args[i]);
-        args_str <- args_str + "i64 " + vt.reg;
-        i <- i + 1;
-    }
-    r <- fresh("%icall");
-    emit("  " + r + " = call i64 " + fn_ptr + "(" + args_str + ")");
-    return tv(r, "any");
-}
-
-fn emit_array_lit(nd) {
-    // Allocate: [len, cap, elem0, elem1, ...]
-    // Layout: i64* with [length, capacity, elements...]
-    n <- len(nd.elements);
-    cap <- n;
-    if (cap < 4096) { cap <- 4096; }
-    total <- 2 + cap; // len + cap + elements
-    sz <- fresh("%asz");
-    ap <- fresh("%aptr");
-    ai <- fresh("%aint");
-    emit("  " + sz + " = mul i64 " + total + ", 8");
-    emit("  " + ap + " = call ptr @malloc(i64 " + sz + ")");
-
-    // Store length
-    emit("  store i64 " + n + ", ptr " + ap);
-    // Store capacity
-    cp <- fresh("%cp");
-    emit("  " + cp + " = getelementptr i64, ptr " + ap + ", i64 1");
-    emit("  store i64 " + cap + ", ptr " + cp);
-
-    // Store elements
-    i <- 0;
-    while (i < n) {
-        vt <- emit_expr(nd.elements[i]);
-        ep <- fresh("%ep");
-        idx <- i + 2;
-        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + idx);
-        emit("  store i64 " + vt.reg + ", ptr " + ep);
-        i <- i + 1;
-    }
-
-    emit("  " + ai + " = ptrtoint ptr " + ap + " to i64");
-    return ai;
-}
-
-fn emit_index(nd) {
-    vt_obj <- emit_expr(nd.obj);
-    vt_idx <- emit_expr(nd.index);
-
-    // Dispatch: if the object is statically a string, index by byte and build
-    // a 2-byte allocated string (same semantics as char_at). If it's an array
-    // or we don't know, fall through to the array-indexing path.
-    //
-    // We could also check vt_obj.type = "str" here, but that field only reflects
-    // the immediate emit_expr return tag — which is "int" for a string literal
-    // loaded from a global. The richer source of truth is the var_types table
-    // populated by infer_body/scan_call_sites.
-    is_str <- false;
-    if (nd.obj.node = "Identifier") {
-        ot <- get_var_type(nd.obj.name);
-        if (ot.kind = "str") { is_str <- true; }
-    }
-    if (vt_obj.type = "str") { is_str <- true; }
-
-    if (is_str) {
-        sp <- fresh("%sip");
-        ep <- fresh("%sibp");
-        ch <- fresh("%sich");
-        buf <- fresh("%sibuf");
-        np <- fresh("%sinp");
-        r <- fresh("%sir");
-        emit("  " + sp + " = inttoptr i64 " + vt_obj.reg + " to ptr");
-        emit("  " + ep + " = getelementptr i8, ptr " + sp + ", i64 " + vt_idx.reg);
-        emit("  " + ch + " = load i8, ptr " + ep);
-        emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
-        emit("  store i8 " + ch + ", ptr " + buf);
-        emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
-        emit("  store i8 0, ptr " + np);
-        emit("  " + r + " = ptrtoint ptr " + buf + " to i64");
-        return tv_str(r);
-    }
-
-    // Array path
-    ap <- fresh("%ip");
-    off <- fresh("%ioff");
-    ep <- fresh("%iep");
-    ev <- fresh("%iev");
-    emit("  " + ap + " = inttoptr i64 " + vt_obj.reg + " to ptr");
-    emit("  " + off + " = add i64 " + vt_idx.reg + ", 2"); // skip len+cap
-    emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
-    emit("  " + ev + " = load i64, ptr " + ep);
-    // Element type: prefer structural info from var_types (set by infer_body for
-    // all [T]-typed variables), fall back to the legacy side table.
-    // When the object isn't a direct Identifier (e.g. nested `m.functions[0]`
-    // or `arr[i][j]`), recurse through typeof_expr to walk structural types.
-    etype <- mk_any();
-    if (nd.obj.node = "Identifier") {
-        ot <- get_var_type(nd.obj.name);
-        if (ot.kind = "array") {
-            etype <- ot.elem;
-        } else {
-            etype <- get_array_elem_type(nd.obj.name);
-        }
-    } else {
-        ot <- typeof_expr(nd.obj);
-        if (ot.kind = "array") { etype <- ot.elem; }
-    }
-    return tv(ev, etype.kind);
-}
-
 // ── Emit statement ──────────────────────
-
-fn emit_stmt(nd) {
-    if (nd.node = "Assignment") {
-        vt <- emit_expr(nd.expr);
-        reg <- find_var(nd.name);
-        if (reg = "") { reg <- add_var(nd.name); }
-        emit("  store i64 " + vt.reg + ", ptr " + reg);
-        // Track type — use explicit annotation if present (already a Type)
-        if (nd.type_ann.kind != "none") {
-            set_var_type(nd.name, nd.type_ann);
-        } else if (vt.type = "struct") {
-            set_var_type(nd.name, mk_int());
-            if (vt.fields != false) {
-                set_struct_layout(nd.name, vt.fields);
-            }
-        } else if (vt.type = "fn") {
-            // Arrow function assignment — track var → fn name mapping
-            set_var_type(nd.name, mk_fn());
-            if (vt.fields != false) {
-                set_arrow_fn_var(nd.name, vt.fields);
-            }
-        } else {
-            // Don't clobber a richer inferred type from infer_body.
-            // emit_expr returns a value-tag kind string — e.g. ArrayLit returns
-            // "int" because its value is a pointer. If infer_body already set
-            // a structural Type (array, struct_lit), keep it. For primitives,
-            // accept the update — a var reassigned from str to int truly is int.
-            existing <- get_var_type(nd.name);
-            if (existing.kind = "array" || existing.kind = "struct_lit") {
-                // keep structural type
-            } else {
-                set_var_type(nd.name, parse_type_ann(vt.type));
-            }
-        }
-        // Track array element types from ArrayLit initializers
-        if (nd.expr.node = "ArrayLit") {
-            i <- 0;
-            while (i < len(nd.expr.elements)) {
-                if (is_str_expr(nd.expr.elements[i])) {
-                    set_array_elem_type(nd.name, "str");
-                }
-                i <- i + 1;
-            }
-        }
-        return false;
-    }
-    if (nd.node = "PrintStmt") {
-        return emit_print(nd.expr);
-    }
-    if (nd.node = "IfStmt") {
-        return emit_if(nd);
-    }
-    if (nd.node = "WhileStmt") {
-        return emit_while(nd);
-    }
-    if (nd.node = "ForInStmt") {
-        return emit_for_in(nd);
-    }
-    if (nd.node = "ReturnStmt") {
-        if (nd.expr = false) {
-            emit("  ret i64 0");
-        } else {
-            vt <- emit_expr(nd.expr);
-            emit("  ret i64 " + vt.reg);
-            // Track return type and struct fields for function
-            fn_name <- current_fn[0];
-            if (fn_name != "") {
-                set_fn_ret_type(fn_name, parse_type_ann(vt.type), vt.fields);
-            }
-        }
-        return false;
-    }
-    if (nd.node = "IndexAssign") {
-        vt_obj <- emit_expr(nd.obj);
-        vt_idx <- emit_expr(nd.index);
-        vt_val <- emit_expr(nd.value);
-        ap <- fresh("%iap");
-        off <- fresh("%iaoff");
-        ep <- fresh("%iaep");
-        emit("  " + ap + " = inttoptr i64 " + vt_obj.reg + " to ptr");
-        emit("  " + off + " = add i64 " + vt_idx.reg + ", 2");
-        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
-        emit("  store i64 " + vt_val.reg + ", ptr " + ep);
-        // Track element type for this array
-        if (nd.obj.node = "Identifier") {
-            if (vt_val.type = "str") {
-                set_array_elem_type(nd.obj.name, "str");
-            }
-        }
-        return false;
-    }
-    if (nd.node = "DotAssign") {
-        return emit_dot_assign(nd);
-    }
-    if (nd.node = "Block") {
-        emit_block(nd.stmts);
-        return false;
-    }
-    // Expression statement
-    emit_expr(nd);
-    return false;
-}
-
-fn emit_block(stmts) {
-    i <- 0;
-    while (i < len(stmts)) {
-        emit_stmt(stmts[i]);
-        i <- i + 1;
-    }
-}
-
-fn emit_print(expr) {
-    // Use type info to decide format
-    vt <- emit_expr(expr);
-    if (vt.type = "str") {
-        // Print as string with puts-style: printf("%s\n", ptr)
-        sp <- fresh("%pp");
-        emit("  " + sp + " = inttoptr i64 " + vt.reg + " to ptr");
-        emit("  call i32 @puts(ptr " + sp + ")");
-    } else {
-        // Default: print as integer (includes "any" — use concat to force string)
-        emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + vt.reg + ")");
-    }
-    // Flush stdout
-    emit("  call i32 @fflush(ptr null)");
-    return false;
-}
-
-fn emit_if(nd) {
-    vt <- emit_expr(nd.cond);
-    cmp <- fresh("%ifc");
-    lbl_then <- fresh_lbl("then");
-    lbl_else <- fresh_lbl("else");
-    lbl_end <- fresh_lbl("ifend");
-
-    emit("  " + cmp + " = icmp ne i64 " + vt.reg + ", 0");
-
-    if (len(nd.else_body) > 0) {
-        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_else);
-    } else {
-        emit("  br i1 " + cmp + ", label %" + lbl_then + ", label %" + lbl_end);
-    }
-
-    emit(lbl_then + ":");
-    emit_block(nd.then_body);
-    emit("  br label %" + lbl_end);
-
-    if (len(nd.else_body) > 0) {
-        emit(lbl_else + ":");
-        emit_block(nd.else_body);
-        emit("  br label %" + lbl_end);
-    }
-
-    emit(lbl_end + ":");
-    return false;
-}
-
-fn emit_while(nd) {
-    lbl_cond <- fresh_lbl("wc");
-    lbl_body <- fresh_lbl("wb");
-    lbl_end <- fresh_lbl("we");
-
-    emit("  br label %" + lbl_cond);
-    emit(lbl_cond + ":");
-    vt <- emit_expr(nd.cond);
-    cmp <- fresh("%wcc");
-    emit("  " + cmp + " = icmp ne i64 " + vt.reg + ", 0");
-    emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
-
-    emit(lbl_body + ":");
-    emit_block(nd.body);
-    emit("  br label %" + lbl_cond);
-
-    emit(lbl_end + ":");
-    return false;
-}
 
 // ── Struct support ──────────────────────
 
 // Struct layout: [count, val0, val1, ..., name_ptr0, name_ptr1, ...]
 // Total slots = 1 + 2*N.  All i64.
-
-fn emit_struct_lit(nd) {
-    n <- len(nd.fields);
-    total <- 1 + n * 2; // count + N values + N name ptrs
-    sz <- fresh("%ssz");
-    sp <- fresh("%sptr");
-    emit("  " + sz + " = mul i64 " + total + ", 8");
-    emit("  " + sp + " = call ptr @arena_alloc(i64 " + sz + ")");
-
-    // Store count
-    emit("  store i64 " + n + ", ptr " + sp);
-
-    // Store values at slots [1..N] and track field types
-    field_info <- [];
-    i <- 0;
-    while (i < n) {
-        vt <- emit_expr(nd.fields[i].val);
-        slot <- i + 1;
-        vp <- fresh("%svp");
-        emit("  " + vp + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
-        emit("  store i64 " + vt.reg + ", ptr " + vp);
-        push(field_info, {fname: nd.fields[i].key, ftype: vt.type});
-        i <- i + 1;
-    }
-
-    // Store name pointers at slots [N+1..2N]
-    i <- 0;
-    while (i < n) {
-        fname <- nd.fields[i].key;
-        fid <- add_string(fname);
-        np <- fresh("%snp");
-        ni <- fresh("%sni");
-        slot <- 1 + n + i;
-        emit("  " + ni + " = ptrtoint ptr @" + fid + " to i64");
-        emit("  " + np + " = getelementptr i64, ptr " + sp + ", i64 " + slot);
-        emit("  store i64 " + ni + ", ptr " + np);
-        i <- i + 1;
-    }
-
-    // Return struct pointer as i64, with field info attached
-    ri <- fresh("%sri");
-    emit("  " + ri + " = ptrtoint ptr " + sp + " to i64");
-    return {reg: ri, type: "struct", fields: field_info};
-}
-
-fn emit_dot_expr(nd) {
-    vt_obj <- emit_expr(nd.obj);
-
-    // Field name as string constant
-    fid <- add_string(nd.field);
-
-    // Object pointer
-    op <- fresh("%dop");
-    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
-
-    // Call struct_find helper to get field index
-    idx <- fresh("%didx");
-    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
-
-    // Load value at slot [1 + idx]
-    slot <- fresh("%dslot");
-    vp <- fresh("%dvp");
-    val <- fresh("%dval");
-    emit("  " + slot + " = add i64 " + idx + ", 1");
-    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
-    emit("  " + val + " = load i64, ptr " + vp);
-
-    // Try to determine field type from struct layout
-    ftype <- mk_any(); // unknown type — could be string, int, or struct pointer
-    if (nd.obj.node = "Identifier") {
-        layout <- get_struct_layout(nd.obj.name);
-        if (layout != false) {
-            ftype <- get_field_type(layout, nd.field);
-        }
-    }
-    return tv(val, ftype.kind);
-}
-
-fn emit_dot_assign(nd) {
-    vt_obj <- emit_expr(nd.obj);
-    vt_val <- emit_expr(nd.value);
-
-    // Field name as string constant
-    fid <- add_string(nd.field);
-
-    // Object pointer
-    op <- fresh("%daop");
-    emit("  " + op + " = inttoptr i64 " + vt_obj.reg + " to ptr");
-
-    // Find field index
-    idx <- fresh("%daidx");
-    emit("  " + idx + " = call i64 @arrow_struct_find(ptr " + op + ", ptr @" + fid + ")");
-
-    slot <- fresh("%daslot");
-    vp <- fresh("%davp");
-    emit("  " + slot + " = add i64 " + idx + ", 1");
-    emit("  " + vp + " = getelementptr i64, ptr " + op + ", i64 " + slot);
-    emit("  store i64 " + vt_val.reg + ", ptr " + vp);
-    return false;
-}
 
 // Emit the struct_find helper function
 // arrow_struct_find(ptr %sptr, ptr %name) -> i64 index (or -1)
@@ -2108,116 +1053,6 @@ fn emit_itoa_helper() {
     emit("  ret ptr %buf");
     emit("}");
     emit("");
-}
-
-fn emit_for_in(nd) {
-    // Compile iterable
-    vt_coll <- emit_expr(nd.iterable);
-
-    // Index variable
-    idx_reg <- find_var("_for_idx");
-    if (idx_reg = "") { idx_reg <- add_var("_for_idx"); }
-    emit("  store i64 0, ptr " + idx_reg);
-
-    // Loop var
-    var_reg <- find_var(nd.var_name);
-    if (var_reg = "") { var_reg <- add_var(nd.var_name); }
-
-    if (vt_coll.type = "str") {
-        // String iteration: iterate over characters
-        sp <- fresh("%fsp");
-        emit("  " + sp + " = inttoptr i64 " + vt_coll.reg + " to ptr");
-        flen <- fresh("%flen");
-        emit("  " + flen + " = call i64 @strlen(ptr " + sp + ")");
-
-        lbl_cond <- fresh_lbl("fc");
-        lbl_body <- fresh_lbl("fb");
-        lbl_end <- fresh_lbl("fe");
-
-        emit("  br label %" + lbl_cond);
-        emit(lbl_cond + ":");
-        ci2 <- fresh("%fi");
-        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
-        cmp <- fresh("%fcmp");
-        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
-        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
-
-        emit(lbl_body + ":");
-        ci3 <- fresh("%fi2");
-        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
-
-        // Extract single char as a 2-byte string [ch, 0]
-        chp <- fresh("%fchp");
-        chv <- fresh("%fchv");
-        buf <- fresh("%fbuf");
-        np <- fresh("%fnp");
-        ri <- fresh("%fri");
-        emit("  " + chp + " = getelementptr i8, ptr " + sp + ", i64 " + ci3);
-        emit("  " + chv + " = load i8, ptr " + chp);
-        emit("  " + buf + " = call ptr @arena_alloc(i64 2)");
-        emit("  store i8 " + chv + ", ptr " + buf);
-        emit("  " + np + " = getelementptr i8, ptr " + buf + ", i64 1");
-        emit("  store i8 0, ptr " + np);
-        emit("  " + ri + " = ptrtoint ptr " + buf + " to i64");
-        emit("  store i64 " + ri + ", ptr " + var_reg);
-
-        // Set loop var type to string
-        set_var_type(nd.var_name, mk_str());
-
-        emit_block(nd.body);
-
-        // Increment
-        ci4 <- fresh("%fi3");
-        ci5 <- fresh("%fi4");
-        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
-        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
-        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
-        emit("  br label %" + lbl_cond);
-
-        emit(lbl_end + ":");
-    } else {
-        // Array iteration (existing logic)
-        ap <- fresh("%fap");
-        flen <- fresh("%flen");
-        emit("  " + ap + " = inttoptr i64 " + vt_coll.reg + " to ptr");
-        emit("  " + flen + " = load i64, ptr " + ap);
-
-        lbl_cond <- fresh_lbl("fc");
-        lbl_body <- fresh_lbl("fb");
-        lbl_end <- fresh_lbl("fe");
-
-        emit("  br label %" + lbl_cond);
-        emit(lbl_cond + ":");
-        ci2 <- fresh("%fi");
-        emit("  " + ci2 + " = load i64, ptr " + idx_reg);
-        cmp <- fresh("%fcmp");
-        emit("  " + cmp + " = icmp slt i64 " + ci2 + ", " + flen);
-        emit("  br i1 " + cmp + ", label %" + lbl_body + ", label %" + lbl_end);
-
-        emit(lbl_body + ":");
-        ci3 <- fresh("%fi2");
-        emit("  " + ci3 + " = load i64, ptr " + idx_reg);
-        off <- fresh("%foff");
-        ep <- fresh("%fep");
-        ev <- fresh("%fev");
-        emit("  " + off + " = add i64 " + ci3 + ", 2");
-        emit("  " + ep + " = getelementptr i64, ptr " + ap + ", i64 " + off);
-        emit("  " + ev + " = load i64, ptr " + ep);
-        emit("  store i64 " + ev + ", ptr " + var_reg);
-
-        emit_block(nd.body);
-
-        // Increment
-        ci4 <- fresh("%fi3");
-        ci5 <- fresh("%fi4");
-        emit("  " + ci4 + " = load i64, ptr " + idx_reg);
-        emit("  " + ci5 + " = add i64 " + ci4 + ", 1");
-        emit("  store i64 " + ci5 + ", ptr " + idx_reg);
-        emit("  br label %" + lbl_cond);
-
-        emit(lbl_end + ":");
-    }
-    return false;
 }
 
 // ── Capture detection ──────────────────
@@ -2671,10 +1506,10 @@ fn find_captures(body, params, is_expr: int) {
     return caps;
 }
 
-// IR-local find_captures: same logic as the existing find_captures but checks
-// the IR builder's locals list (and current_fn's params via the builder's
-// closure_vars / locals) rather than the existing emitter's alloc_vars side
-// state. Used by the AST→IR translator.
+// Walk an arrow-fn body to find references to outer-scope variables — those
+// names become the closure's captured environment. Checks the IR builder's
+// locals list to distinguish parameters and inner declarations from outer
+// references.
 fn ir_find_captures(b, body, params, is_expr: int) {
     refs <- [];
     work <- [];
@@ -2749,296 +1584,6 @@ fn ir_find_captures(b, body, params, is_expr: int) {
         i <- i + 1;
     }
     return caps;
-}
-
-// ── Emit arrow function (existing emitter, used by the legacy compile path) ────
-fn emit_arrow_fn(nd) {
-    // Generate unique name
-    arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
-    fn_name <- "__arrow_" + arrow_fn_counter[0];
-
-    // Detect captures (before switching scope)
-    captures <- find_captures(nd.body, nd.params, nd.is_expr);
-
-    // Register as a known function (param_count does NOT include env param).
-    // Pull user annotations from the AST (param_types_ann, ret_type_ann are
-    // present on ArrowFn as of the parser update; each defaults to mk_none()
-    // if absent). The `param_types` list tracks the working inferred type; it
-    // starts from the annotation when present, else mk_any().
-    pt <- [];
-    pt_ann <- [];
-    j <- 0;
-    while (j < len(nd.params)) {
-        ann <- mk_none();
-        if (j < len(nd.param_types_ann)) {
-            ann <- nd.param_types_ann[j];
-        }
-        push(pt_ann, ann);
-        if (ann.kind != "none") {
-            push(pt, ann);
-        } else {
-            push(pt, mk_any());
-        }
-        j <- j + 1;
-    }
-    rt_ann <- mk_none();
-    if (nd.ret_type_ann.kind != "none") { rt_ann <- nd.ret_type_ann; }
-    rt <- mk_any();
-    if (rt_ann.kind != "none") { rt <- rt_ann; }
-    push(declared_fns, {name: fn_name, param_count: len(nd.params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: pt_ann, ret_type_ann: rt_ann, is_arrow_var: false});
-
-    // Build env struct for captures (before switching emit target).
-    // Also snapshot each capture's type from the outer scope so we can
-    // restore it inside the closure scope (otherwise they default to "any"
-    // and strings-from-capture get printed as pointers).
-    env_reg <- fresh("%env");
-    capture_types <- [];
-    if (len(captures) > 0) {
-        env_sz <- fresh("%esz");
-        emit("  " + env_sz + " = mul i64 " + len(captures) + ", 8");
-        emit("  " + env_reg + " = call ptr @arena_alloc(i64 " + env_sz + ")");
-        // Store captured values into env
-        i <- 0;
-        while (i < len(captures)) {
-            push(capture_types, get_var_type(captures[i]));
-            cap_reg <- find_var(captures[i]);
-            cv <- fresh("%ecv");
-            ep <- fresh("%eep");
-            emit("  " + cv + " = load i64, ptr " + cap_reg);
-            emit("  " + ep + " = getelementptr i64, ptr " + env_reg + ", i64 " + i);
-            emit("  store i64 " + cv + ", ptr " + ep);
-            i <- i + 1;
-        }
-    }
-
-    // Switch to deferred emit buffer
-    emit_target[0] <- 1;
-
-    // Save compilation state
-    old_vars <- alloc_vars[0];
-    old_types <- var_types[0];
-    old_layouts <- struct_layouts[0];
-    old_arr_types <- array_elem_types[0];
-    old_fn <- current_fn[0];
-    alloc_vars[0] <- [];
-    var_types[0] <- [];
-    struct_layouts[0] <- [];
-    array_elem_types[0] <- [];
-    current_fn[0] <- fn_name;
-
-    // Build param list (env is first param, then user params)
-    params_str <- "i64 %env.arg";
-    i <- 0;
-    while (i < len(nd.params)) {
-        params_str <- params_str + ", i64 %" + nd.params[i] + ".arg";
-        i <- i + 1;
-    }
-
-    emit("define i64 @" + fn_name + "(" + params_str + ") {");
-    emit("entry:");
-
-    // Collect and alloca variables
-    if (nd.is_expr = false) {
-        vars <- [];
-        collect_vars(nd.body, vars);
-        i <- 0;
-        while (i < len(nd.params)) {
-            if (!var_exists(vars, nd.params[i])) { push(vars, nd.params[i]); }
-            i <- i + 1;
-        }
-        // Add captured vars as local allocas too
-        i <- 0;
-        while (i < len(captures)) {
-            if (!var_exists(vars, captures[i])) { push(vars, captures[i]); }
-            i <- i + 1;
-        }
-        i <- 0;
-        while (i < len(vars)) {
-            reg <- "%" + vars[i];
-            push(alloc_vars[0], {name: vars[i], reg: reg});
-            emit("  " + reg + " = alloca i64");
-            i <- i + 1;
-        }
-    } else {
-        // Expression body — alloca params + captures
-        i <- 0;
-        while (i < len(nd.params)) {
-            reg <- "%" + nd.params[i];
-            push(alloc_vars[0], {name: nd.params[i], reg: reg});
-            emit("  " + reg + " = alloca i64");
-            i <- i + 1;
-        }
-        i <- 0;
-        while (i < len(captures)) {
-            reg <- "%" + captures[i];
-            push(alloc_vars[0], {name: captures[i], reg: reg});
-            emit("  " + reg + " = alloca i64");
-            i <- i + 1;
-        }
-    }
-    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
-    emit("  %_for_idx = alloca i64");
-
-    // Store params into allocas
-    i <- 0;
-    while (i < len(nd.params)) {
-        emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
-        set_var_type(nd.params[i], mk_any());
-        i <- i + 1;
-    }
-
-    // Load captured variables from env
-    if (len(captures) > 0) {
-        emit("  %env_ptr = inttoptr i64 %env.arg to ptr");
-        i <- 0;
-        while (i < len(captures)) {
-            cep <- fresh("%cep");
-            cval <- fresh("%cval");
-            emit("  " + cep + " = getelementptr i64, ptr %env_ptr, i64 " + i);
-            emit("  " + cval + " = load i64, ptr " + cep);
-            emit("  store i64 " + cval + ", ptr %" + captures[i]);
-            // Preserve type from enclosing scope (snapshotted before the scope
-            // switch). Falls back to mk_any() when the outer scope didn't have
-            // a type for the var (shouldn't normally happen for a valid capture).
-            ct <- mk_any();
-            if (i < len(capture_types)) { ct <- capture_types[i]; }
-            if (ct.kind = "none") { ct <- mk_any(); }
-            set_var_type(captures[i], ct);
-            i <- i + 1;
-        }
-    }
-
-    // Emit body
-    if (nd.is_expr = false) {
-        // Run type inference on body to populate var_types
-        infer_body(nd.body);
-        emit_block(nd.body);
-        emit("  ret i64 0");
-    } else {
-        vt <- emit_expr(nd.body);
-        emit("  ret i64 " + vt.reg);
-        set_fn_ret_type(fn_name, parse_type_ann(vt.type), vt.fields);
-    }
-
-    emit("}");
-    emit("");
-
-    // Restore state
-    alloc_vars[0] <- old_vars;
-    var_types[0] <- old_types;
-    struct_layouts[0] <- old_layouts;
-    array_elem_types[0] <- old_arr_types;
-    current_fn[0] <- old_fn;
-
-    // Switch back to normal emit
-    emit_target[0] <- 0;
-
-    // Build closure pair: [fn_ptr, env_ptr]
-    pair <- fresh("%cpair");
-    emit("  " + pair + " = call ptr @arena_alloc(i64 16)");
-    fn_as_i64 <- fresh("%cfn");
-    emit("  " + fn_as_i64 + " = ptrtoint ptr @" + fn_name + " to i64");
-    emit("  store i64 " + fn_as_i64 + ", ptr " + pair);
-    env_slot <- fresh("%cesl");
-    emit("  " + env_slot + " = getelementptr i64, ptr " + pair + ", i64 1");
-    if (len(captures) > 0) {
-        env_as_i64 <- fresh("%cei");
-        emit("  " + env_as_i64 + " = ptrtoint ptr " + env_reg + " to i64");
-        emit("  store i64 " + env_as_i64 + ", ptr " + env_slot);
-    } else {
-        emit("  store i64 0, ptr " + env_slot);
-    }
-    pair_as_i64 <- fresh("%cpi");
-    emit("  " + pair_as_i64 + " = ptrtoint ptr " + pair + " to i64");
-    return {reg: pair_as_i64, type: "fn", fields: fn_name};
-}
-
-// ── Emit function ───────────────────────
-
-fn emit_function(nd) {
-    // Build param list
-    params_str <- "";
-    i <- 0;
-    while (i < len(nd.params)) {
-        if (i > 0) { params_str <- params_str + ", "; }
-        params_str <- params_str + "i64 %" + nd.params[i] + ".arg";
-        i <- i + 1;
-    }
-
-    emit("define i64 @" + nd.name + "(" + params_str + ") {");
-    emit("entry:");
-
-    // Save old vars and types, start fresh for this function
-    old_vars <- alloc_vars[0];
-    old_types <- var_types[0];
-    old_layouts <- struct_layouts[0];
-    old_arr_types <- array_elem_types[0];
-    alloc_vars[0] <- [];
-    var_types[0] <- [];
-    struct_layouts[0] <- [];
-    array_elem_types[0] <- [];
-    old_fn <- current_fn[0];
-    current_fn[0] <- nd.name;
-
-    // Collect all variables used in body
-    vars <- [];
-    collect_vars(nd.body, vars);
-
-    // Add params as vars
-    i <- 0;
-    while (i < len(nd.params)) {
-        if (!var_exists(vars, nd.params[i])) {
-            push(vars, nd.params[i]);
-        }
-        i <- i + 1;
-    }
-
-    // Alloca all variables
-    i <- 0;
-    while (i < len(vars)) {
-        reg <- "%" + vars[i];
-        push(alloc_vars[0], {name: vars[i], reg: reg});
-        emit("  " + reg + " = alloca i64");
-        i <- i + 1;
-    }
-
-    // Also alloca _for_idx if any for-in loops
-    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
-    emit("  %_for_idx = alloca i64");
-
-    // Store params into allocas with types from call-site analysis
-    fi_info <- find_fn(nd.name);
-    i <- 0;
-    while (i < len(nd.params)) {
-        emit("  store i64 %" + nd.params[i] + ".arg, ptr %" + nd.params[i]);
-        if (fi_info != false && i < len(fi_info.param_types)) {
-            set_var_type(nd.params[i], fi_info.param_types[i]);
-        } else {
-            set_var_type(nd.params[i], mk_any());
-        }
-        i <- i + 1;
-    }
-
-    // Run type inference on body to populate var_types before emission
-    infer_body(nd.body);
-
-    // Run type checker against user annotations
-    check_body(nd.body);
-
-    // Emit body
-    emit_block(nd.body);
-
-    // Default return
-    emit("  ret i64 0");
-    emit("}");
-    emit("");
-
-    // Restore vars and types
-    alloc_vars[0] <- old_vars;
-    var_types[0] <- old_types;
-    struct_layouts[0] <- old_layouts;
-    array_elem_types[0] <- old_arr_types;
-    current_fn[0] <- old_fn;
 }
 
 // ── Emit arena allocator helper ─────────
@@ -3282,8 +1827,7 @@ fn emit_substring_helper() {
 // ── Emit strcat helper ─────────────────
 // Used by the IR translator's `+` of strings (op = "strcat" in the IR).
 // Each operand is run through @arrow_to_str first, so this works for any
-// combination of str / int / any operands. Matches the existing emitter's
-// behaviour, which dispatches similar cases at compile-time.
+// combination of str / int / any operands without compile-time dispatch.
 //
 // Signature: i64 @arrow_strcat(i64 %li, i64 %ri)
 fn emit_strcat_helper() {
@@ -3403,186 +1947,6 @@ fn emit_input_helper() {
     emit("");
 }
 
-// ── Main compilation ────────────────────
-
-fn compile(stmts) {
-    // Preamble
-    emit("; Arrow Lang -- compiled by self-hosted compiler");
-    emit("");
-
-    // External declarations
-    emit("declare i32 @printf(ptr, ...)");
-    emit("declare i32 @puts(ptr)");
-    emit("declare i32 @fflush(ptr)");
-    emit("declare ptr @malloc(i64)");
-    emit("declare ptr @realloc(ptr, i64)");
-    emit("declare void @free(ptr)");
-    emit("declare i64 @strlen(ptr)");
-    emit("declare ptr @strcpy(ptr, ptr)");
-    emit("declare ptr @strcat(ptr, ptr)");
-    emit("declare i32 @strcmp(ptr, ptr)");
-    emit("declare i32 @system(ptr)");
-    emit("declare void @exit(i32)");
-    emit("declare ptr @fopen(ptr, ptr)");
-    emit("declare i32 @fclose(ptr)");
-    emit("declare i64 @fread(ptr, i64, i64, ptr)");
-    emit("declare i64 @fwrite(ptr, i64, i64, ptr)");
-    emit("declare i32 @fseek(ptr, i64, i32)");
-    emit("declare i64 @ftell(ptr)");
-    emit("declare ptr @fgets(ptr, i32, ptr)");
-    if (is_win[0] = 1) {
-        emit("declare ptr @__acrt_iob_func(i32)");
-    } else if (is_mac[0] = 1) {
-        emit("@__stdinp = external global ptr");
-    } else {
-        emit("@stdin = external global ptr");
-    }
-    emit("");
-
-
-    // Pre-scan functions
-    scan_fns(stmts);
-
-
-    // Scan call sites to infer parameter types
-    scan_call_sites(stmts);
-
-
-    // Pre-scan top-level variables → emit as globals
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node != "FnDecl") {
-            scan_globals(stmts[i]);
-        }
-        i <- i + 1;
-    }
-
-
-    // Emit global variable declarations
-    i <- 0;
-    while (i < len(global_vars)) {
-        emit("@g_" + global_vars[i] + " = global i64 0");
-        i <- i + 1;
-    }
-    emit("");
-
-
-    // Emit user functions first
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node = "FnDecl") {
-            emit_function(stmts[i]);
-        }
-        i <- i + 1;
-    }
-
-
-    // Emit helpers
-    emit_arena_helper();
-    emit_safe_strcmp_helper();
-    emit_push_helper();
-    emit_pop_helper();
-    emit_keys_helper();
-    emit_struct_find_helper();
-    emit_itoa_helper();
-    emit_read_file_helper();
-    emit_write_file_helper();
-    emit_append_file_helper();
-    emit_input_helper();
-
-    // Emit main with argc/argv for command line arg support
-    emit("@g_argc = global i64 0");
-    emit("@g_argv = global i64 0");
-    emit("define i64 @main(i32 %argc, ptr %argv) {");
-    emit("entry:");
-    // Store argc and argv as globals
-    emit("  %argc64 = sext i32 %argc to i64");
-    emit("  store i64 %argc64, ptr @g_argc");
-    emit("  %argv64 = ptrtoint ptr %argv to i64");
-    emit("  store i64 %argv64, ptr @g_argv");
-    emit("  call void @arena_init(i64 268435456)");
-
-
-    // Collect all top-level vars
-    vars <- [];
-    top_stmts <- [];
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node != "FnDecl") {
-            push(top_stmts, stmts[i]);
-        }
-        i <- i + 1;
-    }
-    collect_vars(top_stmts, vars);
-
-
-    // Alloca all (skip globals — they're already emitted)
-    alloc_vars[0] <- [];
-    var_types[0] <- [];
-    struct_layouts[0] <- [];
-    array_elem_types[0] <- [];
-    j <- 0;
-    while (j < len(vars)) {
-        if (!is_global(vars[j])) {
-            reg <- "%" + vars[j];
-            push(alloc_vars[0], {name: vars[j], reg: reg});
-            emit("  " + reg + " = alloca i64");
-        }
-        j <- j + 1;
-    }
-    push(alloc_vars[0], {name: "_for_idx", reg: "%_for_idx"});
-    emit("  %_for_idx = alloca i64");
-
-
-    // Run type inference on top-level statements to populate var_types
-    current_fn[0] <- "";
-    infer_body(top_stmts);
-
-    // Run type checker on top-level
-    check_body(top_stmts);
-
-    // Emit top-level statements (skip fn decls)
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node != "FnDecl") {
-            emit_stmt(stmts[i]);
-        }
-        i <- i + 1;
-    }
-
-
-    emit("  ret i64 0");
-    emit("}");
-    emit("");
-
-    // Emit deferred arrow functions
-    i <- 0;
-    while (i < len(deferred_ir)) {
-        if (str_len(deferred_ir[i]) > 0) {
-            push(ir_lines, deferred_ir[i]);
-        }
-        i <- i + 1;
-    }
-
-    // Emit string constants
-    // Format string for integers (with newline)
-    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
-    // File mode strings
-    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
-    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
-    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
-
-    i <- 0;
-    while (i < len(str_constants)) {
-        sc <- str_constants[i];
-        escaped <- ir_escape(sc.text);
-        slen <- ir_str_len(sc.text);
-        emit("@" + sc.id + " = private constant [" + slen + " x i8] c\"" + escaped + "\\00\"");
-        i <- i + 1;
-    }
-}
-
-
 // ═══════════════════════════════════════════
 //  MAIN — Read, lex, parse, compile, write, run clang
 // ═══════════════════════════════════════════
@@ -3610,216 +1974,15 @@ if (rc_detect = 0) {
     exec_cmd("rm -f /tmp/.arrow_uname 2>/dev/null");
 }
 
-if (args() < 1) {
-    print("Usage: arrow <file.arrow> [-o output]");
-    print("  Compiles Arrow Lang source to a native executable.");
-}
-
-// Phase-1 IR acceptance: build a tiny module by hand, render, print.
-// Invoked as `arrow --ir-test`. The dispatch lives at the very end of the
-// file so that all ir_* helper fns have been declared by lang.py's linear
-// execution before run_ir_test is called.
-fn run_ir_test() {
-    m <- ir_module();
-    f <- ir_function("add_one", [{name: "x", type: mk_int()}], mk_int());
-    bb <- ir_block("entry");
-    x_slot <- ir_reg("%x", mk_int());
-    ir_push_inst(bb, ii_alloca("%x", mk_int()));
-    x_arg <- ir_reg("%x.arg", mk_int());
-    ir_push_inst(bb, ii_store(x_arg, x_slot));
-    ld <- ir_reg("%ld", mk_int());
-    ir_push_inst(bb, ii_load("%ld", mk_int(), x_slot));
-    res <- ir_reg("%res", mk_int());
-    ir_push_inst(bb, ii_add("%res", ld, ir_const_int(1)));
-    ir_set_terminator(bb, ii_ret(res));
-    ir_fn_add_block(f, bb);
-    ir_mod_add_function(m, f);
-    ir_mod_add_str(m, "hello");
-    ir_mod_add_global(m, "counter", mk_int());
-    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
-    print(ir_render_module(m));
-}
-
-// Phase-2 IR acceptance: hand-build is_digit via IR, render it plus a main
-// that exercises it. The output is a self-contained LLVM module that can
-// be fed to clang. Same IR shape as the existing emitter in principle;
-// register names may differ but semantics are equivalent.
-fn build_is_digit_ir() {
-    f <- ir_function("is_digit", [{name: "c", type: mk_int()}], mk_int());
-
-    // entry: set up c's slot, allocate and zero out the && result slot,
-    // evaluate the LHS (c >= 48), branch on truthiness.
-    b0 <- ir_block("entry");
-    ir_push_inst(b0, ii_alloca("%c", mk_int()));
-    ir_push_inst(b0, ii_store(ir_reg("%c.arg", mk_int()), ir_reg("%c", mk_int())));
-    ir_push_inst(b0, ii_alloca("%and_res", mk_int()));
-    ir_push_inst(b0, ii_store(ir_const_int(0), ir_reg("%and_res", mk_int())));
-    ir_push_inst(b0, ii_load("%ld1", mk_int(), ir_reg("%c", mk_int())));
-    ir_push_inst(b0, ii_icmp("%cmp1", "sge", ir_reg("%ld1", mk_int()), ir_const_int(48)));
-    ir_set_terminator(b0, ii_cond_br("%br1", ir_reg("%cmp1", mk_int()), "and_r1", "and_e2"));
-    ir_fn_add_block(f, b0);
-
-    // and_r1: the LHS was true, evaluate the RHS (c <= 57) and store it.
-    b1 <- ir_block("and_r1");
-    ir_push_inst(b1, ii_load("%ld2", mk_int(), ir_reg("%c", mk_int())));
-    ir_push_inst(b1, ii_icmp("%cmp2", "sle", ir_reg("%ld2", mk_int()), ir_const_int(57)));
-    ir_push_inst(b1, ii_store(ir_reg("%cmp2", mk_int()), ir_reg("%and_res", mk_int())));
-    ir_set_terminator(b1, ii_br("and_e2"));
-    ir_fn_add_block(f, b1);
-
-    // and_e2: load the joined result and return it.
-    b2 <- ir_block("and_e2");
-    ir_push_inst(b2, ii_load("%result", mk_int(), ir_reg("%and_res", mk_int())));
-    ir_set_terminator(b2, ii_ret(ir_reg("%result", mk_int())));
-    ir_fn_add_block(f, b2);
-
-    return f;
-}
-
-fn run_ir_is_digit() {
-    m <- ir_module();
-    ir_mod_add_function(m, build_is_digit_ir());
-
-    // Append a main that calls is_digit with several inputs and prints results.
-    main <- ir_function("main", [], mk_int());
-    mb <- ir_block("entry");
-    // Test 48 ('0'): expect 1
-    ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
-    ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
-    // Test 47 ('/'): expect 0
-    ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
-    ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
-    // Test 57 ('9'): expect 1
-    ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
-    ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
-    // Test 58 (':'): expect 0
-    ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
-    ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
-    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
-    ir_fn_add_block(main, mb);
-    ir_mod_add_function(m, main);
-
-    ir_mod_add_str_raw(m, "fmt", "%lld\n");
-    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
-
-    print(ir_render_module(m));
-}
-
-ir_test_mode <- [false];
-if (args() > 0) {
-    if (args(0) = "--ir-test") {
-        ir_test_mode[0] <- true;
-        // Call site moved to end-of-file. Setting the flag here is enough
-        // to skip the real compile below.
-    }
-    if (args(0) = "--ir-is-digit") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-from-ast") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-cluster1") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-cluster2") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-cluster3") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-cluster4") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-translate-fns") {
-        ir_test_mode[0] <- true;
-    }
-    if (args(0) = "--ir-self") {
-        ir_test_mode[0] <- true;
-    }
-}
-
-if (args() > 0 && !ir_test_mode[0]) {
-    input_file <- args(0);
-
-    // Parse -o flag
-    out_name <- "";
-    if (args() > 2) {
-        if (args(1) = "-o") {
-            out_name <- args(2);
-        }
-    }
-
-    // Derive base name from input: foo.arrow -> foo
-    base_name <- input_file;
-    if (str_len(input_file) > 6) {
-        suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
-        if (suffix = ".arrow") {
-            base_name <- substring(input_file, 0, str_len(input_file) - 6);
-        }
-    }
-
-    // Set output filenames (platform-dependent extension)
-    if (out_name != "") {
-        exe_file <- out_name;
-        ll_base <- out_name;
-        // Strip .exe if present
-        if (str_len(out_name) > 4) {
-            ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
-            if (ext = ".exe") {
-                ll_base <- substring(out_name, 0, str_len(out_name) - 4);
-            }
-        }
-        ll_file <- ll_base + ".ll";
-    } else {
-        ll_file <- base_name + ".ll";
-        if (is_win[0] = 1) {
-            exe_file <- base_name + ".exe";
-        } else {
-            exe_file <- base_name;
-        }
-    }
-
-    source <- read_file(input_file);
-
-    toks <- tokenize(source);
-    pos[0] <- 0;
-    ast <- pp();
-    src_filename[0] <- input_file;
-    compile(ast);
-
-    if (len(type_errors) > 0) {
-        print_type_errors();
-    } else {
-        write_ir_lines(ll_file);
-
-        // Build clang command (platform-dependent flags)
-        if (is_win[0] = 1) {
-            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
-        } else {
-            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
-        }
-        rc <- exec_cmd(clang_cmd);
-        if (rc = 0) {
-            print("Compiled " + exe_file + " successfully!");
-            // Clean up .ll file (platform-dependent delete command)
-            if (is_win[0] = 1) {
-                exec_cmd("del " + ll_file);
-            } else {
-                exec_cmd("rm " + ll_file);
-            }
-        } else {
-            print("Clang failed with exit code " + rc);
-            print("IR written to " + ll_file);
-        }
-    }
-}
-
 // ═══════════════════════════════════════════
-//  ARROW IR (Phase 1 — data structures & renderer)
+//  ARROW IR — data structures & renderer
 //
-//  Purpose: sit alongside the existing string-emitting codegen. Nothing in
-//  this section is wired into emit_* yet. Phase 2 will migrate one function
-//  through this pipeline as proof-of-concept.
+//  The compiler's intermediate representation. User functions and the
+//  synthetic __main_logic wrapper are translated through this layer; an
+//  LLVM text renderer at the bottom of the section produces the final
+//  `.ll` file. The shapes are designed to allow a second backend (e.g.
+//  Cranelift, a hand-rolled x86_64 emitter) to consume the same IR
+//  module without touching the AST.
 //
 //  Shapes (all are plain Arrow structs):
 //
@@ -3861,8 +2024,7 @@ if (args() > 0 && !ir_test_mode[0]) {
 //  non-false terminator at render time. During construction the field can be
 //  false; set_terminator(bb, ...) fills it.
 //
-//  Opcode set (rendered by render_llvm; each backend will implement its own
-//  lowering in a future phase):
+//  Opcode set (each backend implements its own lowering):
 //    Arithmetic (int):   add sub mul sdiv srem neg
 //    Compare (int):      icmp_eq icmp_ne icmp_slt icmp_sle icmp_sgt icmp_sge
 //    String-aware cmp:   strcmp_eq strcmp_ne  (higher-level than icmp)
@@ -3878,8 +2040,8 @@ if (args() > 0 && !ir_test_mode[0]) {
 //                        ptrtoint inttoptr  (only used by the low-level slice of the IR)
 //
 //  The io_* and ptr*/* ops are placeholders: they may become regular `call`s
-//  to externs when we settle the runtime-vs-IR split. For now they're first-
-//  class so each backend can decide.
+//  to externs when the runtime-vs-IR split is fully settled. For now they're
+//  first-class so each backend can decide.
 // ═══════════════════════════════════════════
 
 // ── Value constructors ──────────────────────────────
@@ -4050,17 +2212,16 @@ fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, mk_str(), [l, r
 fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, mk_int(), [s],    false); }
 fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, mk_str(), [n], false); }
 
-// Cluster-3 string ops. Each one's runtime equivalent is what the existing
-// emitter inlines; the renderer here mirrors that codegen so behaviour is
-// byte-for-byte identical.
+// String ops. Each one is lowered inline by the LLVM renderer to match
+// what the runtime expects.
 fn ii_char_code(dst: str, s)        { return ir_inst("char_code", dst, mk_int(), [s], false); }
 fn ii_char_at(dst: str, s, idx)     { return ir_inst("char_at",   dst, mk_str(), [s, idx], false); }
 fn ii_from_char_code(dst: str, n)   { return ir_inst("from_char_code", dst, mk_str(), [n], false); }
-// substring is delegated to a runtime helper @arrow_substring (defined alongside
-// the other helpers) — keeps the IR linear instead of generating a copy loop.
+// substring is delegated to a runtime helper @arrow_substring — keeps the
+// IR linear instead of generating a copy loop.
 fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, mk_str(), [s, st, ed], false); }
 
-// IO ops — each calls into the existing arrow_* runtime helpers.
+// IO ops — each calls into the corresponding arrow_* runtime helper.
 fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, mk_str(), [path], false); }
 fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, mk_int(), [p, c], false); }
 fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, mk_int(), [p, c], false); }
@@ -4148,7 +2309,10 @@ fn ii_print_str(ptr_reg: str, val) {
     // Caller's responsibility to make it unique within the function.
     return ir_inst("print_str", ptr_reg, mk_none(), [val], false);
 }
-fn ii_print(val)                { return ir_void_inst("print", [val], false); }  // legacy/placeholder; prefer the typed variants
+// Generic print op — translator code prefers the typed variants
+// (ii_print_int, ii_print_str), but ii_print stays around as a single hook
+// for backends that want one entry point.
+fn ii_print(val)                { return ir_void_inst("print", [val], false); }
 
 // Logical NOT: dst = (operand == 0) ? 1 : 0, i64. Used by UnaryOp("!").
 fn ii_lnot(dst: str, v)         { return ir_inst("lnot", dst, mk_int(), [v], false); }
@@ -4254,7 +2418,8 @@ fn ir_render_inst(inst): str {
     }
     if (op = "print") {
         // Lowering placeholder: actual print has type-dependent code paths.
-        // For Phase 1 we just emit a call to a hypothetical arrow_print.
+        // The translator routes user prints through print_int / print_str
+        // directly; this op exists for backends that prefer a single hook.
         return "call void @arrow_print(" + ir_render_typed_operand(inst.operands[0]) + ")";
     }
     if (op = "print_int") {
@@ -4312,9 +2477,10 @@ fn ir_render_inst(inst): str {
     }
 
     // ── Collection ops ──
-    // Each lowering matches the layout used by the existing emitter so the
-    // runtime helpers (@arrow_push, @arrow_pop, @arrow_keys, @arrow_struct_find,
-    // @arena_alloc, @malloc) can be linked verbatim.
+    // Each lowering uses the same layout as the runtime helpers
+    // (@arrow_push, @arrow_pop, @arrow_keys, @arrow_struct_find,
+    // @arena_alloc, @malloc), which are emitted as inline LLVM IR text
+    // alongside the user code.
 
     if (op = "array_new") {
         // operands = [elem0, elem1, ...]
@@ -4516,8 +2682,8 @@ fn ir_render_inst(inst): str {
     }
 
     // ── Closure ops ──
-    // Layout matches the existing emitter: heap pair [fn_ptr, env_ptr], where
-    // env_ptr points at an arena-allocated array of i64s holding captures.
+    // Layout: heap pair [fn_ptr, env_ptr], where env_ptr points at an
+    // arena-allocated array of i64s holding captures.
     if (op = "closure_make") {
         // operands = captured Values (already evaluated by the caller).
         // extra    = fn_name (the top-level IR Function for this closure).
@@ -4647,11 +2813,10 @@ fn ir_render_module(m): str {
     return s;
 }
 
-// Render a Module by pushing line-by-line into ir_lines (the existing emitter's
-// line buffer). Avoids the O(N²) string-concat blowup that ir_render_module
-// hits for large modules like compiler.arrow itself. Output is functionally
-// identical — just streamed through ir_lines instead of returned as one big
-// string.
+// Render a Module by pushing line-by-line into ir_lines. Avoids the O(N²)
+// string-concat blowup that ir_render_module hits for large modules like
+// compiler.arrow itself. Output is functionally identical — just streamed
+// through ir_lines instead of returned as one big string.
 fn ir_render_module_to_lines(m) {
     // Externs
     i <- 0;
@@ -4725,7 +2890,7 @@ fn ir_render_block_to_lines(bb) {
 }
 
 // ═══════════════════════════════════════════
-//  ARROW IR — Phase 3: AST → IR translator
+//  ARROW IR — AST → IR translator
 //
 //  A Builder struct carries state across an in-progress function build:
 //    fn           — the IR Function being populated
@@ -4734,9 +2899,9 @@ fn ir_render_block_to_lines(bb) {
 //    tmp_counter  — boxed int for fresh temporary register names
 //    block_counter— boxed int for fresh basic-block labels
 //
-//  The emitter covers the subset of AST nodes needed by is_digit:
-//  NumberLit, Identifier, BinOp (comparisons + &&), ReturnStmt, FnDecl.
-//  Each additional node is a small incremental extension in later phases.
+//  The translator covers every AST node the language produces; each
+//  ir_emit_stmt / ir_emit_expr branch maps one source-level construct
+//  onto a sequence of IR instructions appended to the current block.
 // ═══════════════════════════════════════════
 
 fn ir_builder_new(f, entry_bb, mod) {
@@ -4880,9 +3045,8 @@ fn ir_emit_expr(b, nd) {
         return ir_const_int(0);
     }
     if (nd.node = "Identifier") {
-        // Locals shadow globals — same as the existing emitter's find_var
-        // lookup. Scan builder's locals first; only treat as global if not
-        // found locally.
+        // Locals shadow globals: scan the builder's locals first; only fall
+        // back to a global @g_<n> load if the name isn't found locally.
         is_loc <- false;
         j <- 0;
         while (j < len(b.locals)) {
@@ -5110,7 +3274,6 @@ fn ir_emit_expr(b, nd) {
         // Indirect call via variable: if `nm` isn't a known top-level fn but
         // matches a local var or a global, treat it as holding a closure pair
         // value (e.g. assigned from another fn that returns a closure).
-        // Mirrors the existing emitter's `find_var(nm) != ""` path.
         fi_lookup <- find_fn(nm);
         is_known_fn <- false;
         if (fi_lookup != false) {
@@ -5147,8 +3310,7 @@ fn ir_emit_expr(b, nd) {
             }
         }
 
-        // Generic user-function call.
-        // Evaluate arguments left-to-right (matches existing emitter).
+        // Generic user-function call. Arguments are evaluated left-to-right.
         args <- [];
         i <- 0;
         while (i < len(nd.args)) {
@@ -5223,9 +3385,7 @@ fn ir_emit_expr(b, nd) {
         //    and the [fn_ptr, env_ptr] pair. Returns the pair pointer.
         captures <- ir_find_captures(b, nd.body, nd.params, nd.is_expr);
 
-        // Mint a unique name. arrow_fn_counter is the same global the existing
-        // emitter uses; in IR-test mode the existing emitter never runs so
-        // there's no collision risk.
+        // Mint a unique name for the closure's IR function.
         arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
         afn_name <- "__arrow_" + arrow_fn_counter[0];
 
@@ -5480,10 +3640,10 @@ fn ir_emit_binop(b, nd) {
     rhs <- ir_emit_expr(b, nd.right);
 
     if (ir_is_cmp_op(op)) {
-        // Like the existing emitter, we use @arrow_safe_strcmp when either
-        // side is statically a str — else integer icmp. For "any vs any" we
-        // also route through strcmp because the safe variant tolerates
-        // either pointer or int operands (matches existing behaviour).
+        // Use @arrow_safe_strcmp when either side is statically a str —
+        // otherwise integer icmp. For "any vs any" we also route through
+        // strcmp because the safe variant tolerates either pointer or int
+        // operands.
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str" || (lt.kind = "any" && rt.kind = "any")) {
@@ -5500,8 +3660,7 @@ fn ir_emit_binop(b, nd) {
         // typeof_expr knows `+` of any-strings returns str; for the IR layer
         // this means emitting a strcat (call to @arrow_strcat) rather than
         // an integer add. Mixed str+int is supported by converting the int
-        // operand to a string via int_to_str (mirrors the existing emitter's
-        // behaviour where ensure_str does the same).
+        // operand to a string via int_to_str.
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str") {
@@ -5567,11 +3726,11 @@ fn ir_emit_stmt(b, stmt) {
         // sites returns the right kind (str / int / array etc).
         if (stmt.expr.node = "ArrowFn") {
             ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
-            // Both the existing emitter and our type checker consult find_fn(varname);
-            // make sure that entry's ret_type matches what the body actually returns.
+            // The type checker consults find_fn(varname); make sure that
+            // entry's ret_type matches what the body actually returns.
             set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
-            // Also wire up the var → mangled-name map (some codegen paths
-            // consult get_arrow_fn_name to find param-type info).
+            // Wire up var → mangled-name map (param-type lookups go through
+            // get_arrow_fn_name to find the underlying IR function).
             set_arrow_fn_var(stmt.name, v.arrow_fn_name);
         }
         return 0;
@@ -5844,6 +4003,9 @@ fn emit_function_via_ir(nd, mod) {
     // Run type inference on body to populate var_types before emission.
     infer_body(nd.body);
 
+    // Type-check the body against any user annotations.
+    check_body(nd.body);
+
     // Prologue: allocate each param's local slot and store the arg into it.
     i <- 0;
     while (i < len(nd.params)) {
@@ -5856,11 +4018,10 @@ fn emit_function_via_ir(nd, mod) {
     // For non-main functions, pre-populate b.locals with every name assigned
     // to in the body (including for-in loop vars). This ensures that any
     // shadowed-by-name globals resolve to the local slot when read, not the
-    // global. The legacy emitter does the same via its collect_vars pre-pass
-    // and upfront alloca emission. Without this, a body that reads `i`
-    // before assigning it would load from @g_i — even if a later Assignment
-    // creates the local. (In __main_logic, top-level global names should
-    // resolve to globals, so we skip this step there.)
+    // global — without this, a body that reads `i` before assigning it would
+    // load from @g_i even if a later Assignment creates the local. (In
+    // __main_logic, top-level global names should resolve to globals, so we
+    // skip this step there.)
     if (nd.name != "__main_logic") {
         body_vars <- [];
         collect_vars(nd.body, body_vars);
@@ -5896,367 +4057,22 @@ fn emit_function_via_ir(nd, mod) {
     return f;
 }
 
-// Phase-3 acceptance: translate every FnDecl in `stmts` through the AST→IR
-// translator and add them all to the module. If the source defines a
-// function called "main_logic", wrap a real main() around it that calls
-// main_logic and returns 0. Otherwise, append the original is_digit-style
-// main for backward compatibility.
-fn run_ir_from_ast(stmts) {
-    // Run the same pre-passes as compile() does so that param types and
-    // call-site inference are populated before we translate each function.
-    scan_fns(stmts);
-    scan_call_sites(stmts);
-
-    m <- ir_module();
-
-    // Translate every FnDecl in source order.
-    has_main_logic <- false;
-    has_is_digit <- false;
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node = "FnDecl") {
-            ir_mod_add_function(m, emit_function_via_ir(stmts[i], m));
-            if (stmts[i].name = "main_logic") { has_main_logic <- true; }
-            if (stmts[i].name = "is_digit")   { has_is_digit <- true; }
-        }
-        i <- i + 1;
-    }
-
-    // Add an LLVM main that drives the translated code.
-    main <- ir_function("main", [], mk_int());
-    mb <- ir_block("entry");
-    if (has_main_logic) {
-        ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
-    } else {
-        if (!has_is_digit) {
-            print("; no main_logic or is_digit found");
-            return 0;
-        }
-        // is_digit acceptance: call with 48, 47, 57, 58 and printf each result.
-        ir_push_inst(mb, ii_call("%r1", mk_int(), "is_digit", [ir_const_int(48)]));
-        ir_push_inst(mb, ii_call("%p1", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r1", mk_int())]));
-        ir_push_inst(mb, ii_call("%r2", mk_int(), "is_digit", [ir_const_int(47)]));
-        ir_push_inst(mb, ii_call("%p2", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r2", mk_int())]));
-        ir_push_inst(mb, ii_call("%r3", mk_int(), "is_digit", [ir_const_int(57)]));
-        ir_push_inst(mb, ii_call("%p3", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r3", mk_int())]));
-        ir_push_inst(mb, ii_call("%r4", mk_int(), "is_digit", [ir_const_int(58)]));
-        ir_push_inst(mb, ii_call("%p4", mk_int(), "printf", [ir_const_str_raw("fmt"), ir_reg("%r4", mk_int())]));
-    }
-    ir_set_terminator(mb, ii_ret(ir_const_int(0)));
-    ir_fn_add_block(main, mb);
-    ir_mod_add_function(m, main);
-
-    // Externs and string-table preamble. The print_int op references @fmt_int,
-    // and (for is_digit's main) we use @fmt directly. Both point at "%lld\n".
-    // print_str uses puts which doesn't need a format.
-    ir_mod_add_str_raw(m, "fmt", "%lld\n");
-    ir_mod_add_str_raw(m, "fmt_int", "%lld\n");
-    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
-    ir_mod_add_extern(m, "puts", [mk_ptr()], mk_i32(), 0);
-    ir_mod_add_extern(m, "fflush", [mk_ptr()], mk_i32(), 0);
-
-    print(ir_render_module(m));
-}
-
-// Phase-3 helper used by cluster-2 / cluster-3 acceptance: build IR from
-// `stmts` and append the runtime helpers (arrow_push, arrow_pop, arrow_keys,
-// arena_alloc, etc.) by calling the existing emit_*_helper functions which
-// write to ir_lines. The combined output is a self-contained LLVM module
-// clang can compile.
-fn run_ir_with_runtime(stmts) {
-    scan_fns(stmts);
-    scan_call_sites(stmts);
-
-    m <- ir_module();
-
-    // Translate every FnDecl
-    has_main_logic <- false;
-    i <- 0;
-    while (i < len(stmts)) {
-        if (stmts[i].node = "FnDecl") {
-            ir_mod_add_function(m, emit_function_via_ir(stmts[i], m));
-            if (stmts[i].name = "main_logic") { has_main_logic <- true; }
-        }
-        i <- i + 1;
-    }
-    // Only emit the LLVM main wrapper when main_logic is defined. For
-    // --ir-translate-fns mode (run on real source files like compiler.arrow
-    // which don't have main_logic) this lets us still get the FnDecl IR out.
-    if (has_main_logic) {
-        main <- ir_function("main", [], mk_int());
-        mb <- ir_block("entry");
-        ir_push_inst(mb, ii_call("%ml", mk_int(), "main_logic", []));
-        ir_set_terminator(mb, ii_ret(ir_const_int(0)));
-        ir_fn_add_block(main, mb);
-        ir_mod_add_function(m, main);
-    }
-
-    // Module-level constants the IR ops reference.
-    ir_mod_add_str_raw(m, "fmt_int", "%lld\n");
-    ir_mod_add_extern(m, "printf", [mk_ptr()], mk_i32(), 1);
-    ir_mod_add_extern(m, "puts", [mk_ptr()], mk_i32(), 0);
-    ir_mod_add_extern(m, "fflush", [mk_ptr()], mk_i32(), 0);
-
-    // Render the IR portion. The renderer emits its own externs and string
-    // table — but we ALSO need the externs the runtime helpers reference
-    // (malloc, realloc, free, strlen, ...). We'll prepend those to the output.
-    // Snapshot ir_lines length so we can dump exactly the lines we add below.
-    snap_len <- len(ir_lines);
-
-    // Externs the runtime + IR ops need.
-    emit("declare ptr @malloc(i64)");
-    emit("declare ptr @realloc(ptr, i64)");
-    emit("declare void @free(ptr)");
-    emit("declare i64 @strlen(ptr)");
-    emit("declare i32 @strcmp(ptr, ptr)");
-    emit("declare void @exit(i32)");
-    emit("declare i32 @system(ptr)");
-    emit("declare ptr @fopen(ptr, ptr)");
-    emit("declare i32 @fclose(ptr)");
-    emit("declare i64 @fread(ptr, i64, i64, ptr)");
-    emit("declare i64 @fwrite(ptr, i64, i64, ptr)");
-    emit("declare i32 @fseek(ptr, i64, i32)");
-    emit("declare i64 @ftell(ptr)");
-    emit("declare ptr @fgets(ptr, i32, ptr)");
-    emit("declare ptr @strcpy(ptr, ptr)");
-    emit("declare ptr @strcat(ptr, ptr)");
-    if (is_win[0] = 1) {
-        emit("declare ptr @__acrt_iob_func(i32)");
-    } else if (is_mac[0] = 1) {
-        emit("@__stdinp = external global ptr");
-    } else {
-        emit("@stdin = external global ptr");
-    }
-    // File-mode constants used by the read/write/append_file helpers.
-    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
-    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
-    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
-    emit("");
-
-    // Module body — externs, str table, globals, fns — emitted line-by-line.
-    ir_render_module_to_lines(m);
-
-    // Runtime helpers (each emit_*_helper pushes its IR into ir_lines).
-    emit_arena_helper();
-    emit_safe_strcmp_helper();
-    emit_push_helper();
-    emit_pop_helper();
-    emit_keys_helper();
-    emit_struct_find_helper();
-    emit_itoa_helper();
-    emit_substring_helper();
-    emit_strcat_helper();
-    emit_read_file_helper();
-    emit_write_file_helper();
-    emit_append_file_helper();
-    emit_input_helper();
-
-    // Dump the lines we added.
-    j <- snap_len;
-    while (j < len(ir_lines)) {
-        print(ir_lines[j]);
-        j <- j + 1;
-    }
-}
-if (ir_test_mode[0]) {
-    if (args(0) = "--ir-is-digit") {
-        run_ir_is_digit();
-    } else if (args(0) = "--ir-from-ast") {
-        // Parse at top level so the global `toks` is populated (pp reads it).
-        toks <- tokenize("fn is_digit(c: int): int { return c >= 48 && c <= 57; }");
-        pos[0] <- 0;
-        stmts <- pp();
-        run_ir_from_ast(stmts);
-    } else if (args(0) = "--ir-cluster1") {
-        // A richer test: exercise StringLit, BoolLit, UnaryOp, IfStmt,
-        // WhileStmt, PrintStmt, CallExpr, plus all the cluster-0 nodes.
-        // The source defines `main_logic` which the generated main calls.
-        cluster1_src <- "fn classify(n: int): int { if (n = 0) { return 0; } if (n < 0) { return -1; } return 1; }\n" +
-                         "fn count_down(n: int): int { sum <- 0; while (n > 0) { sum <- sum + n; n <- n - 1; } return sum; }\n" +
-                         "fn show_int(label: str, value: int): int { print(label); print(value); return 0; }\n" +
-                         "fn main_logic(): int {\n" +
-                         "    show_int(\"classify(-5):\", classify(-5));\n" +
-                         "    show_int(\"classify(0):\",  classify(0));\n" +
-                         "    show_int(\"classify(7):\",  classify(7));\n" +
-                         "    show_int(\"count_down(5):\", count_down(5));\n" +
-                         "    print(!0);\n" +
-                         "    print(!1);\n" +
-                         "    return 0;\n" +
-                         "}";
-        toks <- tokenize(cluster1_src);
-        pos[0] <- 0;
-        stmts <- pp();
-        run_ir_from_ast(stmts);
-    } else if (args(0) = "--ir-cluster2") {
-        // Cluster 2: collections. Exercises ArrayLit, IndexExpr, len(), push(),
-        // pop(), StructLit, DotExpr, keys(), and the assignment forms (a[i] <- v,
-        // s.f <- v). The source defines main_logic.
-        cluster2_src <- "fn sum_arr(a): int {\n" +
-                         "    total <- 0;\n" +
-                         "    i <- 0;\n" +
-                         "    while (i < len(a)) {\n" +
-                         "        total <- total + a[i];\n" +
-                         "        i <- i + 1;\n" +
-                         "    }\n" +
-                         "    return total;\n" +
-                         "}\n" +
-                         "fn main_logic(): int {\n" +
-                         "    nums <- [10, 20, 30, 40];\n" +
-                         "    print(len(nums));\n" +
-                         "    print(sum_arr(nums));\n" +
-                         "    push(nums, 50);\n" +
-                         "    print(len(nums));\n" +
-                         "    print(sum_arr(nums));\n" +
-                         "    last <- pop(nums);\n" +
-                         "    print(last);\n" +
-                         "    print(len(nums));\n" +
-                         "    nums[0] <- 999;\n" +
-                         "    print(nums[0]);\n" +
-                         "    point <- {x: 3, y: 4};\n" +
-                         "    print(point.x);\n" +
-                         "    print(point.y);\n" +
-                         "    point.x <- 100;\n" +
-                         "    print(point.x);\n" +
-                         "    return 0;\n" +
-                         "}";
-        toks <- tokenize(cluster2_src);
-        pos[0] <- 0;
-        stmts <- pp();
-        run_ir_with_runtime(stmts);
-    } else if (args(0) = "--ir-cluster3") {
-        // Cluster 3: strings + IO. Exercises str_len, char_code, char_at,
-        // from_char_code, substring, string indexing via s[i], and the
-        // simpler string-side of read_file/write_file (paired so the test is
-        // hermetic — no external file dependencies). Avoids exec_cmd and
-        // input() since both have side effects we don't want during tests.
-        cluster3_src <- "fn main_logic(): int {\n" +
-                         "    s <- \"Hello, Arrow!\";\n" +
-                         "    print(str_len(s));\n" +
-                         "    print(char_code(s));\n" +              // 'H' = 72
-                         "    print(char_at(s, 7));\n" +              // 'A'
-                         "    print(s[0]);\n" +                       // 'H' via string index
-                         "    print(from_char_code(72));\n" +         // 'H'
-                         "    print(substring(s, 7, 12));\n" +        // 'Arrow'
-                         "    write_file(\"/tmp/arrow_c3.txt\", \"hello from cluster3\");\n" +
-                         "    contents <- read_file(\"/tmp/arrow_c3.txt\");\n" +
-                         "    print(contents);\n" +
-                         "    print(str_len(contents));\n" +
-                         "    return 0;\n" +
-                         "}";
-        toks <- tokenize(cluster3_src);
-        pos[0] <- 0;
-        stmts <- pp();
-        run_ir_with_runtime(stmts);
-    } else if (args(0) = "--ir-cluster4") {
-        // Cluster 4: ForInStmt + ArrowFn (closures with capture) + indirect calls.
-        cluster4_src <- "fn main_logic(): int {\n" +
-                         "    nums <- [10, 20, 30];\n" +
-                         "    total <- 0;\n" +
-                         "    for (n in nums) {\n" +
-                         "        total <- total + n;\n" +
-                         "    }\n" +
-                         "    print(total);\n" +
-                         "    s <- \"abc\";\n" +
-                         "    for (c in s) {\n" +
-                         "        print(c);\n" +
-                         "    }\n" +
-                         "    add <- (a: int, b: int) => { return a + b; };\n" +
-                         "    print(add(7, 35));\n" +
-                         "    n <- 100;\n" +
-                         "    add_n <- (x: int) => { return x + n; };\n" +
-                         "    print(add_n(5));\n" +
-                         "    print(add_n(50));\n" +
-                         "    return 0;\n" +
-                         "}";
-        toks <- tokenize(cluster4_src);
-        pos[0] <- 0;
-        stmts <- pp();
-        run_ir_with_runtime(stmts);
-    } else if (args(0) = "--ir-translate-fns") {
-        // Phase-4 stepping stone: translate every FnDecl in a source file
-        // through the AST→IR pipeline, render, append runtime, dump.
-        if (args() < 2) {
-            print("; --ir-translate-fns requires a source file path");
-        } else {
-            src <- read_file(args(1));
-            toks <- tokenize(src);
-            pos[0] <- 0;
-            stmts <- pp();
-            run_ir_with_runtime(stmts);
-        }
-    } else if (args(0) = "--ir-self") {
-        // Phase-4 cutover: full pipeline through IR. Reads the source file,
-        // runs compile_via_ir, writes the .ll, invokes clang. Equivalent to
-        // running `arrow <input>` but routing through the IR translator.
-        if (args() < 2) {
-            print("; --ir-self requires a source file path");
-        } else {
-            src <- read_file(args(1));
-            toks <- tokenize(src);
-            pos[0] <- 0;
-            stmts <- pp();
-
-            // Output paths: same defaults as the regular CLI. Strip extension
-            // to derive the .ll and .exe names; -o overrides the exe path.
-            in_path <- args(1);
-            base <- in_path;
-            // Strip ".arrow" suffix if present.
-            if (str_len(base) > 6) {
-                tail6 <- substring(base, str_len(base) - 6, str_len(base));
-                if (tail6 = ".arrow") {
-                    base <- substring(base, 0, str_len(base) - 6);
-                }
-            }
-            ll_file <- base + ".ll";
-            exe_file <- base;
-            if (is_win[0] = 1) { exe_file <- exe_file + ".exe"; }
-            // Honour `-o <name>` if present.
-            i <- 2;
-            while (i < args()) {
-                if (args(i) = "-o" && i + 1 < args()) {
-                    exe_file <- args(i + 1);
-                }
-                i <- i + 1;
-            }
-
-            compile_via_ir(stmts);
-            write_ir_lines(ll_file);
-
-            if (is_win[0] = 1) {
-                clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
-            } else {
-                clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
-            }
-            rc <- exec_cmd(clang_cmd);
-            if (rc = 0) {
-                print("Compiled " + exe_file + " successfully (via IR)");
-                // KEEPING .ll for debug
-            } else {
-                print("Clang failed with exit code " + rc);
-                print("IR written to " + ll_file);
-            }
-        }
-    } else {
-        run_ir_test();
-    }
-}
-
 // ═══════════════════════════════════════════
-//  Phase-4 cutover: compile_via_ir
+//  compile_via_ir — the codegen entry point
 //
-//  Mirrors compile() exactly, but routes user functions through the IR
-//  pipeline (parse → emit_function_via_ir → render) instead of through
-//  the legacy emit_function. Top-level statements get wrapped into a
-//  synthetic __main_logic FnDecl and translated through the same path.
-//  Runtime helpers, globals, and the C main wrapper are emitted the same
-//  way as compile() so the resulting LLVM is drop-in compatible.
+//  Walks the AST: every user FnDecl is translated into the IR module via
+//  emit_function_via_ir, then rendered to LLVM IR text in ir_lines. Top-
+//  level statements are wrapped into a synthetic __main_logic FnDecl and
+//  translated through the same path. Runtime helpers, globals, and the
+//  C main wrapper are appended directly as IR text (they don't need to
+//  be retargeted).
 // ═══════════════════════════════════════════
 
 fn compile_via_ir(stmts) {
-    emit("; Arrow Lang -- compiled by self-hosted compiler (IR pipeline)");
+    emit("; Arrow Lang -- compiled by self-hosted compiler");
     emit("");
 
-    // External declarations (matches compile() byte-for-byte)
+    // External declarations.
     emit("declare i32 @printf(ptr, ...)");
     emit("declare i32 @puts(ptr)");
     emit("declare i32 @fflush(ptr)");
@@ -6388,4 +4204,90 @@ fn compile_via_ir(stmts) {
     emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
     emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
     emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
+}
+
+
+// ═══════════════════════════════════════════
+//  CLI dispatch
+// ═══════════════════════════════════════════
+
+if (args() < 1) {
+    print("Usage: arrow <file.arrow> [-o output]");
+    print("  Compiles Arrow Lang source to a native executable.");
+}
+
+if (args() > 0) {
+    input_file <- args(0);
+
+    // Parse -o flag
+    out_name <- "";
+    if (args() > 2) {
+        if (args(1) = "-o") {
+            out_name <- args(2);
+        }
+    }
+
+    // Derive base name from input: foo.arrow -> foo
+    base_name <- input_file;
+    if (str_len(input_file) > 6) {
+        suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
+        if (suffix = ".arrow") {
+            base_name <- substring(input_file, 0, str_len(input_file) - 6);
+        }
+    }
+
+    // Set output filenames (platform-dependent extension)
+    if (out_name != "") {
+        exe_file <- out_name;
+        ll_base <- out_name;
+        // Strip .exe if present
+        if (str_len(out_name) > 4) {
+            ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
+            if (ext = ".exe") {
+                ll_base <- substring(out_name, 0, str_len(out_name) - 4);
+            }
+        }
+        ll_file <- ll_base + ".ll";
+    } else {
+        ll_file <- base_name + ".ll";
+        if (is_win[0] = 1) {
+            exe_file <- base_name + ".exe";
+        } else {
+            exe_file <- base_name;
+        }
+    }
+
+    source <- read_file(input_file);
+
+    toks <- tokenize(source);
+    pos[0] <- 0;
+    ast <- pp();
+    src_filename[0] <- input_file;
+    compile_via_ir(ast);
+
+    if (len(type_errors) > 0) {
+        print_type_errors();
+    } else {
+        write_ir_lines(ll_file);
+
+        // Build clang command (platform-dependent flags)
+        if (is_win[0] = 1) {
+            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+        } else {
+            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
+        }
+        rc <- exec_cmd(clang_cmd);
+        if (rc = 0) {
+            print("Compiled " + exe_file + " successfully!");
+            // Clean up .ll file (platform-dependent delete command)
+            if (is_win[0] = 1) {
+                exec_cmd("del " + ll_file);
+            } else {
+                exec_cmd("rm " + ll_file);
+            }
+        } else {
+            print("Clang failed with exit code " + rc);
+            print("IR written to " + ll_file);
+        }
+    }
 }
