@@ -3978,7 +3978,12 @@ fn ir_module() {
         // Counter for unique str ids. Using a separate boxed counter (not
         // len(str_table)) sidesteps any quirk in len() called on a struct
         // field after intervening allocations.
-        next_str_id: [0]
+        next_str_id: [0],
+        // Track which FnDecls have had a "_shim" wrapper emitted, so that
+        // higher-order references to the same fn share one shim. Needed for
+        // passing regular FnDecls as values (e.g. apply(add, 10, 20)) where
+        // the call-site expects a closure pair calling convention.
+        shimmed_fns: []
     };
 }
 
@@ -4808,6 +4813,52 @@ fn ir_is_cmp_op(op: str): int {
     return op = "=" || op = "!=" || op = "<" || op = "<=" || op = ">" || op = ">=";
 }
 
+// Build a "_shim" wrapper around a regular FnDecl so it can be passed as a
+// value to higher-order functions, which expect a closure-call convention
+// (i64 env first, then user args). The shim simply discards env and forwards
+// to the real fn. Idempotent: a second call for the same name is a no-op.
+//
+//     fn add(a, b)  =>  define i64 @add_shim(i64 %env, i64 %a, i64 %b) {
+//                         %r = call i64 @add(i64 %a, i64 %b)
+//                         ret i64 %r
+//                       }
+fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
+    shim_name <- fn_name + "_shim";
+    // Skip if already emitted.
+    i <- 0;
+    while (i < len(m.shimmed_fns)) {
+        if (m.shimmed_fns[i] = fn_name) { return shim_name; }
+        i <- i + 1;
+    }
+    push(m.shimmed_fns, fn_name);
+
+    // Build the shim function: env param + user params, all i64.
+    shim_params <- [];
+    push(shim_params, {name: "env", type: mk_int()});
+    i <- 0;
+    while (i < param_count) {
+        push(shim_params, {name: "p" + i, type: mk_int()});
+        i <- i + 1;
+    }
+    shim <- ir_function(shim_name, shim_params, mk_int());
+    bb <- ir_block("entry");
+    ir_fn_add_block(shim, bb);
+
+    // Forward call: load each user param and call the real fn.
+    fwd_args <- [];
+    i <- 0;
+    while (i < param_count) {
+        push(fwd_args, ir_reg("%p" + i + ".arg", mk_int()));
+        i <- i + 1;
+    }
+    rtmp <- "%shim_r";
+    ir_push_inst(bb, ii_call(rtmp, mk_int(), fn_name, fwd_args));
+    ir_set_terminator(bb, ii_ret(ir_reg(rtmp, mk_int())));
+
+    ir_mod_add_function(m, shim);
+    return shim_name;
+}
+
 fn ir_emit_expr(b, nd) {
     if (nd.node = "NumberLit") {
         return ir_const_int(nd.value);
@@ -4842,6 +4893,19 @@ fn ir_emit_expr(b, nd) {
             tmp <- ir_fresh_tmp(b, "ld");
             ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg("@g_" + nd.name, mk_int())));
             return ir_reg(tmp, mk_int());
+        }
+        // Reference to a regular FnDecl as a value (e.g. apply(add, 10, 20)).
+        // Wrap in a closure pair so the call-site's closure-call convention
+        // works. Skip arrow vars — those are already closure pairs assigned
+        // to globals/locals and handled by the cases above.
+        if (!is_loc) {
+            fi_ref <- find_fn(nd.name);
+            if (fi_ref != false && !fi_ref.is_arrow_var) {
+                shim_name <- ir_ensure_fn_shim(b.mod, nd.name, fi_ref.param_count);
+                cm_tmp <- ir_fresh_tmp(b, "fnref");
+                ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, shim_name, []));
+                return ir_reg(cm_tmp, mk_int());
+            }
         }
         slot <- ir_get_local_slot(b, nd.name);
         tmp <- ir_fresh_tmp(b, "ld");
