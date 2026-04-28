@@ -4058,21 +4058,90 @@ fn emit_function_via_ir(nd, mod) {
 }
 
 // ═══════════════════════════════════════════
-//  compile_via_ir — the codegen entry point
+//  Backend abstraction
 //
-//  Walks the AST: every user FnDecl is translated into the IR module via
-//  emit_function_via_ir, then rendered to LLVM IR text in ir_lines. Top-
-//  level statements are wrapped into a synthetic __main_logic FnDecl and
-//  translated through the same path. Runtime helpers, globals, and the
-//  C main wrapper are appended directly as IR text (they don't need to
-//  be retargeted).
+//  A Backend is a small struct holding a kind tag plus a couple of
+//  identification fields. The backend_* dispatch functions below
+//  inspect b.kind and route to the corresponding backend-specific
+//  implementation (currently llvm_*; future: cranelift_*, etc.).
+//
+//  This split isolates everything that emits target-specific IR text
+//  or calls a target-specific toolchain. The translator (AST → Arrow
+//  IR) is shared across backends; only the rendering of the Arrow IR
+//  module and the runtime/wrapper emission are backend-private.
+//
+//  Adding a new backend means: implement the same stages as llvm_*
+//  (preamble, globals, module, runtime, main wrapper, link), then add
+//  a constructor + a kind branch to each backend_* dispatcher. The
+//  rest of the compiler stays untouched.
 // ═══════════════════════════════════════════
 
-fn compile_via_ir(stmts) {
+fn make_llvm_backend() {
+    return {
+        kind: "llvm",
+        name: "LLVM",
+        // File extension for the intermediate text format this backend
+        // produces. The CLI uses this to derive the intermediate filename
+        // from the user-requested output name.
+        intermediate_ext: ".ll"
+    };
+}
+
+// Emit any target-specific preamble: extern declarations, target triple,
+// data layout, etc.
+fn backend_emit_preamble(b) {
+    if (b.kind = "llvm") {
+        llvm_emit_preamble();
+    }
+}
+
+// Emit declarations for the program's global variables. The list of names
+// comes from scan_globals; each backend chooses how to lay them out.
+fn backend_emit_globals(b, global_names) {
+    if (b.kind = "llvm") {
+        llvm_emit_globals(global_names);
+    }
+}
+
+// Render the Arrow IR module (functions + string table) into the line
+// buffer, in the backend's own text format.
+fn backend_emit_module(b, m) {
+    if (b.kind = "llvm") {
+        ir_render_module_to_lines(m);
+    }
+}
+
+// Emit the runtime helpers (arena allocator, strcat, push, pop, etc.).
+// These are linked alongside user code and called by the rendered module.
+fn backend_emit_runtime(b) {
+    if (b.kind = "llvm") {
+        llvm_emit_runtime();
+    }
+}
+
+// Emit the program entry point (C-ABI main wrapping __main_logic) and any
+// trailing constants the runtime needs.
+fn backend_emit_main_wrapper(b) {
+    if (b.kind = "llvm") {
+        llvm_emit_main_wrapper();
+    }
+}
+
+// Invoke the backend's toolchain to turn the intermediate file into a
+// native executable. Returns the toolchain's exit code (0 = success).
+fn backend_link(b, ir_file: str, exe_file: str): int {
+    if (b.kind = "llvm") {
+        return llvm_link(ir_file, exe_file);
+    }
+    return 1;
+}
+
+// ── LLVM backend: target-specific implementations ────────
+
+fn llvm_emit_preamble() {
     emit("; Arrow Lang -- compiled by self-hosted compiler");
     emit("");
 
-    // External declarations.
     emit("declare i32 @printf(ptr, ...)");
     emit("declare i32 @puts(ptr)");
     emit("declare i32 @fflush(ptr)");
@@ -4100,6 +4169,80 @@ fn compile_via_ir(stmts) {
         emit("@stdin = external global ptr");
     }
     emit("");
+}
+
+fn llvm_emit_globals(global_names) {
+    i <- 0;
+    while (i < len(global_names)) {
+        emit("@g_" + global_names[i] + " = global i64 0");
+        i <- i + 1;
+    }
+    emit("@g_argc = global i64 0");
+    emit("@g_argv = global i64 0");
+    emit("");
+}
+
+fn llvm_emit_runtime() {
+    emit_arena_helper();
+    emit_safe_strcmp_helper();
+    emit_push_helper();
+    emit_pop_helper();
+    emit_keys_helper();
+    emit_struct_find_helper();
+    emit_itoa_helper();
+    emit_substring_helper();
+    emit_strcat_helper();
+    emit_read_file_helper();
+    emit_write_file_helper();
+    emit_append_file_helper();
+    emit_input_helper();
+}
+
+fn llvm_emit_main_wrapper() {
+    // C main: arena init, capture argc/argv, call __main_logic, return 0.
+    emit("define i64 @main(i32 %argc, ptr %argv) {");
+    emit("entry:");
+    emit("  %argc64 = sext i32 %argc to i64");
+    emit("  store i64 %argc64, ptr @g_argc");
+    emit("  %argv64 = ptrtoint ptr %argv to i64");
+    emit("  store i64 %argv64, ptr @g_argv");
+    emit("  call void @arena_init(i64 268435456)");
+    emit("  %ml = call i64 @__main_logic()");
+    emit("  ret i64 0");
+    emit("}");
+    emit("");
+
+    // Constants the runtime uses. The IR module's string table already
+    // pools any user-supplied StringLits, but a few labels are referenced
+    // directly by hand-written runtime IR.
+    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
+    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
+    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
+    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
+}
+
+fn llvm_link(ll_file: str, exe_file: str): int {
+    if (is_win[0] = 1) {
+        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
+    } else {
+        clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
+    }
+    return exec_cmd(clang_cmd);
+}
+
+// ═══════════════════════════════════════════
+//  compile_via_ir — the codegen entry point
+//
+//  Walks the AST: every user FnDecl is translated into the IR module via
+//  emit_function_via_ir, then rendered to LLVM IR text in ir_lines. Top-
+//  level statements are wrapped into a synthetic __main_logic FnDecl and
+//  translated through the same path. Runtime helpers, globals, and the
+//  C main wrapper are appended directly as IR text (they don't need to
+//  be retargeted).
+// ═══════════════════════════════════════════
+
+fn compile_via_ir(stmts, backend) {
+    backend_emit_preamble(backend);
 
     // Pre-passes: function table, call-site type inference, globals.
     scan_fns(stmts);
@@ -4113,19 +4256,9 @@ fn compile_via_ir(stmts) {
         i <- i + 1;
     }
 
-    // Globals as @g_*.
-    i <- 0;
-    while (i < len(global_vars)) {
-        emit("@g_" + global_vars[i] + " = global i64 0");
-        i <- i + 1;
-    }
-    emit("@g_argc = global i64 0");
-    emit("@g_argv = global i64 0");
-    emit("");
+    backend_emit_globals(backend, global_vars);
 
-    // Build an IR module and translate every user FnDecl into it. The IR
-    // path emits via ir_render_function_to_lines below, which writes
-    // line-by-line into ir_lines.
+    // Build an Arrow IR module and translate every user FnDecl into it.
     m <- ir_module();
     i <- 0;
     while (i < len(stmts)) {
@@ -4167,43 +4300,9 @@ fn compile_via_ir(stmts) {
     });
     ir_mod_add_function(m, emit_function_via_ir(main_logic_fn, m));
 
-    // Render module functions and string table into ir_lines.
-    ir_render_module_to_lines(m);
-
-    // Runtime helpers — same set the existing compile() emits.
-    emit_arena_helper();
-    emit_safe_strcmp_helper();
-    emit_push_helper();
-    emit_pop_helper();
-    emit_keys_helper();
-    emit_struct_find_helper();
-    emit_itoa_helper();
-    emit_substring_helper();
-    emit_strcat_helper();
-    emit_read_file_helper();
-    emit_write_file_helper();
-    emit_append_file_helper();
-    emit_input_helper();
-
-    // C main: arena init, capture argc/argv, call __main_logic, return 0.
-    emit("define i64 @main(i32 %argc, ptr %argv) {");
-    emit("entry:");
-    emit("  %argc64 = sext i32 %argc to i64");
-    emit("  store i64 %argc64, ptr @g_argc");
-    emit("  %argv64 = ptrtoint ptr %argv to i64");
-    emit("  store i64 %argv64, ptr @g_argv");
-    emit("  call void @arena_init(i64 268435456)");
-    emit("  %ml = call i64 @__main_logic()");
-    emit("  ret i64 0");
-    emit("}");
-    emit("");
-
-    // File-mode constants and the legacy fmt_int label. The IR module's
-    // string table already pools any user-supplied StringLits.
-    emit("@fmt_int = private constant [6 x i8] c\"%lld\\0A\\00\"");
-    emit("@.str.rb = private constant [3 x i8] c\"rb\\00\"");
-    emit("@.str.wb = private constant [3 x i8] c\"wb\\00\"");
-    emit("@.str.ab = private constant [3 x i8] c\"ab\\00\"");
+    backend_emit_module(backend, m);
+    backend_emit_runtime(backend);
+    backend_emit_main_wrapper(backend);
 }
 
 
@@ -4227,6 +4326,10 @@ if (args() > 0) {
         }
     }
 
+    // Construct the backend. Today there's only one; future flags would
+    // pick a different one (e.g. --backend=cranelift).
+    backend <- make_llvm_backend();
+
     // Derive base name from input: foo.arrow -> foo
     base_name <- input_file;
     if (str_len(input_file) > 6) {
@@ -4247,9 +4350,9 @@ if (args() > 0) {
                 ll_base <- substring(out_name, 0, str_len(out_name) - 4);
             }
         }
-        ll_file <- ll_base + ".ll";
+        ir_file <- ll_base + backend.intermediate_ext;
     } else {
-        ll_file <- base_name + ".ll";
+        ir_file <- base_name + backend.intermediate_ext;
         if (is_win[0] = 1) {
             exe_file <- base_name + ".exe";
         } else {
@@ -4263,31 +4366,25 @@ if (args() > 0) {
     pos[0] <- 0;
     ast <- pp();
     src_filename[0] <- input_file;
-    compile_via_ir(ast);
+    compile_via_ir(ast, backend);
 
     if (len(type_errors) > 0) {
         print_type_errors();
     } else {
-        write_ir_lines(ll_file);
+        write_ir_lines(ir_file);
 
-        // Build clang command (platform-dependent flags)
-        if (is_win[0] = 1) {
-            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
-        } else {
-            clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module";
-        }
-        rc <- exec_cmd(clang_cmd);
+        rc <- backend_link(backend, ir_file, exe_file);
         if (rc = 0) {
             print("Compiled " + exe_file + " successfully!");
-            // Clean up .ll file (platform-dependent delete command)
+            // Clean up intermediate file (platform-dependent delete command)
             if (is_win[0] = 1) {
-                exec_cmd("del " + ll_file);
+                exec_cmd("del " + ir_file);
             } else {
-                exec_cmd("rm " + ll_file);
+                exec_cmd("rm " + ir_file);
             }
         } else {
-            print("Clang failed with exit code " + rc);
-            print("IR written to " + ll_file);
+            print(backend.name + " toolchain failed with exit code " + rc);
+            print("IR written to " + ir_file);
         }
     }
 }
