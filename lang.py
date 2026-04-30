@@ -1211,20 +1211,22 @@ class Interpreter:
         if isinstance(val, list): return len(val) > 0
         return val is not None
 
-    def _format(self, val) -> str:
+    def _format(self, val, in_collection: bool = False) -> str:
         if isinstance(val, bool):
             return "true" if val else "false"
         if isinstance(val, float) and val == int(val):
             return str(int(val))
         if isinstance(val, list):
-            return "[" + ", ".join(self._format(v) for v in val) + "]"
+            return "[" + ", ".join(self._format(v, True) for v in val) + "]"
         if isinstance(val, Struct):
             parts = []
             for k, v in val.fields().items():
-                parts.append(f"{k}: {self._format(v)}")
+                parts.append(f"{k}: {self._format(v, True)}")
             return "{" + ", ".join(parts) + "}"
         if isinstance(val, Function):
             return repr(val)
+        if isinstance(val, str) and in_collection:
+            return '"' + val + '"'
         return str(val)
 
 

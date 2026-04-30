@@ -77,7 +77,7 @@ fn ps(){
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
+fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
 fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln};}
 fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
@@ -594,6 +594,7 @@ fn scs_expr(nd, work) {
 
 fn mk_int() { return {kind: "int"}; }
 fn mk_str() { return {kind: "str"}; }
+fn mk_bool() { return {kind: "bool"}; }
 fn mk_any() { return {kind: "any"}; }
 fn mk_struct() { return {kind: "struct"}; }
 // IR-only: an opaque LLVM `ptr`. Used for extern declarations that take
@@ -630,6 +631,7 @@ fn type_str(t): str {
 fn parse_type_ann(s: str) {
     if (s = "int") { return mk_int(); }
     if (s = "str") { return mk_str(); }
+    if (s = "bool") { return mk_bool(); }
     if (s = "any") { return mk_any(); }
     if (s = "struct") { return mk_struct(); }
     if (s = "fn") { return mk_fn(); }
@@ -1065,23 +1067,27 @@ fn emit_itoa_helper() {
 fn typeof_expr(nd) {
     if (nd.node = "NumberLit") { return mk_int(); }
     if (nd.node = "StringLit") { return mk_str(); }
-    if (nd.node = "BoolLit") { return mk_int(); }
+    if (nd.node = "BoolLit") { return mk_bool(); }
     if (nd.node = "Identifier") {
         return get_var_type(nd.name);
     }
     if (nd.node = "BinOp") {
         op <- nd.op;
-        if (op = "&&" || op = "||") { return mk_int(); }
+        if (op = "&&" || op = "||") { return mk_bool(); }
+        if (op = "=" || op = "!=" || op = "<" || op = ">" || op = "<=" || op = ">=") { return mk_bool(); }
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (op = "+") {
             if (lt.kind = "str" || rt.kind = "str") { return mk_str(); }
             return mk_int();
         }
-        // Arithmetic or comparison — all return int
+        // Arithmetic — all return int
         return mk_int();
     }
-    if (nd.node = "UnaryOp") { return mk_int(); }
+    if (nd.node = "UnaryOp") {
+        if (nd.op = "!") { return mk_bool(); }
+        return mk_int();
+    }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             nm <- nd.callee.name;
@@ -1275,6 +1281,12 @@ fn types_compat(annot, actual): int {
     if (actual.kind = "struct") { return true; }
     if (annot.kind = "fn") { return true; }
     if (actual.kind = "fn") { return true; }
+    // bool and int share the same runtime representation (i64). Treat them as
+    // interchangeable for compatibility purposes — programs that store a
+    // comparison result into an `int`-annotated slot, or use a numeric value
+    // where a `bool` is expected, should keep type-checking.
+    if (annot.kind = "int" && actual.kind = "bool") { return true; }
+    if (annot.kind = "bool" && actual.kind = "int") { return true; }
     if (annot.kind = "array" && actual.kind = "array") {
         return types_compat(annot.elem, actual.elem);
     }
@@ -1640,8 +1652,13 @@ fn emit_safe_strcmp_helper() {
     emit("  %sr = call i32 @strcmp(ptr %a, ptr %b)");
     emit("  ret i32 %sr");
     emit("intcmp:");
-    emit("  %eq = icmp eq i64 %ai, %bi");
-    emit("  %ir = select i1 %eq, i32 0, i32 1");
+    // Real 3-way compare so the result works for <, >, <=, >= as well as = / !=.
+    // Returning i32 -1 / 0 / +1 mirrors strcmp's contract; the caller does
+    // `icmp <pred> i64 sc, 0` and gets the right answer for every relational op.
+    emit("  %lt = icmp slt i64 %ai, %bi");
+    emit("  %gt = icmp sgt i64 %ai, %bi");
+    emit("  %r1 = select i1 %lt, i32 -1, i32 0");
+    emit("  %ir = select i1 %gt, i32 1, i32 %r1");
     emit("  ret i32 %ir");
     emit("}");
     emit("");
@@ -1911,6 +1928,95 @@ fn emit_append_file_helper() {
     emit("  %written = call i64 @fwrite(ptr %content, i64 1, i64 %slen, ptr %fp)");
     emit("  call i32 @fclose(ptr %fp)");
     emit("  ret i64 %written");
+    emit("}");
+    emit("");
+}
+
+// ── Emit print helpers ──────────────────
+//
+// A small family of helpers used by typed printing. The IR emitter walks the
+// static type of a `print(x)` argument and composes calls to these for
+// composite types (arrays, structs). Primitives have a dedicated outer helper
+// (newline-terminated) and a "format" variant used inside collections (no
+// newline, strings get quoted).
+//
+// Constants:
+//   @.s.t       "true"
+//   @.s.f       "false"
+//   @.s.tnl     "true\n"
+//   @.s.fnl     "false\n"
+//   @.fmt.d     "%lld"
+//   @.fmt.s_    "%s"
+//   @.fmt.qs_   "\"%s\""
+
+fn emit_print_helpers() {
+    // Constants
+    emit("@.s.t = private constant [5 x i8] c\"true\\00\"");
+    emit("@.s.f = private constant [6 x i8] c\"false\\00\"");
+    emit("@.s.tnl = private constant [6 x i8] c\"true\\0A\\00\"");
+    emit("@.s.fnl = private constant [7 x i8] c\"false\\0A\\00\"");
+    emit("@.fmt.d = private constant [5 x i8] c\"%lld\\00\"");
+    emit("@.fmt.s_ = private constant [3 x i8] c\"%s\\00\"");
+    emit("@.fmt.qs_ = private constant [5 x i8] c\"\\22%s\\22\\00\"");
+    emit("");
+
+    // arrow_print_bool — outer: prints "true\n" or "false\n" + fflush.
+    emit("define void @arrow_print_bool(i64 %v) {");
+    emit("entry:");
+    emit("  %nz = icmp ne i64 %v, 0");
+    emit("  %s = select i1 %nz, ptr @.s.tnl, ptr @.s.fnl");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.s_, ptr %s)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_format_int — inner: prints "%lld" (no newline).
+    emit("define void @arrow_format_int(i64 %v) {");
+    emit("entry:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.d, i64 %v)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_format_str_q — inner: prints "\"%s\"" with surrounding quotes.
+    // Takes an i64 holding a string pointer; casts to ptr then printfs.
+    emit("define void @arrow_format_str_q(i64 %vi) {");
+    emit("entry:");
+    emit("  %v = inttoptr i64 %vi to ptr");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.qs_, ptr %v)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_format_bool — inner: prints "true" or "false" (no newline).
+    emit("define void @arrow_format_bool(i64 %v) {");
+    emit("entry:");
+    emit("  %nz = icmp ne i64 %v, 0");
+    emit("  %s = select i1 %nz, ptr @.s.t, ptr @.s.f");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.s_, ptr %s)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_print_lit — prints an i64-as-cstr-ptr without newline. Used for
+    // brackets, separators, and field names when formatting arrays/structs.
+    emit("define void @arrow_print_lit(i64 %vi) {");
+    emit("entry:");
+    emit("  %v = inttoptr i64 %vi to ptr");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.s_, ptr %v)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_print_newline — emit \n + fflush. Used as the trailing newline
+    // for top-level print of composite values, where we've already written
+    // the opening/closing brackets piecemeal.
+    emit("define void @arrow_print_newline() {");
+    emit("entry:");
+    emit("  call i32 @putchar(i32 10)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
     emit("}");
     emit("");
 }
@@ -2309,6 +2415,16 @@ fn ii_print_str(ptr_reg: str, val) {
     // Caller's responsibility to make it unique within the function.
     return ir_inst("print_str", ptr_reg, mk_none(), [val], false);
 }
+fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false); }
+
+// Format helpers — used to compose printed output for composite values.
+// These don't add a trailing newline; the translator emits ii_print_newline
+// at the end of a top-level composite print.
+fn ii_format_int(val)           { return ir_void_inst("format_int", [val], false); }
+fn ii_format_str_q(val)         { return ir_void_inst("format_str_q", [val], false); }
+fn ii_format_bool(val)          { return ir_void_inst("format_bool", [val], false); }
+fn ii_print_lit(val)            { return ir_void_inst("print_lit", [val], false); }
+fn ii_print_newline()           { return ir_void_inst("print_newline", [], false); }
 // Generic print op — translator code prefers the typed variants
 // (ii_print_int, ii_print_str), but ii_print stays around as a single hook
 // for backends that want one entry point.
@@ -2430,6 +2546,24 @@ fn ir_render_inst(inst): str {
         // The operand is an i64 holding a string pointer; cast to ptr then
         // call puts. inst.dst is the fresh name for the cast register.
         return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  call i32 @puts(ptr " + inst.dst + ")\n  call i32 @fflush(ptr null)";
+    }
+    if (op = "print_bool") {
+        return "call void @arrow_print_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_int") {
+        return "call void @arrow_format_int(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_str_q") {
+        return "call void @arrow_format_str_q(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_bool") {
+        return "call void @arrow_format_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_lit") {
+        return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_newline") {
+        return "call void @arrow_print_newline()";
     }
     if (op = "lnot") {
         // dst.lc = icmp eq i64 v, 0 ; dst = zext i1 dst.lc to i64
@@ -2911,6 +3045,7 @@ fn ir_builder_new(f, entry_bb, mod) {
         locals: [],
         tmp_counter: [0],
         block_counter: [0],
+        for_idx_counter: [0],
         // The owning module — needed by emitters that allocate string
         // constants or externs (e.g. StringLit, PrintStmt).
         mod: mod,
@@ -3693,6 +3828,166 @@ fn ir_emit_binop(b, nd) {
     return ir_const_int(0);
 }
 
+// ── Typed printing of composite values ──────────────
+//
+// Walks the static type at each `print(x)` call site and emits IR that
+// composes the formatted output. Primitives use the dedicated runtime
+// helpers (arrow_print_int / _str / _bool); arrays emit an inline runtime
+// loop that calls back into ir_emit_format_value with top_level=false for
+// each element; struct_lits unroll their fields at compile time. Nested
+// composites recurse the codegen — there's no runtime type tag.
+//
+// top_level=true:  trailing newline; scalar strings printed without quotes.
+// top_level=false: no newline; scalar strings printed with surrounding quotes.
+
+// Pool a literal string in the module string table, then emit code that calls
+// arrow_print_lit on it. Used for all the static glue between formatted parts:
+// "[", "]", ", ", "{", "}", and field-name labels like "name: ".
+fn ir_emit_lit(b, text: str) {
+    sid <- ir_mod_add_str(b.mod, text);
+    tmp <- ir_fresh_tmp(b, "lit");
+    ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
+    ir_push_inst(b.cur_block, ii_print_lit(ir_reg(tmp, mk_int())));
+    return 0;
+}
+
+fn ir_emit_format_value(b, val, t, top_level: int) {
+    if (t.kind = "int") {
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_int(val)); }
+        else { ir_push_inst(b.cur_block, ii_format_int(val)); }
+        return 0;
+    }
+    if (t.kind = "str") {
+        if (top_level) {
+            cast_reg <- ir_fresh_tmp(b, "pp");
+            ir_push_inst(b.cur_block, ii_print_str(cast_reg, val));
+        } else {
+            ir_push_inst(b.cur_block, ii_format_str_q(val));
+        }
+        return 0;
+    }
+    if (t.kind = "bool") {
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_bool(val)); }
+        else { ir_push_inst(b.cur_block, ii_format_bool(val)); }
+        return 0;
+    }
+    if (t.kind = "array") {
+        ir_emit_format_array(b, val, t.elem);
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
+        return 0;
+    }
+    if (t.kind = "struct_lit") {
+        ir_emit_format_struct(b, val, t.fields);
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
+        return 0;
+    }
+    // Fallback for any/struct/unknown — best-effort as int. Matches the
+    // behaviour before typed printing existed.
+    if (top_level) { ir_push_inst(b.cur_block, ii_print_int(val)); }
+    else { ir_push_inst(b.cur_block, ii_format_int(val)); }
+    return 0;
+}
+
+// Emit `[a, b, c]` for an array value. No newline — the caller adds one if
+// this is a top-level print. Walks the array via a runtime loop driven by
+// an alloca'd index counter (the existing while-stmt pattern).
+fn ir_emit_format_array(b, arr_val, elem_type) {
+    ir_emit_lit(b, "[");
+
+    // len_reg = array_len(arr_val)
+    len_reg <- ir_fresh_tmp(b, "alen");
+    ir_push_inst(b.cur_block, ii_array_len(len_reg, arr_val));
+
+    // Index counter slot — allocated in the entry block (LLVM convention,
+    // and avoids re-allocating on each loop iteration).
+    idx_slot <- ir_fresh_tmp(b, "fidx");
+    ir_push_inst(b.func.blocks[0], ii_alloca(idx_slot, mk_int()));
+    ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(idx_slot, mk_int())));
+
+    cond_lbl <- ir_fresh_block_lbl(b, "fac");
+    body_lbl <- ir_fresh_block_lbl(b, "fab");
+    sep_lbl  <- ir_fresh_block_lbl(b, "fas");
+    elem_lbl <- ir_fresh_block_lbl(b, "fae");
+    end_lbl  <- ir_fresh_block_lbl(b, "faE");
+
+    ir_set_terminator(b.cur_block, ii_br(cond_lbl));
+
+    // cond: i < len → body, else end
+    cond_bb <- ir_block(cond_lbl);
+    ir_fn_add_block(b.func, cond_bb);
+    b.cur_block <- cond_bb;
+    i_c <- ir_fresh_tmp(b, "fi");
+    ir_push_inst(b.cur_block, ii_load(i_c, mk_int(), ir_reg(idx_slot, mk_int())));
+    cmp <- ir_fresh_tmp(b, "fcmp");
+    ir_push_inst(b.cur_block, ii_icmp(cmp, "slt", ir_reg(i_c, mk_int()), ir_reg(len_reg, mk_int())));
+    br_t1 <- ir_fresh_tmp(b, "br");
+    ir_set_terminator(b.cur_block, ii_cond_br(br_t1, ir_reg(cmp, mk_int()), body_lbl, end_lbl));
+
+    // body: if i = 0 → elem (skip separator), else → sep block
+    body_bb <- ir_block(body_lbl);
+    ir_fn_add_block(b.func, body_bb);
+    b.cur_block <- body_bb;
+    i_b <- ir_fresh_tmp(b, "fi");
+    ir_push_inst(b.cur_block, ii_load(i_b, mk_int(), ir_reg(idx_slot, mk_int())));
+    is_first <- ir_fresh_tmp(b, "ffirst");
+    ir_push_inst(b.cur_block, ii_icmp(is_first, "eq", ir_reg(i_b, mk_int()), ir_const_int(0)));
+    br_t2 <- ir_fresh_tmp(b, "br");
+    ir_set_terminator(b.cur_block, ii_cond_br(br_t2, ir_reg(is_first, mk_int()), elem_lbl, sep_lbl));
+
+    // sep: print ", " then fall through to elem
+    sep_bb <- ir_block(sep_lbl);
+    ir_fn_add_block(b.func, sep_bb);
+    b.cur_block <- sep_bb;
+    ir_emit_lit(b, ", ");
+    ir_set_terminator(b.cur_block, ii_br(elem_lbl));
+
+    // elem: load arr[i], format it, then i = i+1, jump to cond
+    elem_bb <- ir_block(elem_lbl);
+    ir_fn_add_block(b.func, elem_bb);
+    b.cur_block <- elem_bb;
+    i_e <- ir_fresh_tmp(b, "fi");
+    ir_push_inst(b.cur_block, ii_load(i_e, mk_int(), ir_reg(idx_slot, mk_int())));
+    elem_reg <- ir_fresh_tmp(b, "felem");
+    ir_push_inst(b.cur_block, ii_array_get(elem_reg, mk_int(), arr_val, ir_reg(i_e, mk_int())));
+    ir_emit_format_value(b, ir_reg(elem_reg, mk_int()), elem_type, false);
+    // increment counter
+    i_n <- ir_fresh_tmp(b, "fi");
+    ir_push_inst(b.cur_block, ii_load(i_n, mk_int(), ir_reg(idx_slot, mk_int())));
+    nx <- ir_fresh_tmp(b, "fnext");
+    ir_push_inst(b.cur_block, ii_add(nx, ir_reg(i_n, mk_int()), ir_const_int(1)));
+    ir_push_inst(b.cur_block, ii_store(ir_reg(nx, mk_int()), ir_reg(idx_slot, mk_int())));
+    ir_set_terminator(b.cur_block, ii_br(cond_lbl));
+
+    // end: print "]"
+    end_bb <- ir_block(end_lbl);
+    ir_fn_add_block(b.func, end_bb);
+    b.cur_block <- end_bb;
+    ir_emit_lit(b, "]");
+    return 0;
+}
+
+// Emit `{name: val, ...}` for a struct value. No newline (caller handles top
+// level). Fields are unrolled at compile time using the static struct_lit
+// type — we know names and per-field types up front.
+fn ir_emit_format_struct(b, struct_val, fields) {
+    ir_emit_lit(b, "{");
+    i <- 0;
+    while (i < len(fields)) {
+        f <- fields[i];
+        if (i > 0) { ir_emit_lit(b, ", "); }
+        ir_emit_lit(b, f.name + ": ");
+        // Fetch the field's value via struct_get. The runtime returns i64
+        // regardless; format_value re-interprets it through f.type.
+        fid <- ir_mod_add_str(b.mod, f.name);
+        fld_reg <- ir_fresh_tmp(b, "fld");
+        ir_push_inst(b.cur_block, ii_struct_get(fld_reg, mk_int(), struct_val, fid));
+        ir_emit_format_value(b, ir_reg(fld_reg, mk_int()), f.type, false);
+        i <- i + 1;
+    }
+    ir_emit_lit(b, "}");
+    return 0;
+}
+
 fn ir_emit_stmt(b, stmt) {
     if (stmt.node = "ReturnStmt") {
         if (stmt.expr = false) {
@@ -3753,17 +4048,14 @@ fn ir_emit_stmt(b, stmt) {
     }
     if (stmt.node = "PrintStmt") {
         v <- ir_emit_expr(b, stmt.expr);
-        // Decide str vs int via typeof_expr, which consults var_types (set by
-        // scan_call_sites + infer_body in our prep pass) rather than just the
-        // surface AST. That way string-typed identifiers / params are
-        // recognized, not just literal StringLits.
+        // Decide formatting based on the expression's static type. typeof_expr
+        // consults var_types (set by scan_call_sites + infer_body in our prep
+        // pass) so identifiers / params / fields with inferred types are
+        // recognized, not just surface literals. For composite types
+        // (array, struct_lit) ir_emit_format_value emits an inline runtime
+        // walk; for scalars it dispatches to print_int / print_str / print_bool.
         et <- typeof_expr(stmt.expr);
-        if (et.kind = "str") {
-            cast_reg <- ir_fresh_tmp(b, "pp");
-            ir_push_inst(b.cur_block, ii_print_str(cast_reg, v));
-        } else {
-            ir_push_inst(b.cur_block, ii_print_int(v));
-        }
+        ir_emit_format_value(b, v, et, true);
         return 0;
     }
     if (stmt.node = "IfStmt") {
@@ -3859,38 +4151,46 @@ fn ir_emit_stmt(b, stmt) {
     if (stmt.node = "ForInStmt") {
         // Desugar `for (x in coll) { body }` into:
         //
-        //     _for_idx <- 0;
-        //     while (_for_idx < len(coll)) {
-        //         x <- coll[_for_idx];
+        //     _for_idx_N <- 0;
+        //     while (_for_idx_N < len(coll)) {
+        //         x <- coll[_for_idx_N];
         //         body...
-        //         _for_idx <- _for_idx + 1;
+        //         _for_idx_N <- _for_idx_N + 1;
         //     }
         //
         // We construct synthetic AST nodes and recurse through ir_emit_stmt /
         // ir_emit_expr. Length, indexing, and inc/cmp all reuse the existing
         // emitter paths, so str-vs-array dispatch comes for free.
-        idx_init <- {node: "Assignment", name: "_for_idx", expr: {node: "NumberLit", value: 0}, type_ann: mk_none()};
+        //
+        // The counter is named uniquely per loop so nested for-ins don't
+        // clobber each other's index. Without this, an inner loop's final
+        // counter value leaks into the outer loop's increment, breaking the
+        // outer loop's continuation check after a single iteration.
+        b.for_idx_counter[0] <- b.for_idx_counter[0] + 1;
+        idx_name <- "_for_idx_" + b.for_idx_counter[0];
+
+        idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: mk_none()};
         ir_emit_stmt(b, idx_init);
 
-        // condition: _for_idx < len(coll)
+        // condition: idx_name < len(coll)
         cond <- {
             node: "BinOp",
             op: "<",
-            left: {node: "Identifier", name: "_for_idx"},
+            left: {node: "Identifier", name: idx_name},
             right: {node: "CallExpr", callee: {node: "Identifier", name: "len"}, args: [stmt.iterable]}
         };
 
-        // body: x <- coll[_for_idx]; <user body>; _for_idx <- _for_idx + 1;
+        // body: x <- coll[idx_name]; <user body>; idx_name <- idx_name + 1;
         bind_x <- {
             node: "Assignment",
             name: stmt.var_name,
-            expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: "_for_idx"}},
+            expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: idx_name}},
             type_ann: mk_none()
         };
         inc_idx <- {
             node: "Assignment",
-            name: "_for_idx",
-            expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: "_for_idx"}, right: {node: "NumberLit", value: 1}},
+            name: idx_name,
+            expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: idx_name}, right: {node: "NumberLit", value: 1}},
             type_ann: mk_none()
         };
         new_body <- [bind_x];
@@ -4144,6 +4444,7 @@ fn llvm_emit_preamble() {
 
     emit("declare i32 @printf(ptr, ...)");
     emit("declare i32 @puts(ptr)");
+    emit("declare i32 @putchar(i32)");
     emit("declare i32 @fflush(ptr)");
     emit("declare ptr @malloc(i64)");
     emit("declare ptr @realloc(ptr, i64)");
@@ -4196,6 +4497,7 @@ fn llvm_emit_runtime() {
     emit_write_file_helper();
     emit_append_file_helper();
     emit_input_helper();
+    emit_print_helpers();
 }
 
 fn llvm_emit_main_wrapper() {
