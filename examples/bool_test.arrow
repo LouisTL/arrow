@@ -1,0 +1,77 @@
+// Arrow Lang — Boolean type and operators (compiler test)
+// Exercises the dedicated bool type. Arrow has no separate bool storage; bools
+// share the i64 representation with ints, but typeof_expr distinguishes them
+// so prints render true/false.
+//
+// Note: a few divergences exist between interpreter and native around static
+// vs runtime tagging — e.g. a function whose return type can't be inferred
+// as bool ends up printed as int natively but as bool by the interpreter.
+// This test stays inside cases where the static type is known at the print
+// site and matches the runtime.
+
+// ── Literals ──────────────────────────────
+print(true);
+print(false);
+
+// ── Comparisons return bool ──────────────
+print(1 = 1);          // true
+print(1 = 2);          // false
+print(1 != 2);         // true
+print(1 < 2);          // true
+print(2 < 1);          // false
+print(1 <= 1);         // true
+print(2 > 1);          // true
+print(2 >= 2);         // true
+
+// ── Logical ops return bool ──────────────
+print(true && true);   // true
+print(true && false);  // false
+print(false || true);  // true
+print(false || false); // false
+print(!true);          // false
+print(!false);         // true
+
+// ── Mixed expressions ────────────────────
+print((1 < 2) && (3 > 2));         // true
+print((1 = 2) || (3 = 3));         // true
+print(!(1 = 2));                   // true
+
+// ── bool variable annotations ────────────
+done: bool <- false;
+print(done);
+done <- true;
+print(done);
+
+// ── bool inside collections ──────────────
+print([true, false, true]);        // [true, false, true]
+print({ok: true, fail: false});    // {ok: true, fail: false}
+
+// ── Bool in conditionals ─────────────────
+fn describe(x) {
+    if (x > 0) {
+        print("positive");
+    } else {
+        if (x < 0) {
+            print("negative");
+        } else {
+            print("zero");
+        }
+    }
+}
+describe(5);
+describe(-3);
+describe(0);
+
+// ── Logical short-circuit doesn't matter for pure exprs ──
+// (Arrow's && and || are eagerly evaluated — see the language docs;
+//  this test just confirms the result, not the side-effect ordering.)
+fn even(n) { return n % 2 = 0; }
+fn pos(n)  { return n > 0; }
+e: bool <- even(4) && pos(4);
+print(e);              // true
+e <- even(3) && pos(3);
+print(e);              // false
+e <- even(3) || pos(3);
+print(e);              // true
+
+print("Done!");

@@ -1,0 +1,58 @@
+// Arrow Lang — Operator precedence and grouping (compiler test)
+// Confirms the parser binds operators at the right tightness so the same
+// expression evaluates the same way in interpreter and native.
+
+// ── Arithmetic precedence ────────────────
+print(1 + 2 * 3);       // 7  ← * before +
+print(2 * 3 + 1);       // 7
+print(1 + 2 * 3 + 4);   // 11
+print(10 - 4 - 2);      // 4  ← left-to-right
+print(20 / 4 / 5);      // 1
+print(2 + 3 * 4 - 1);   // 13
+print(20 - 2 * 3);      // 14
+print(8 / 2 + 1);       // 5
+print(8 / (2 + 2));     // 2
+print((1 + 2) * 3);     // 9
+print(((2 + 3)) * 4);   // 20
+
+// ── Modulo ───────────────────────────────
+print(10 % 3);          // 1
+print(10 % 3 + 1);      // 2
+print(15 % 4 * 2);      // 6   ← % same precedence as *
+print(2 + 10 % 3);      // 3
+
+// ── Unary minus ──────────────────────────
+print(-5);              // -5
+print(-(-5));           // 5
+print(-5 + 3);          // -2
+print(3 + -5);          // -2
+print(-2 * 3);          // -6
+
+// ── Comparison precedence vs arithmetic ─
+// Arithmetic binds tighter than comparisons.
+print(1 + 1 = 2);       // true
+print(2 * 3 > 5);       // true
+print(2 * 3 = 6);       // true
+print(10 - 3 < 8);      // true
+print(0 < 1 + 1);       // true
+
+// ── Logical precedence ──────────────────
+// && tighter than || (standard convention).
+print(true || false && false);    // true   ← false && false = false; true || false
+print((true || false) && false);  // false  ← grouped
+
+// ── Comparison vs logical ───────────────
+print(1 < 2 && 2 < 3);   // true
+print(1 < 2 || 5 < 1);   // true
+print(1 = 1 && 2 = 2);   // true
+
+// ── Negation precedence ─────────────────
+print(!true || true);    // true   ← ! tighter than ||
+print(!(true || true));  // false
+
+// ── String concat with + ────────────────
+print("a" + "b" + "c");        // abc  ← left-to-right
+print("count: " + (3 + 4));    // count: 7
+print("x" + "" + "y");         // xy
+
+print("Done!");

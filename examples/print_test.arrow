@@ -1,0 +1,39 @@
+// Arrow Lang — Typed printing of composite values (compiler test)
+// Verifies that arrays and structs print recursively, with strings quoted
+// inside collections and bools rendered as true/false.
+
+// ── Scalars ───────────────────────────────
+print(42);                           // 42
+print("hello");                      // hello (no quotes at top level)
+print(true);                         // true
+print(false);                        // false
+
+// ── Arrays of primitives ──────────────────
+print([1, 2, 3]);                    // [1, 2, 3]
+print(["a", "b", "c"]);              // ["a", "b", "c"]   ← strings quoted inside
+print([true, false, true]);          // [true, false, true]
+print([]);                           // []
+
+// ── Structs of primitives ─────────────────
+print({x: 3, y: 4});                 // {x: 3, y: 4}
+print({name: "Alice", age: 30});     // {name: "Alice", age: 30}
+print({ok: true, count: 0});         // {ok: true, count: 0}
+
+// ── Nested arrays ─────────────────────────
+print([[1, 2], [3, 4]]);             // [[1, 2], [3, 4]]
+print([["a"], ["b", "c"]]);          // [["a"], ["b", "c"]]
+
+// ── Struct containing array / struct ──────
+print({tags: ["x", "y"], n: 2});     // {tags: ["x", "y"], n: 2}
+print({inner: {a: 1, b: 2}});        // {inner: {a: 1, b: 2}}
+
+// ── Variables, not just literals ──────────
+nums <- [10, 20, 30];
+print(nums);
+nums[1] <- 99;
+print(nums);                         // [10, 99, 30]
+
+config <- {debug: true, level: 3};
+print(config);                       // {debug: true, level: 3}
+
+print("Done!");

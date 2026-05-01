@@ -1522,7 +1522,17 @@ fn find_captures(body, params, is_expr: int) {
 // names become the closure's captured environment. Checks the IR builder's
 // locals list to distinguish parameters and inner declarations from outer
 // references.
-fn ir_find_captures(b, body, params, is_expr: int) {
+// Collect all identifier references in a body that are NOT in `params`. When
+// walking encounters a nested ArrowFn, recurse into the inner's body — its own
+// params shadow, but anything else its body references is a "free name" that
+// the outer scope might need to provide. This is what enables transitive
+// capture through nested closures: e.g. `(mult) => (x) => x + outer_var`
+// must capture `outer_var` so the inner can read it from env.
+//
+// `params_in` is the list of names that shadow at this scope. The output is
+// flat — outer-scope names that this body, or any nested ArrowFn body,
+// references (after subtracting inner params).
+fn ir_collect_refs(body, params_in, is_expr: int) {
     refs <- [];
     work <- [];
     if (is_expr = false) {
@@ -1536,13 +1546,28 @@ fn ir_find_captures(b, body, params, is_expr: int) {
         nd <- work[wi];
         wi <- wi + 1;
         if (nd.node = "Identifier") {
-            if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
+            if (!var_exists(params_in, nd.name) && !var_exists(refs, nd.name)) {
+                push(refs, nd.name);
+            }
         }
-        // Walk children — same shape-walking as the existing find_captures.
+        if (nd.node = "ArrowFn") {
+            // Inner's params shadow only inside the inner. Recurse with a
+            // params list = current params ∪ inner.params, so refs the inner
+            // makes to outer-scope names still bubble up.
+            combined <- [];
+            i <- 0; while (i < len(params_in)) { push(combined, params_in[i]); i <- i + 1; }
+            i <- 0; while (i < len(nd.params)) { push(combined, nd.params[i]); i <- i + 1; }
+            inner_refs <- ir_collect_refs(nd.body, combined, nd.is_expr);
+            i <- 0;
+            while (i < len(inner_refs)) {
+                if (!var_exists(refs, inner_refs[i])) { push(refs, inner_refs[i]); }
+                i <- i + 1;
+            }
+        }
         if (nd.node = "BinOp")    { push(work, nd.left); push(work, nd.right); }
         if (nd.node = "UnaryOp")  { push(work, nd.operand); }
         if (nd.node = "Assignment") {
-            if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
+            if (!var_exists(params_in, nd.name) && !var_exists(refs, nd.name)) { push(refs, nd.name); }
             push(work, nd.expr);
         }
         if (nd.node = "ReturnStmt" && nd.expr != false) { push(work, nd.expr); }
@@ -1577,22 +1602,25 @@ fn ir_find_captures(b, body, params, is_expr: int) {
         if (nd.node = "StructLit")    {
             i <- 0; while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
         }
-        // ArrowFn nested inside arrow fn — not handled here. Future work.
     }
-    // Filter: keep refs that are NOT params and ARE in the current builder's locals.
+    return refs;
+}
+
+fn ir_find_captures(b, body, params, is_expr: int) {
+    // Collect refs (recursing into nested ArrowFn) then filter to those that
+    // resolve in the outer builder's locals — those are the ones we need to
+    // copy into the env for this closure.
+    refs <- ir_collect_refs(body, params, is_expr);
     caps <- [];
     i <- 0;
     while (i < len(refs)) {
-        if (!var_exists(params, refs[i])) {
-            // Check builder's locals list.
-            j <- 0;
-            found <- false;
-            while (j < len(b.locals)) {
-                if (b.locals[j].name = refs[i]) { found <- true; }
-                j <- j + 1;
-            }
-            if (found) { push(caps, refs[i]); }
+        j <- 0;
+        found <- false;
+        while (j < len(b.locals)) {
+            if (b.locals[j].name = refs[i]) { found <- true; }
+            j <- j + 1;
         }
+        if (found) { push(caps, refs[i]); }
         i <- i + 1;
     }
     return caps;
@@ -3230,11 +3258,22 @@ fn ir_emit_expr(b, nd) {
         return ir_const_int(0);
     }
     if (nd.node = "CallExpr") {
-        // User function calls (and recognized built-ins). Indirect calls are
-        // not yet supported in this phase.
+        // Indirect call: when the callee isn't a plain identifier it's some
+        // expression that produces a closure pair (e.g. `make_inc()(5)`,
+        // `arr[0](x)`, `obj.field(x)`). Evaluate the callee as an i64 pair
+        // pointer and route through closure_call, which already handles
+        // unpacking [fn_ptr, env_ptr] and prepending env to the args.
         if (nd.callee.node != "Identifier") {
-            print("ir_emit_expr CallExpr: indirect calls not yet supported");
-            return ir_const_int(0);
+            callee_val <- ir_emit_expr(b, nd.callee);
+            args <- [];
+            i <- 0;
+            while (i < len(nd.args)) {
+                push(args, ir_emit_expr(b, nd.args[i]));
+                i <- i + 1;
+            }
+            tmp <- ir_fresh_tmp(b, "icc");
+            ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), callee_val, args));
+            return ir_reg(tmp, mk_int());
         }
         nm <- nd.callee.name;
 
@@ -3385,14 +3424,21 @@ fn ir_emit_expr(b, nd) {
         // env_ptr], and indirect-call with env prepended to args.
         cinfo <- ir_get_closure(b, nm);
         if (cinfo != false) {
-            // Load the closure pair pointer from wherever the variable lives —
-            // global @g_<n> or a local alloca slot.
+            // Load the closure pair pointer from wherever the variable lives.
+            // Locals shadow globals: if the name is in this builder's locals,
+            // use the local slot even when a global of the same name exists.
+            is_loc <- false;
+            j <- 0;
+            while (j < len(b.locals)) {
+                if (b.locals[j].name = nm) { is_loc <- true; }
+                j <- j + 1;
+            }
             pair_tmp <- ir_fresh_tmp(b, "pair");
-            if (is_global(nm)) {
-                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
-            } else {
+            if (is_loc) {
                 slot <- ir_get_local_slot(b, nm);
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+            } else {
+                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
             }
             // Evaluate user args.
             args <- [];
@@ -3419,6 +3465,10 @@ fn ir_emit_expr(b, nd) {
         }
         if (!is_known_fn) {
             // Find where the closure pair lives — local slot or global.
+            // Locals SHADOW globals. Otherwise a captured parameter that
+            // happens to share a name with a top-level var (like `g` being
+            // captured in compose's body while another `g` exists at top
+            // level) would silently load the wrong value.
             is_loc <- false;
             j <- 0;
             while (j < len(b.locals)) {
@@ -3427,11 +3477,11 @@ fn ir_emit_expr(b, nd) {
             }
             if (is_loc || is_global(nm)) {
                 pair_tmp <- ir_fresh_tmp(b, "pair");
-                if (is_global(nm)) {
-                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
-                } else {
+                if (is_loc) {
                     slot <- ir_get_local_slot(b, nm);
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+                } else {
+                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
                 }
                 args <- [];
                 i <- 0;

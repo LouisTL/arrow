@@ -107,4 +107,76 @@ forEach([10, 20, 30], (x) => {
     print("value: " + x);
 });
 
+// ── Indirect calls via expression ────────
+// The callee here is the result of an expression, not a plain identifier.
+// Each of these used to bail with "indirect calls not yet supported".
+fn make_inc() {
+    return (x) => x + 1;
+}
+print(make_inc()(5));        // 6
+print(make_adder(10)(7));    // 17
+
+// Triple-nested currying — every (b)(c) is an indirect call.
+add3 <- (a) => (b) => (c) => a + b + c;
+print(add3(1)(2)(3));        // 6
+
+// Indirect call via array index and struct field.
+fns <- [(x) => x + 1, (x) => x * 10, (x) => x - 100];
+print(fns[0](5));            // 6
+print(fns[1](5));            // 50
+
+ops <- {inc: (x) => x + 1, dec: (x) => x - 1};
+print(ops.inc(10));          // 11
+print(ops.dec(10));          // 9
+
+// ── Nested ArrowFn capture ───────────────
+// The outer ArrowFn must forward `outer_var` through its env so the inner
+// can read it. Before fixing capture detection, the outer wouldn't notice
+// the inner needed `outer_var` and the inner would read garbage.
+fn factory() {
+    outer_var <- 100;
+    f <- (mult) => (x) => x * mult + outer_var;
+    return f;
+}
+make <- factory();
+print(make(2)(5));           // 5*2 + 100 = 110
+print(make(3)(7));           // 7*3 + 100 = 121
+
+// Capture chain through three levels via FnDecl wrapper.
+fn triple_capture() {
+    a <- 1;
+    return (b) => (c) => a * 100 + b * 10 + c;
+}
+g <- triple_capture();
+print(g(2)(3));              // 123
+print(g(5)(7));              // 157
+
+// Closures with conditional bodies (and indirect call via the var).
+fn clamp_factory(lo, hi) {
+    return (x) => {
+        if (x < lo) { return lo; }
+        if (x > hi) { return hi; }
+        return x;
+    };
+}
+clamp <- clamp_factory(0, 10);
+print(clamp(-5));            // 0
+print(clamp(5));             // 5
+print(clamp(15));            // 10
+
+// Captures are by-value snapshots: each closure stores its own copy of
+// captured values at creation time, so the counter is "frozen at 1".
+fn make_counter() {
+    n <- 0;
+    return () => {
+        n <- n + 1;
+        return n;
+    };
+}
+c1 <- make_counter();
+print(c1());                 // 1
+print(c1());                 // 1   ← snapshot semantics
+c2 <- make_counter();
+print(c2());                 // 1   ← independent counter
+
 print("Done!");
