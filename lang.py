@@ -1192,6 +1192,13 @@ class Interpreter:
             case '*':  return lv * rv
             case '/':
                 if rv == 0: raise RuntimeError_("Division by zero")
+                # Match Arrow's native semantics: int/int → int (truncate
+                # toward zero), float promotion only when at least one
+                # operand is float. Python's / always returns float, so we
+                # explicitly route through int() when both are int.
+                if isinstance(lv, int) and not isinstance(lv, bool) and isinstance(rv, int) and not isinstance(rv, bool):
+                    # int(lv/rv) truncates toward zero for any sign combo.
+                    return int(lv / rv)
                 return lv / rv
             case '%':
                 if rv == 0: raise RuntimeError_("Modulo by zero")
@@ -1214,8 +1221,11 @@ class Interpreter:
     def _format(self, val, in_collection: bool = False) -> str:
         if isinstance(val, bool):
             return "true" if val else "false"
-        if isinstance(val, float) and val == int(val):
-            return str(int(val))
+        if isinstance(val, float):
+            # Match Python's repr(float) — always show a decimal point so that
+            # 2.0 prints as "2.0", not "2". This also matches the native
+            # compiler's float formatter.
+            return repr(val)
         if isinstance(val, list):
             return "[" + ", ".join(self._format(v, True) for v in val) + "]"
         if isinstance(val, Struct):

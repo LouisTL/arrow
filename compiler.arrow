@@ -24,7 +24,7 @@ fn tokenize(src: str){
     while(p<sl){ch<-char_code(char_at(src,p));
         if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
         else if(ch=47&&p+1<sl&&char_code(char_at(src,p+1))=47){while(p<sl&&char_code(char_at(src,p))!=10){p<-p+1;}}
-        else if(is_digit(ch)){s<-p;sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}
+        else if(is_digit(ch)){s<-p;sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}if(p+1<sl&&char_at(src,p)="."&&is_digit(char_code(char_at(src,p+1)))){p<-p+1;cl<-cl+1;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("FLOAT",substring(src,s,p),ln,sc));}else{push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}}
         else if(ch=34){sc<-cl;p<-p+1;cl<-cl+1;sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
         else if(is_alpha(ch)){s<-p;sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
         else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=45){push(ts,mktok("ARROW","<-",ln,cl));p<-p+2;cl<-cl+2;}
@@ -77,7 +77,7 @@ fn ps(){
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
+fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
 fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln};}
 fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
@@ -104,6 +104,7 @@ fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){cln<-toks[pos[0]].line;e
     else{dn<-true;}}return e;}
 fn ppm(){
     if(ci("NUMBER")){v<-cv();adv();return{node:"NumberLit",value:v};}
+    if(ci("FLOAT")){v<-cv();adv();return{node:"FloatLit",value:v};}
     if(ci("STRING")){v<-cv();adv();return{node:"StringLit",value:v};}
     if(ci("BOOL")){v<-cv();adv();return{node:"BoolLit",value:v};}
     if(ci("IDENT")){v<-cv();adv();return{node:"Identifier",name:v};}
@@ -595,6 +596,7 @@ fn scs_expr(nd, work) {
 fn mk_int() { return {kind: "int"}; }
 fn mk_str() { return {kind: "str"}; }
 fn mk_bool() { return {kind: "bool"}; }
+fn mk_float() { return {kind: "float"}; }
 fn mk_any() { return {kind: "any"}; }
 fn mk_struct() { return {kind: "struct"}; }
 // IR-only: an opaque LLVM `ptr`. Used for extern declarations that take
@@ -632,6 +634,7 @@ fn parse_type_ann(s: str) {
     if (s = "int") { return mk_int(); }
     if (s = "str") { return mk_str(); }
     if (s = "bool") { return mk_bool(); }
+    if (s = "float") { return mk_float(); }
     if (s = "any") { return mk_any(); }
     if (s = "struct") { return mk_struct(); }
     if (s = "fn") { return mk_fn(); }
@@ -1066,6 +1069,7 @@ fn emit_itoa_helper() {
 
 fn typeof_expr(nd) {
     if (nd.node = "NumberLit") { return mk_int(); }
+    if (nd.node = "FloatLit") { return mk_float(); }
     if (nd.node = "StringLit") { return mk_str(); }
     if (nd.node = "BoolLit") { return mk_bool(); }
     if (nd.node = "Identifier") {
@@ -1079,13 +1083,21 @@ fn typeof_expr(nd) {
         rt <- typeof_expr(nd.right);
         if (op = "+") {
             if (lt.kind = "str" || rt.kind = "str") { return mk_str(); }
+            if (lt.kind = "float" || rt.kind = "float") { return mk_float(); }
             return mk_int();
         }
-        // Arithmetic — all return int
+        // Arithmetic — float-propagating: any float operand makes the result float.
+        if (lt.kind = "float" || rt.kind = "float") { return mk_float(); }
         return mk_int();
     }
     if (nd.node = "UnaryOp") {
         if (nd.op = "!") { return mk_bool(); }
+        // Unary `-` preserves the operand's numeric type (int or float).
+        if (nd.op = "-") {
+            ot <- typeof_expr(nd.operand);
+            if (ot.kind = "float") { return mk_float(); }
+            return mk_int();
+        }
         return mk_int();
     }
     if (nd.node = "CallExpr") {
@@ -1287,6 +1299,13 @@ fn types_compat(annot, actual): int {
     // where a `bool` is expected, should keep type-checking.
     if (annot.kind = "int" && actual.kind = "bool") { return true; }
     if (annot.kind = "bool" && actual.kind = "int") { return true; }
+    // Floats are stored in i64 slots via bitcast, so storage is uniform with int.
+    // Assigning an int to a float slot (or vice versa) is also allowed and the
+    // arithmetic emitter will promote at use sites. This keeps the typecheck
+    // permissive for the common case `x: float <- 3` and `y: int <- 1.5`.
+    if (annot.kind = "float" && (actual.kind = "int" || actual.kind = "bool")) { return true; }
+    if (annot.kind = "int" && actual.kind = "float") { return true; }
+    if (annot.kind = "bool" && actual.kind = "float") { return true; }
     if (annot.kind = "array" && actual.kind = "array") {
         return types_compat(annot.elem, actual.elem);
     }
@@ -2047,6 +2066,115 @@ fn emit_print_helpers() {
     emit("  ret void");
     emit("}");
     emit("");
+
+    // ── Float formatting (Python-repr-compatible) ─────────────
+    //
+    // The goal: produce the shortest decimal string that round-trips to the
+    // same double, matching what Python's repr(float) and str(float) do.
+    // This is exactly what Grisu / Steele-White solve, but we don't need
+    // their speed — only their output. So we do the dumb version:
+    //
+    //   for precision = 1..17:
+    //       snprintf(buf, "%.*g", precision, v)
+    //       if strtod(buf) == v: break
+    //
+    // The first precision that round-trips is, by construction, the shortest
+    // round-trippable representation. If we reach 17 (always sufficient for
+    // doubles), we stop there. Then, if the result looks like an integer
+    // (no '.', no 'e', no 'inf'/'nan' markers), append ".0" to match Python's
+    // "always show a decimal point" rule for floats.
+    //
+    // Constants used:
+    //   @.fmt.pg        "%.*g"     for snprintf with width-precision arg
+    //   @.fmt.sn        "%s\n"     for printing the formatted buffer + newline
+    //   @.special_chars ".enN"     chars that mean "don't append .0"
+    emit("@.fmt.pg = private constant [5 x i8] c\"%.*g\\00\"");
+    emit("@.fmt.sn = private constant [4 x i8] c\"%s\\0A\\00\"");
+    emit("@.special_chars = private constant [5 x i8] c\".enN\\00\"");
+    emit("declare i32 @snprintf(ptr, i64, ptr, ...)");
+    emit("declare double @strtod(ptr, ptr)");
+    emit("declare ptr @strpbrk(ptr, ptr)");
+    emit("");
+
+    // Fill `buf` with the formatted text. Caller provides ≥40-byte buffer.
+    //
+    // We exhaustively try every precision 1..17 with snprintf("%.*g") and keep
+    // the SHORTEST output that round-trips through strtod. This matters
+    // because, for example, "%.1g" of 10.0 yields "1e+01" (5 chars, parses
+    // back to 10.0) while "%.2g" yields "10" (2 chars, also round-trips).
+    // Picking the shortest matches Python's repr(float) on every value we've
+    // tried, at the cost of a handful of snprintf calls per print.
+    emit("define void @arrow_fmt_float_to(double %v, ptr %buf) {");
+    emit("entry:");
+    emit("  %tmp = alloca [40 x i8]");
+    emit("  %best_len = alloca i64");
+    emit("  store i64 9999, ptr %best_len");
+    emit("  store i8 0, ptr %buf");
+    emit("  %prec_slot = alloca i32");
+    emit("  store i32 1, ptr %prec_slot");
+    emit("  br label %loop");
+    emit("loop:");
+    emit("  %prec = load i32, ptr %prec_slot");
+    emit("  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %tmp, i64 40, ptr @.fmt.pg, i32 %prec, double %v)");
+    emit("  %parsed = call double @strtod(ptr %tmp, ptr null)");
+    emit("  %eq = fcmp oeq double %parsed, %v");
+    emit("  br i1 %eq, label %check_len, label %inc");
+    emit("check_len:");
+    emit("  %tmplen = call i64 @strlen(ptr %tmp)");
+    emit("  %best = load i64, ptr %best_len");
+    emit("  %shorter = icmp slt i64 %tmplen, %best");
+    emit("  br i1 %shorter, label %update, label %inc");
+    emit("update:");
+    emit("  store i64 %tmplen, ptr %best_len");
+    emit("  call ptr @strcpy(ptr %buf, ptr %tmp)");
+    emit("  br label %inc");
+    emit("inc:");
+    emit("  %p1 = add i32 %prec, 1");
+    emit("  store i32 %p1, ptr %prec_slot");
+    emit("  %toomany = icmp sgt i32 %p1, 17");
+    emit("  br i1 %toomany, label %done_fmt, label %loop");
+    emit("done_fmt:");
+    emit("  %special = call ptr @strpbrk(ptr %buf, ptr @.special_chars)");
+    emit("  %has_special = icmp ne ptr %special, null");
+    emit("  br i1 %has_special, label %retv, label %appdot");
+    emit("appdot:");
+    emit("  %len = call i64 @strlen(ptr %buf)");
+    emit("  %end1 = getelementptr i8, ptr %buf, i64 %len");
+    emit("  store i8 46, ptr %end1");
+    emit("  %len1 = add i64 %len, 1");
+    emit("  %end2 = getelementptr i8, ptr %buf, i64 %len1");
+    emit("  store i8 48, ptr %end2");
+    emit("  %len2 = add i64 %len, 2");
+    emit("  %end3 = getelementptr i8, ptr %buf, i64 %len2");
+    emit("  store i8 0, ptr %end3");
+    emit("  br label %retv");
+    emit("retv:");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_print_float — outer (top-level print): formats + newline + fflush.
+    emit("define void @arrow_print_float(i64 %vi) {");
+    emit("entry:");
+    emit("  %v = bitcast i64 %vi to double");
+    emit("  %buf = alloca [40 x i8]");
+    emit("  call void @arrow_fmt_float_to(double %v, ptr %buf)");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.sn, ptr %buf)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_format_float — inner (inside arrays / structs): no newline.
+    emit("define void @arrow_format_float(i64 %vi) {");
+    emit("entry:");
+    emit("  %v = bitcast i64 %vi to double");
+    emit("  %buf = alloca [40 x i8]");
+    emit("  call void @arrow_fmt_float_to(double %v, ptr %buf)");
+    emit("  call i32 (ptr, ...) @printf(ptr @.fmt.s_, ptr %buf)");
+    emit("  ret void");
+    emit("}");
+    emit("");
 }
 
 // ── Emit input helper ───────────────────
@@ -2186,6 +2314,13 @@ fn ir_reg(name: str, t) {
 
 fn ir_const_int(n: int) {
     return {kind: "const_int", val: n, type: mk_int()};
+}
+
+// Float constant: `val` is the source-level text ("1.5", "3.14159", "0.1").
+// Rendered as the bare text — LLVM accepts decimal float literals in any
+// position that takes a `double` operand (e.g. `fadd double 1.5, %x`).
+fn ir_const_float(val) {
+    return {kind: "const_float", val: val, type: mk_float()};
 }
 
 fn ir_const_str(id: str) {
@@ -2329,6 +2464,43 @@ fn ii_sdiv(dst: str, l, r)      { return ir_inst("sdiv",    dst, mk_int(), [l, r
 fn ii_srem(dst: str, l, r)      { return ir_inst("srem",    dst, mk_int(), [l, r], false); }
 fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, mk_int(), [v],    false); }
 
+// ── Float arithmetic ──────────────────
+//
+// Arrow stores floats in i64 slots via `bitcast double … to i64` so the whole
+// ABI (vars, params, arrays, structs, closure envs) stays uniformly i64.
+// Each arithmetic site has to:
+//   1. Cast each operand from i64 to double (bitcast for floats, sitofp for ints).
+//   2. Run the float op in double space.
+//   3. Bitcast the double result back to i64 for storage.
+//
+// Helpers below render exactly one cast or one float op per inst — the binop
+// emitter orchestrates the sequence. Operands marked "double-typed" are
+// register names that the renderer trusts to already be doubles; mixing them
+// with i64 registers will produce LLVM type errors at clang time, which is a
+// loud failure mode and helpful for catching codegen bugs.
+
+fn ii_fadd(dst: str, l, r)      { return ir_inst("fadd",    dst, mk_float(), [l, r], false); }
+fn ii_fsub(dst: str, l, r)      { return ir_inst("fsub",    dst, mk_float(), [l, r], false); }
+fn ii_fmul(dst: str, l, r)      { return ir_inst("fmul",    dst, mk_float(), [l, r], false); }
+fn ii_fdiv(dst: str, l, r)      { return ir_inst("fdiv",    dst, mk_float(), [l, r], false); }
+fn ii_fneg(dst: str, v)         { return ir_inst("fneg",    dst, mk_float(), [v],    false); }
+// LLVM fcmp predicates: oeq, one, olt, ole, ogt, oge. The "o" variants are
+// "ordered" — they return false if either operand is NaN. We use them so
+// `nan = nan` is false, matching Python/IEEE.
+fn ii_fcmp(dst: str, op: str, l, r) {
+    return ir_inst("fcmp", dst, mk_int(), [l, r], op);
+}
+
+// Cast i64 (storage form of a float) ↔ double.
+fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, mk_float(), [v], false); }
+fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, mk_int(),   [v], false); }
+// Cast i64 (an int value) to double via signed int-to-fp.
+fn ii_sitofp(dst: str, v)       { return ir_inst("sitofp",    dst, mk_float(), [v], false); }
+// Cast double back to a signed i64 (truncate-toward-zero).
+fn ii_fptosi(dst: str, v)       { return ir_inst("fptosi",    dst, mk_int(),   [v], false); }
+// Zero-extend i1 → i64. Used after fcmp to get a bool-as-int.
+fn ii_zext_i1(dst: str, v)      { return ir_inst("zext_i1",   dst, mk_int(),   [v], false); }
+
 fn ii_icmp(dst: str, op: str, l, r) {
     // op is "eq","ne","slt","sle","sgt","sge"
     return ir_inst("icmp", dst, mk_int(), [l, r], op);
@@ -2444,6 +2616,7 @@ fn ii_print_str(ptr_reg: str, val) {
     return ir_inst("print_str", ptr_reg, mk_none(), [val], false);
 }
 fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false); }
+fn ii_print_float(val)          { return ir_void_inst("print_float", [val], false); }
 
 // Format helpers — used to compose printed output for composite values.
 // These don't add a trailing newline; the translator emits ii_print_newline
@@ -2451,6 +2624,7 @@ fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false
 fn ii_format_int(val)           { return ir_void_inst("format_int", [val], false); }
 fn ii_format_str_q(val)         { return ir_void_inst("format_str_q", [val], false); }
 fn ii_format_bool(val)          { return ir_void_inst("format_bool", [val], false); }
+fn ii_format_float(val)         { return ir_void_inst("format_float", [val], false); }
 fn ii_print_lit(val)            { return ir_void_inst("print_lit", [val], false); }
 fn ii_print_newline()           { return ir_void_inst("print_newline", [], false); }
 // Generic print op — translator code prefers the typed variants
@@ -2485,11 +2659,12 @@ fn ir_llvm_type(t): str {
 
 // Render a Value as an LLVM operand (no type prefix).
 fn ir_render_operand(v): str {
-    if (v.kind = "reg")       { return v.name; }
-    if (v.kind = "const_int") { return "" + v.val; }  // force int→str coercion via concat
-    if (v.kind = "const_str") { return "@" + v.id; }  // caller typically ptrtoints it
-    if (v.kind = "label")     { return "label %" + v.name; }
-    if (v.kind = "global")    { return "@g_" + v.name; }
+    if (v.kind = "reg")         { return v.name; }
+    if (v.kind = "const_int")   { return "" + v.val; }  // force int→str coercion via concat
+    if (v.kind = "const_float") { return v.val; }       // LLVM accepts "1.5" in double operand
+    if (v.kind = "const_str")   { return "@" + v.id; }  // caller typically ptrtoints it
+    if (v.kind = "label")       { return "label %" + v.name; }
+    if (v.kind = "global")      { return "@g_" + v.name; }
     return "<?>";
 }
 
@@ -2511,6 +2686,35 @@ fn ir_render_inst(inst): str {
     }
     if (op = "neg") {
         return inst.dst + " = sub i64 0, " + ir_render_operand(inst.operands[0]);
+    }
+    // Float arithmetic: dst is a double-typed register; operands are double-typed.
+    // The binop emitter is responsible for casting i64 storage to double before
+    // calling fadd/fsub/etc, and casting the result back via bc_d_to_i.
+    if (op = "fadd" || op = "fsub" || op = "fmul" || op = "fdiv") {
+        return inst.dst + " = " + op + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "fneg") {
+        return inst.dst + " = fneg double " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "fcmp") {
+        // extra is the predicate: oeq, one, olt, ole, ogt, oge.
+        tmp <- inst.dst + ".cmp";
+        return inst.dst + ".cmp = fcmp " + inst.extra + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
+    }
+    if (op = "bc_i_to_d") {
+        return inst.dst + " = bitcast i64 " + ir_render_operand(inst.operands[0]) + " to double";
+    }
+    if (op = "bc_d_to_i") {
+        return inst.dst + " = bitcast double " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "sitofp") {
+        return inst.dst + " = sitofp i64 " + ir_render_operand(inst.operands[0]) + " to double";
+    }
+    if (op = "fptosi") {
+        return inst.dst + " = fptosi double " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "zext_i1") {
+        return inst.dst + " = zext i1 " + ir_render_operand(inst.operands[0]) + " to i64";
     }
     if (op = "icmp") {
         tmp <- inst.dst + ".cmp";
@@ -2578,6 +2782,9 @@ fn ir_render_inst(inst): str {
     if (op = "print_bool") {
         return "call void @arrow_print_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
+    if (op = "print_float") {
+        return "call void @arrow_print_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
     if (op = "format_int") {
         return "call void @arrow_format_int(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
@@ -2586,6 +2793,9 @@ fn ir_render_inst(inst): str {
     }
     if (op = "format_bool") {
         return "call void @arrow_format_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_float") {
+        return "call void @arrow_format_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
     if (op = "print_lit") {
         return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
@@ -3137,8 +3347,39 @@ fn ir_cmp_op(op: str): str {
     return "";
 }
 
+// fcmp predicates use the "ordered" family (o*) so NaN comparisons return
+// false on both sides, matching IEEE semantics and what Python does.
+fn ir_fcmp_op(op: str): str {
+    if (op = "=")  { return "oeq"; }
+    if (op = "!=") { return "one"; }
+    if (op = "<")  { return "olt"; }
+    if (op = "<=") { return "ole"; }
+    if (op = ">")  { return "ogt"; }
+    if (op = ">=") { return "oge"; }
+    return "";
+}
+
 fn ir_is_cmp_op(op: str): int {
     return op = "=" || op = "!=" || op = "<" || op = "<=" || op = ">" || op = ">=";
+}
+
+// Cast a Value of i64 storage type to a double-typed register. Used to
+// prepare operands for float arithmetic / comparison sites. Returns the
+// register name (a string like "%fbc7"); callers wrap it in ir_reg(...).
+//
+//   float operand  → bitcast i64 → double  (no value change, just reinterpret)
+//   int   operand  → sitofp i64 → double    (real numeric promotion)
+//   bool / any     → sitofp too — bool is just an int at runtime, and any
+//                     gets a numeric promotion which is the most useful default
+fn ir_to_double_reg(b, val, t): str {
+    if (t.kind = "float") {
+        d <- ir_fresh_tmp(b, "fbc");
+        ir_push_inst(b.cur_block, ii_bc_i_to_d(d, val));
+        return d;
+    }
+    d <- ir_fresh_tmp(b, "fsi");
+    ir_push_inst(b.cur_block, ii_sitofp(d, val));
+    return d;
 }
 
 // Build a "_shim" wrapper around a regular FnDecl so it can be passed as a
@@ -3190,6 +3431,15 @@ fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
 fn ir_emit_expr(b, nd) {
     if (nd.node = "NumberLit") {
         return ir_const_int(nd.value);
+    }
+    if (nd.node = "FloatLit") {
+        // Build the double constant and bitcast it to i64 for our uniform
+        // i64-everywhere storage. The literal text is passed through to LLVM
+        // verbatim — LLVM rounds decimal floats to nearest double using IEEE
+        // round-to-nearest, matching the interpreter's Python conversion.
+        d_tmp <- ir_fresh_tmp(b, "fconst");
+        ir_push_inst(b.cur_block, ii_bc_d_to_i(d_tmp, ir_const_float(nd.value)));
+        return ir_reg(d_tmp, mk_float());
     }
     if (nd.node = "StringLit") {
         // Pool the string in the module table. Return a const_str value
@@ -3245,6 +3495,17 @@ fn ir_emit_expr(b, nd) {
     if (nd.node = "UnaryOp") {
         operand <- ir_emit_expr(b, nd.operand);
         if (nd.op = "-") {
+            // Float-aware: if the operand is float, bitcast to double, fneg,
+            // bitcast back. Otherwise integer `sub i64 0, x`.
+            ot <- typeof_expr(nd.operand);
+            if (ot.kind = "float") {
+                dd <- ir_to_double_reg(b, operand, ot);
+                fr <- ir_fresh_tmp(b, "fr");
+                ir_push_inst(b.cur_block, ii_fneg(fr, ir_reg(dd, mk_float())));
+                i64r <- ir_fresh_tmp(b, "fi");
+                ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, mk_float())));
+                return ir_reg(i64r, mk_float());
+            }
             tmp <- ir_fresh_tmp(b, "neg");
             ir_push_inst(b.cur_block, ii_neg(tmp, operand));
             return ir_reg(tmp, mk_int());
@@ -3836,6 +4097,16 @@ fn ir_emit_binop(b, nd) {
             ir_push_inst(b.cur_block, ii_strcmp(tmp, ir_cmp_op(op), lhs, rhs));
             return ir_reg(tmp, mk_int());
         }
+        // Float comparison: if either side is statically float, promote both
+        // to double and use fcmp. The other-side promotion handles mixed
+        // int/float comparisons like `2 < 1.5`.
+        if (lt.kind = "float" || rt.kind = "float") {
+            ld <- ir_to_double_reg(b, lhs, lt);
+            rd <- ir_to_double_reg(b, rhs, rt);
+            tmp <- ir_fresh_tmp(b, "fc");
+            ir_push_inst(b.cur_block, ii_fcmp(tmp, ir_fcmp_op(op), ir_reg(ld, mk_float()), ir_reg(rd, mk_float())));
+            return ir_reg(tmp, mk_bool());
+        }
         tmp <- ir_fresh_tmp(b, "cmp");
         ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
         return ir_reg(tmp, mk_int());
@@ -3865,17 +4136,56 @@ fn ir_emit_binop(b, nd) {
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, mk_str());
         }
+        if (lt.kind = "float" || rt.kind = "float") {
+            return ir_emit_fbinop(b, "fadd", lhs, lt, rhs, rt);
+        }
         tmp <- ir_fresh_tmp(b, "add");
         ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs));
         return ir_reg(tmp, mk_int());
     }
-    if (op = "-") { tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
-    if (op = "*") { tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
-    if (op = "/") { tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
-    if (op = "%") { tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, mk_int()); }
+
+    // Numeric arithmetic — route through float if either side is float.
+    lt <- typeof_expr(nd.left);
+    rt <- typeof_expr(nd.right);
+    use_float <- (lt.kind = "float" || rt.kind = "float");
+
+    if (op = "-") {
+        if (use_float) { return ir_emit_fbinop(b, "fsub", lhs, lt, rhs, rt); }
+        tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+    }
+    if (op = "*") {
+        if (use_float) { return ir_emit_fbinop(b, "fmul", lhs, lt, rhs, rt); }
+        tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+    }
+    if (op = "/") {
+        if (use_float) { return ir_emit_fbinop(b, "fdiv", lhs, lt, rhs, rt); }
+        tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+    }
+    if (op = "%") {
+        // `%` on floats is unusual but defined (frem) — kept as int-only here
+        // to match Python semantics where `1.5 % 1.0` doesn't usually appear
+        // in Arrow programs. If we want it later, add fmod via libc.
+        tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+    }
 
     print("ir_emit_binop: unsupported op " + op);
     return ir_const_int(0);
+}
+
+// Helper for arithmetic when at least one side is float. Promotes both sides
+// to double, emits the named float op, then bitcasts the result back to i64
+// for storage. Returns an ir_reg holding the i64-storage form of the result.
+fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
+    ld <- ir_to_double_reg(b, lhs, lt);
+    rd <- ir_to_double_reg(b, rhs, rt);
+    fr <- ir_fresh_tmp(b, "fr");
+    if (fop = "fadd") { ir_push_inst(b.cur_block, ii_fadd(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
+    else if (fop = "fsub") { ir_push_inst(b.cur_block, ii_fsub(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
+    else if (fop = "fmul") { ir_push_inst(b.cur_block, ii_fmul(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
+    else if (fop = "fdiv") { ir_push_inst(b.cur_block, ii_fdiv(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
+    i64r <- ir_fresh_tmp(b, "fi");
+    ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, mk_float())));
+    return ir_reg(i64r, mk_float());
 }
 
 // ── Typed printing of composite values ──────────────
@@ -3919,6 +4229,11 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
     if (t.kind = "bool") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_bool(val)); }
         else { ir_push_inst(b.cur_block, ii_format_bool(val)); }
+        return 0;
+    }
+    if (t.kind = "float") {
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_float(val)); }
+        else { ir_push_inst(b.cur_block, ii_format_float(val)); }
         return 0;
     }
     if (t.kind = "array") {
@@ -4051,6 +4366,27 @@ fn ir_emit_stmt(b, stmt) {
     }
     if (stmt.node = "Assignment") {
         v <- ir_emit_expr(b, stmt.expr);
+        // If the slot is annotated `float` (or already known to be float from a
+        // prior annotation) and the RHS is int-typed, we need to numerically
+        // promote int→float at storage time. Without this, storing the raw
+        // i64 bits of an int into a float slot would later be bitcast to
+        // double, producing a tiny denormal instead of the intended value.
+        slot_t <- mk_none();
+        if (stmt.type_ann.kind != "none") {
+            slot_t <- stmt.type_ann;
+        } else {
+            // Look up existing var type — same name may have been declared earlier.
+            slot_t <- get_var_type(stmt.name);
+        }
+        rhs_t <- typeof_expr(stmt.expr);
+        if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
+            // Promote: sitofp i64 → double, then bitcast double → i64 storage.
+            dr <- ir_fresh_tmp(b, "fsi");
+            ir_push_inst(b.cur_block, ii_sitofp(dr, v));
+            i64r <- ir_fresh_tmp(b, "fi");
+            ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(dr, mk_float())));
+            v <- ir_reg(i64r, mk_float());
+        }
         // A name resolves to its global @g_<n> only inside __main_logic (which
         // wraps the program's top-level statements). Inside any other function,
         // an assignment to that name shadows the global with a function-local
@@ -4267,6 +4603,7 @@ fn ir_emit_stmt(b, stmt) {
             || stmt.node = "BinOp"
             || stmt.node = "UnaryOp"
             || stmt.node = "NumberLit"
+            || stmt.node = "FloatLit"
             || stmt.node = "StringLit"
             || stmt.node = "BoolLit"
             || stmt.node = "Identifier") {

@@ -1,0 +1,71 @@
+// Arrow Lang — Floats (compiler test)
+// Floats are stored in i64 slots via bitcast, so the ABI is uniform; each
+// arithmetic site casts to double, does the float op, casts back. Printing
+// matches Python's repr — shortest round-trippable decimal, with a trailing
+// ".0" for integer-valued floats.
+
+// ── Literals and basic print ────────────
+print(1.5);
+print(2.0);
+print(0.5);
+print(3.14);
+print(0.1);                  // 0.1   ← Grisu-light yields shortest round-trip
+print(-1.5);
+
+// ── Arithmetic ──────────────────────────
+print(1.5 + 2.5);            // 4.0
+print(1.5 - 0.5);            // 1.0
+print(2.0 * 3.0);            // 6.0
+print(10.0 / 4.0);           // 2.5
+print(10.0 / 3.0);           // 3.3333333333333335
+print(-3.14);
+
+// ── Mixed int + float ───────────────────
+// Either operand being float promotes the result to float.
+print(1 + 1.5);              // 2.5
+print(10 / 3.0);             // 3.3333333333333335
+print(2 * 0.5);              // 1.0
+print(1.5 - 1);              // 0.5
+
+// ── Comparisons ─────────────────────────
+print(1.5 < 2.0);            // true
+print(2.0 > 1.5);            // true
+print(2.0 = 2.0);            // true
+print(1.5 != 1.6);           // true
+print(0.1 + 0.2 = 0.3);      // false  ← IEEE: 0.1+0.2 is 0.30000000000000004
+
+// ── Variables ───────────────────────────
+x: float <- 1.5;
+print(x);
+y <- x + 0.5;
+print(y);                    // 2.0
+y <- y * 2.0;
+print(y);                    // 4.0
+
+// ── Type interchange (bool/int/float share i64 storage) ─
+// Storing an int into a float-annotated slot works (it's just int storage);
+// the next arithmetic site decides whether to do int or float math based on
+// the static type, so we use a float literal to force promotion.
+a: float <- 3;
+b: float <- a + 0.5;
+print(b);                    // 3.5
+
+// ── Arrays of floats ────────────────────
+xs: [float] <- [0.5, 1.5, 2.5];
+print(xs);                   // [0.5, 1.5, 2.5]
+print(xs[1]);                // 1.5
+xs[0] <- 10.0;
+print(xs);                   // [10.0, 1.5, 2.5]
+
+// ── Struct field of float ───────────────
+pt <- {x: 1.5, y: 2.5};
+print(pt);                   // {x: 1.5, y: 2.5}
+
+// ── Annotated function returning float ──
+// Note: untyped function returns lose the float type — see comments in
+// bool_test for the matching gotcha. With annotations, float flows through:
+fn add_f(a: float, b: float): float { return a + b; }
+print(add_f(1.5, 2.5));      // 4.0
+print(add_f(0.1, 0.2));      // 0.30000000000000004
+
+print("Done!");
