@@ -78,12 +78,12 @@ fn ps(){
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
-fn pas(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln};}
-fn ptd(){ln<-toks[pos[0]].line;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln};}
+fn pas(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln,col:cl};}
+fn ptd(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln,col:cl};}
 fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
-fn prt(){ln<-toks[pos[0]].line;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln};}
-fn pfd(){ln<-toks[pos[0]].line;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln};}
+fn prt(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
+fn pfd(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
 fn ppl(){eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
@@ -98,7 +98,7 @@ fn pcm(){l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){o<-cv();adv()
 fn ppad(){l<-pmu();while(ci("PLUS")||ci("MINUS")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
 fn pmu(){l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
 fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
-fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){cln<-toks[pos[0]].line;eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln};}
+fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){cln<-toks[pos[0]].line;ccl<-toks[pos[0]].col;eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln,col:ccl};}
     else if(ci("LBRACKET")){eat("LBRACKET");x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
     else if(ci("DOT")){eat("DOT");f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
@@ -111,7 +111,7 @@ fn ppm(){
     if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
     if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
     if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
-    print("Parse error");adv();return{node:"NumberLit",value:"0"};
+    print("Parse error at " + toks[pos[0]].line + ":" + toks[pos[0]].col + ": unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
 }
 
 
@@ -1446,8 +1446,8 @@ fn infer_body(stmts) {
 type_errors <- [];
 src_filename <- ["<unknown>"];
 
-fn report_error(line: int, msg: str) {
-    push(type_errors, {line: line, msg: msg});
+fn report_error(line: int, col: int, msg: str) {
+    push(type_errors, {line: line, col: col, msg: msg});
 }
 
 // Two types are compatible when they're equal, when either is "any" or "none",
@@ -1553,7 +1553,7 @@ fn check_stmt(s) {
         if (s.type_ann.kind != "none") {
             actual <- typeof_expr(s.expr);
             if (!types_compat(s.type_ann, actual)) {
-                report_error(s.line, "type mismatch: '" + s.name + "' annotated as " + type_str(s.type_ann) + " but assigned " + type_str(actual));
+                report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + type_str(s.type_ann) + " but assigned " + type_str(actual));
             }
         }
         check_expr(s.expr);
@@ -1568,7 +1568,7 @@ fn check_stmt(s) {
                     if (fi.ret_type_ann.kind != "none") {
                         actual <- typeof_expr(s.expr);
                         if (!types_compat(fi.ret_type_ann, actual)) {
-                            report_error(s.line, "return type mismatch in '" + current_fn[0] + "': declared " + type_str(fi.ret_type_ann) + " but returning " + type_str(actual));
+                            report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + type_str(fi.ret_type_ann) + " but returning " + type_str(actual));
                         }
                     }
                 }
@@ -1621,7 +1621,7 @@ fn check_expr(e) {
                         if (ann.kind != "none") {
                             actual <- typeof_expr(e.args[j]);
                             if (!types_compat(ann, actual)) {
-                                report_error(e.line, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_str(ann) + " but got " + type_str(actual));
+                                report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_str(ann) + " but got " + type_str(actual));
                             }
                         }
                     }
@@ -1669,7 +1669,14 @@ fn print_type_errors() {
     i <- 0;
     while (i < len(type_errors)) {
         e <- type_errors[i];
-        print(src_filename[0] + ":" + e.line + ": " + e.msg);
+        // file:line:col: msg (col omitted when 0 — old AST nodes without col
+        // info still produce file:line: msg). Mirrors GCC/Clang convention so
+        // editors that parse compiler output land at the right column.
+        if (e.col > 0) {
+            print(src_filename[0] + ":" + e.line + ":" + e.col + ": " + e.msg);
+        } else {
+            print(src_filename[0] + ":" + e.line + ": " + e.msg);
+        }
         i <- i + 1;
     }
     if (len(type_errors) > 0) {
