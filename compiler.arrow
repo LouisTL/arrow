@@ -17,7 +17,7 @@ fn is_alpha(c: int): int{return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
 fn is_alnum(c: int): int{return is_digit(c)||is_alpha(c);}
 fn is_ws(c: int): int{return c=32||c=9||c=10||c=13;}
 fn mktok(t: str,v: str,l: int,c: int){return{type:t,value:v,line:l,col:c};}
-fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}return false;}
+fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}if(w="import"){return true;}return false;}
 
 fn tokenize(src: str){
     ts<-[];p<-0;ln<-1;cl<-1;sl<-str_len(src);
@@ -71,9 +71,33 @@ fn ps(){
     if(ci("fn")){return pfd();}if(ci("return")){return prt();}
     if(ci("if")){return pif();}if(ci("while")){return pwh();}
     if(ci("for")){return pfi();}if(ci("print")){return ppr();}
+    if(ci("import")){return pim();}
     if(ci("LBRACE")){if(isl()){e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
     if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"COLON")){return ptd();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
     e<-pe();eat("SEMI");return e;
+}
+// Module import: `import "path/to/file";` — the file (with `.arrow` appended)
+// is loaded relative to the importing file's directory. The basename without
+// extension becomes the namespace name used at access sites (`base.symbol`).
+// The resolver runs after parsing and rewrites the AST in place.
+fn pim(){
+    ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;
+    eat("import");
+    pt<-toks[pos[0]];
+    if(pt.type!="STRING"){print("Parse error at "+pt.line+":"+pt.col+": import expects a string path, got "+pt.type);adv();return{node:"NumberLit",value:"0"};}
+    pth<-pt.value;
+    adv();
+    eat("SEMI");
+    // Compute module basename from path: strip trailing ".arrow" if present,
+    // then take the part after the last "/". So "lib/strings" → "strings",
+    // "utils" → "utils", "lib/strings.arrow" → "strings".
+    base<-pth;
+    bl<-len(base);
+    if(bl>6&&substring(base,bl-6,bl)=".arrow"){base<-substring(base,0,bl-6);bl<-bl-6;}
+    si<-bl-1;
+    while(si>=0&&char_at(base,si)!="/"){si<-si-1;}
+    if(si>=0){base<-substring(base,si+1,bl);}
+    return{node:"ImportStmt",path:pth,name:base,line:ln,col:cl};
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
@@ -114,6 +138,391 @@ fn ppm(){
     print("Parse error at " + toks[pos[0]].line + ":" + toks[pos[0]].col + ": unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
 }
 
+
+// ═══════════════════════════════════════════
+//  MODULE RESOLVER
+//
+//  `import "path";` brings a `.arrow` file's top-level declarations into
+//  scope under a namespace. The resolver runs after parsing and produces
+//  a fully-flattened statement list with no ImportStmts left:
+//
+//   1. For each ImportStmt, read+tokenize+parse the target file.
+//   2. Validate: only FnDecl, Assignment, and (nested) ImportStmt are
+//      allowed at the top level of an imported file. Side-effecting
+//      statements (prints, calls, control flow) are rejected — they would
+//      otherwise run at import time, which we don't support.
+//   3. Recursively resolve the imported file's own imports.
+//   4. Rename every top-level symbol to `__mod_<modname>__<orig>` and
+//      rewrite internal references (e.g. recursive calls inside the
+//      module) to match. Bodies that introduce a parameter or local
+//      variable shadowing a top-level name are left alone for that name
+//      via scope tracking.
+//   5. Splice the renamed declarations in place of the ImportStmt.
+//   6. Record the namespace name so the main module's `mod.sym` access
+//      pattern can be rewritten to the mangled identifier.
+//
+//  Modules import each other lazily via the same recursion. Already-resolved
+//  files are cached (so importing utils twice doesn't duplicate symbols)
+//  and an active-import stack provides cycle detection.
+
+// Strip ".arrow" suffix if present, then take the basename for namespace use.
+fn module_basename(path: str): str {
+    bl <- len(path);
+    base <- path;
+    if (bl > 6 && substring(base, bl - 6, bl) = ".arrow") {
+        base <- substring(base, 0, bl - 6);
+        bl <- bl - 6;
+    }
+    si <- bl - 1;
+    while (si >= 0 && char_at(base, si) != "/" && char_at(base, si) != "\\") { si <- si - 1; }
+    if (si >= 0) { base <- substring(base, si + 1, bl); }
+    return base;
+}
+
+// Return everything up to and including the last "/" or "\\" — handle both
+// so Windows paths like ".\examples\foo.arrow" produce ".\examples\\".
+fn dirname(path: str): str {
+    bl <- len(path);
+    i <- bl - 1;
+    while (i >= 0 && char_at(path, i) != "/" && char_at(path, i) != "\\") { i <- i - 1; }
+    if (i < 0) { return ""; }
+    return substring(path, 0, i + 1);
+}
+
+// Global state for the resolver.
+imported_paths <- [];        // [str] — paths we've already resolved (dedup)
+imported_mod_names <- [];    // [str] — namespace names exposed to caller
+import_in_progress <- [];    // [str] — stack used for cycle detection
+import_errors <- [];         // [str] — accumulated import-time errors
+
+// Reject anything that would have a side effect at import time.
+fn validate_module(stmts, path: str) {
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        ok <- (s.node = "FnDecl" || s.node = "Assignment" || s.node = "ImportStmt");
+        if (!ok) {
+            ln <- 0;
+            if (s.line != false) { ln <- s.line; }
+            push(import_errors, path + ":" + ln + ": module may only contain fn declarations, assignments, or imports (got " + s.node + ")");
+        }
+        i <- i + 1;
+    }
+}
+
+// Walk a stmt list rewriting Identifier and CallExpr-callee references to
+// top-level names in this module to their mangled form. Tracks a scope of
+// parameter / local-variable names that should NOT be rewritten because
+// they shadow the top-level binding.
+fn mod_rewrite_stmts(stmts, top_names, scope, mod_name) {
+    i <- 0;
+    while (i < len(stmts)) {
+        mod_rewrite_stmt(stmts[i], top_names, scope, mod_name);
+        i <- i + 1;
+    }
+    return 0;
+}
+
+fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
+    if (s.node = "Assignment") {
+        mod_rewrite_expr(s.expr, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) { mod_rewrite_expr(s.expr, top_names, scope, mod_name); }
+        return 0;
+    }
+    if (s.node = "PrintStmt") {
+        mod_rewrite_expr(s.expr, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "IfStmt") {
+        mod_rewrite_expr(s.cond, top_names, scope, mod_name);
+        mod_rewrite_stmts(s.then_body, top_names, scope, mod_name);
+        mod_rewrite_stmts(s.else_body, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "WhileStmt") {
+        mod_rewrite_expr(s.cond, top_names, scope, mod_name);
+        mod_rewrite_stmts(s.body, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "ForInStmt") {
+        mod_rewrite_expr(s.iterable, top_names, scope, mod_name);
+        // Loop variable shadows top-level name within the body
+        sub <- [];
+        i <- 0;
+        while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
+        push(sub, s.var_name);
+        mod_rewrite_stmts(s.body, top_names, sub, mod_name);
+        return 0;
+    }
+    if (s.node = "Block") {
+        mod_rewrite_stmts(s.stmts, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "IndexAssign") {
+        mod_rewrite_expr(s.obj, top_names, scope, mod_name);
+        mod_rewrite_expr(s.index, top_names, scope, mod_name);
+        mod_rewrite_expr(s.value, top_names, scope, mod_name);
+        return 0;
+    }
+    if (s.node = "DotAssign") {
+        mod_rewrite_expr(s.obj, top_names, scope, mod_name);
+        mod_rewrite_expr(s.value, top_names, scope, mod_name);
+        return 0;
+    }
+    // Bare expression as statement (CallExpr, BinOp, etc.)
+    mod_rewrite_expr(s, top_names, scope, mod_name);
+    return 0;
+}
+
+fn name_in(names, n: str): int {
+    i <- 0;
+    while (i < len(names)) {
+        if (names[i] = n) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn mod_rewrite_expr(e, top_names, scope, mod_name) {
+    if (e.node = "Identifier") {
+        if (name_in(top_names, e.name) && !name_in(scope, e.name)) {
+            e.name <- "__mod_" + mod_name + "__" + e.name;
+        }
+        return 0;
+    }
+    if (e.node = "BinOp") {
+        mod_rewrite_expr(e.left, top_names, scope, mod_name);
+        mod_rewrite_expr(e.right, top_names, scope, mod_name);
+        return 0;
+    }
+    if (e.node = "UnaryOp") {
+        mod_rewrite_expr(e.operand, top_names, scope, mod_name);
+        return 0;
+    }
+    if (e.node = "CallExpr") {
+        mod_rewrite_expr(e.callee, top_names, scope, mod_name);
+        j <- 0;
+        while (j < len(e.args)) {
+            mod_rewrite_expr(e.args[j], top_names, scope, mod_name);
+            j <- j + 1;
+        }
+        return 0;
+    }
+    if (e.node = "IndexExpr") {
+        mod_rewrite_expr(e.obj, top_names, scope, mod_name);
+        mod_rewrite_expr(e.index, top_names, scope, mod_name);
+        return 0;
+    }
+    if (e.node = "DotExpr") {
+        mod_rewrite_expr(e.obj, top_names, scope, mod_name);
+        return 0;
+    }
+    if (e.node = "ArrayLit") {
+        j <- 0;
+        while (j < len(e.elements)) {
+            mod_rewrite_expr(e.elements[j], top_names, scope, mod_name);
+            j <- j + 1;
+        }
+        return 0;
+    }
+    if (e.node = "StructLit") {
+        j <- 0;
+        while (j < len(e.fields)) {
+            mod_rewrite_expr(e.fields[j].val, top_names, scope, mod_name);
+            j <- j + 1;
+        }
+        return 0;
+    }
+    if (e.node = "ArrowFn") {
+        // Params shadow top-level names within the arrow body
+        sub <- [];
+        i <- 0;
+        while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
+        i <- 0;
+        while (i < len(e.params)) { push(sub, e.params[i]); i <- i + 1; }
+        if (e.is_expr) {
+            mod_rewrite_expr(e.body, top_names, sub, mod_name);
+        } else {
+            mod_rewrite_stmts(e.body, top_names, sub, mod_name);
+        }
+        return 0;
+    }
+    // Literals (NumberLit, FloatLit, StringLit, BoolLit) — nothing to do.
+    return 0;
+}
+
+// Rename top-level FnDecls and Assignments. Returns the same list with
+// names mangled and bodies rewritten.
+fn rename_module(stmts, mod_name: str) {
+    // First pass: collect every top-level name (these are the names that
+    // get mangled AND that internal references should be rewritten to).
+    top_names <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "FnDecl") { push(top_names, s.name); }
+        if (s.node = "Assignment") { push(top_names, s.name); }
+        i <- i + 1;
+    }
+    // Second pass: mangle names + rewrite bodies/expressions.
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "FnDecl") {
+            s.name <- "__mod_" + mod_name + "__" + s.name;
+            scope <- [];
+            j <- 0;
+            while (j < len(s.params)) { push(scope, s.params[j]); j <- j + 1; }
+            mod_rewrite_stmts(s.body, top_names, scope, mod_name);
+        }
+        if (s.node = "Assignment") {
+            s.name <- "__mod_" + mod_name + "__" + s.name;
+            mod_rewrite_expr(s.expr, top_names, [], mod_name);
+        }
+        i <- i + 1;
+    }
+    return stmts;
+}
+
+// Walk a stmt list and append each ImportStmt's resolved target onto the
+// shared work lists. Pure: doesn't read or tokenize files itself — that
+// has to happen at __main_logic level so the global parser state can be
+// re-written. Returns the input list with ImportStmt entries filtered out.
+fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
+    out <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "ImportStmt") {
+            target_path <- dir + s.path + ".arrow";
+            push(work_paths, {path: target_path, name: s.name, line: s.line, col: s.col});
+            push(work_dirs, dir);
+            if (!name_in(mod_names, s.name)) { push(mod_names, s.name); }
+        } else {
+            push(out, s);
+        }
+        i <- i + 1;
+    }
+    return out;
+}
+
+// After resolution, the main module's source still has `mod.sym` DotExpr
+// nodes referring to imported namespaces. Rewrite them to direct Identifier
+// references with the mangled name, so the rest of the compiler (typeof,
+// scan_fns, IR emit) finds them via the usual lookup paths.
+fn main_rewrite_stmts(stmts, mod_names) {
+    i <- 0;
+    while (i < len(stmts)) {
+        main_rewrite_stmt(stmts[i], mod_names);
+        i <- i + 1;
+    }
+    return 0;
+}
+
+fn main_rewrite_stmt(s, mod_names) {
+    if (s.node = "Assignment") { s.expr <- main_rewrite_value(s.expr, mod_names); return 0; }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) { s.expr <- main_rewrite_value(s.expr, mod_names); }
+        return 0;
+    }
+    if (s.node = "PrintStmt") { s.expr <- main_rewrite_value(s.expr, mod_names); return 0; }
+    if (s.node = "IfStmt") {
+        s.cond <- main_rewrite_value(s.cond, mod_names);
+        main_rewrite_stmts(s.then_body, mod_names);
+        main_rewrite_stmts(s.else_body, mod_names);
+        return 0;
+    }
+    if (s.node = "WhileStmt") {
+        s.cond <- main_rewrite_value(s.cond, mod_names);
+        main_rewrite_stmts(s.body, mod_names);
+        return 0;
+    }
+    if (s.node = "ForInStmt") {
+        s.iterable <- main_rewrite_value(s.iterable, mod_names);
+        main_rewrite_stmts(s.body, mod_names);
+        return 0;
+    }
+    if (s.node = "Block") { main_rewrite_stmts(s.stmts, mod_names); return 0; }
+    if (s.node = "FnDecl") { main_rewrite_stmts(s.body, mod_names); return 0; }
+    if (s.node = "IndexAssign") {
+        s.obj <- main_rewrite_value(s.obj, mod_names);
+        s.index <- main_rewrite_value(s.index, mod_names);
+        s.value <- main_rewrite_value(s.value, mod_names);
+        return 0;
+    }
+    if (s.node = "DotAssign") {
+        s.obj <- main_rewrite_value(s.obj, mod_names);
+        s.value <- main_rewrite_value(s.value, mod_names);
+        return 0;
+    }
+    return 0;
+}
+
+// Recursively rewrite an expression. Returns the (possibly new) node — for
+// DotExpr-on-imported-namespace we substitute a fresh Identifier node.
+fn main_rewrite_value(e, mod_names) {
+    if (e.node = "DotExpr") {
+        // If the base is an imported namespace, replace `mod.sym` with the
+        // mangled identifier. Otherwise recurse into the base for nested
+        // rewrites (e.g. `x.field` where x is a normal struct).
+        if (e.obj.node = "Identifier" && name_in(mod_names, e.obj.name)) {
+            return {node: "Identifier", name: "__mod_" + e.obj.name + "__" + e.field};
+        }
+        e.obj <- main_rewrite_value(e.obj, mod_names);
+        return e;
+    }
+    if (e.node = "BinOp") {
+        e.left <- main_rewrite_value(e.left, mod_names);
+        e.right <- main_rewrite_value(e.right, mod_names);
+        return e;
+    }
+    if (e.node = "UnaryOp") {
+        e.operand <- main_rewrite_value(e.operand, mod_names);
+        return e;
+    }
+    if (e.node = "CallExpr") {
+        e.callee <- main_rewrite_value(e.callee, mod_names);
+        j <- 0;
+        while (j < len(e.args)) {
+            e.args[j] <- main_rewrite_value(e.args[j], mod_names);
+            j <- j + 1;
+        }
+        return e;
+    }
+    if (e.node = "IndexExpr") {
+        e.obj <- main_rewrite_value(e.obj, mod_names);
+        e.index <- main_rewrite_value(e.index, mod_names);
+        return e;
+    }
+    if (e.node = "ArrayLit") {
+        j <- 0;
+        while (j < len(e.elements)) {
+            e.elements[j] <- main_rewrite_value(e.elements[j], mod_names);
+            j <- j + 1;
+        }
+        return e;
+    }
+    if (e.node = "StructLit") {
+        j <- 0;
+        while (j < len(e.fields)) {
+            e.fields[j].val <- main_rewrite_value(e.fields[j].val, mod_names);
+            j <- j + 1;
+        }
+        return e;
+    }
+    if (e.node = "ArrowFn") {
+        if (e.is_expr) {
+            e.body <- main_rewrite_value(e.body, mod_names);
+        } else {
+            main_rewrite_stmts(e.body, mod_names);
+        }
+        return e;
+    }
+    return e;
+}
 
 // ═══════════════════════════════════════════
 //  LLVM IR EMITTER
@@ -5427,27 +5836,116 @@ if (args() > 0) {
 
     toks <- tokenize(source);
     pos[0] <- 0;
-    ast <- pp();
+    main_ast <- pp();
     src_filename[0] <- input_file;
-    compile_via_ir(ast, backend);
 
-    if (len(type_errors) > 0) {
+    // Module resolution runs here in __main_logic where writes to the
+    // global `toks` actually update the global (functions can't — their
+    // assignments would land in locals). Iterative work-list rather than
+    // recursion: pop a (path, name), parse, validate, collect that file's
+    // imports onto the same work list, rename its decls, accumulate. Repeat
+    // until the list drains.
+    import_errors <- [];
+    all_paths <- [];                    // dedup of files already loaded
+    all_mod_names <- [];                // namespaces seen anywhere
+    work_paths <- [];                   // pending {path, name, line, col}
+    work_dirs <- [];                    // parallel: dir to resolve from
+    all_imported_stmts <- [];           // accumulated, renamed
+
+    // Seed from the main file's own imports, then filter them out.
+    main_ast <- extract_imports(main_ast, dirname(input_file), work_paths, work_dirs, all_mod_names);
+
+    while (len(work_paths) > 0) {
+        // Pop end of list (LIFO ordering — load order matters less than dedup).
+        item <- work_paths[len(work_paths) - 1];
+        item_dir <- work_dirs[len(work_dirs) - 1];
+        pop(work_paths);
+        pop(work_dirs);
+
+        // Dedup: only load each file once.
+        already <- false;
+        ii <- 0;
+        while (ii < len(all_paths)) {
+            if (all_paths[ii] = item.path) { already <- true; }
+            ii <- ii + 1;
+        }
+        if (already) {
+            // Different import statement, same file — namespace already
+            // recorded by extract_imports, so just skip.
+        } else {
+            push(all_paths, item.path);
+            sub_src <- read_file(item.path);
+            // read_file returns "" both for empty files and for missing
+            // files. Treat empty-on-import as a missing-file error — an
+            // empty .arrow file is technically valid but importing it would
+            // be silently useless, so a clear diagnostic beats a cryptic
+            // undefined-symbol failure later in clang.
+            if (len(sub_src) = 0) {
+                push(import_errors, "import: cannot read file (missing or empty): " + item.path);
+            } else {
+                // Global write to `toks` is the whole reason this loop lives in
+                // __main_logic. Same for pos[0].
+                toks <- tokenize(sub_src);
+                pos[0] <- 0;
+                sub_stmts <- pp();
+                validate_module(sub_stmts, item.path);
+                // Sub-imports inherit from the importer's directory.
+                sub_dir <- dirname(item.path);
+                sub_stmts <- extract_imports(sub_stmts, sub_dir, work_paths, work_dirs, all_mod_names);
+                renamed <- rename_module(sub_stmts, item.name);
+                // Splice this module's decls into the accumulator.
+                kk <- 0;
+                while (kk < len(renamed)) {
+                    push(all_imported_stmts, renamed[kk]);
+                    kk <- kk + 1;
+                }
+            }
+        }
+    }
+
+    // Imported decls go first so scan_fns / scan_globals see them when
+    // processing the main module's bodies.
+    combined <- [];
+    ii <- 0;
+    while (ii < len(all_imported_stmts)) { push(combined, all_imported_stmts[ii]); ii <- ii + 1; }
+    ii <- 0;
+    while (ii < len(main_ast)) { push(combined, main_ast[ii]); ii <- ii + 1; }
+
+    // Final pass: rewrite `mod.sym` DotExpr uses to mangled identifiers
+    // throughout. Runs after splicing so it sees both imported and main
+    // module bodies (the latter may have nested calls to `mod.sym`).
+    main_rewrite_stmts(combined, all_mod_names);
+
+    if (len(import_errors) > 0) {
+        jj <- 0;
+        while (jj < len(import_errors)) {
+            print(import_errors[jj]);
+            jj <- jj + 1;
+        }
+        print("--");
+        print(len(import_errors) + " import error(s). Compilation aborted.");
+    } else if (len(type_errors) > 0) {
         print_type_errors();
     } else {
-        write_ir_lines(ir_file);
-
-        rc <- backend_link(backend, ir_file, exe_file);
-        if (rc = 0) {
-            print("Compiled " + exe_file + " successfully!");
-            // Clean up intermediate file (platform-dependent delete command)
-            if (is_win[0] = 1) {
-                exec_cmd("del " + ir_file);
-            } else {
-                exec_cmd("rm " + ir_file);
-            }
+        compile_via_ir(combined, backend);
+        if (len(type_errors) > 0) {
+            print_type_errors();
         } else {
-            print(backend.name + " toolchain failed with exit code " + rc);
-            print("IR written to " + ir_file);
+            write_ir_lines(ir_file);
+
+            rc <- backend_link(backend, ir_file, exe_file);
+            if (rc = 0) {
+                print("Compiled " + exe_file + " successfully!");
+                // Clean up intermediate file (platform-dependent delete command)
+                if (is_win[0] = 1) {
+                    exec_cmd("del " + ir_file);
+                } else {
+                    exec_cmd("rm " + ir_file);
+                }
+            } else {
+                print(backend.name + " toolchain failed with exit code " + rc);
+                print("IR written to " + ir_file);
+            }
         }
     }
 }

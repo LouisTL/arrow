@@ -62,6 +62,7 @@ class TokenType(Enum):
     PRINT     = auto()
     FN        = auto()
     RETURN    = auto()
+    IMPORT    = auto()
 
     EOF       = auto()
 
@@ -85,6 +86,7 @@ KEYWORDS = {
     "for": TokenType.FOR, "in": TokenType.IN,
     "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
     "true": TokenType.BOOL, "false": TokenType.BOOL,
+    "import": TokenType.IMPORT,
 }
 
 
@@ -348,6 +350,12 @@ class CallExpr:
     callee: Any
     args: list
 
+@dataclass
+class ImportStmt:
+    """`import "path";` — namespace name defaults to basename of path."""
+    path: str
+    name: str
+
 
 # ─────────────────────────────────────────────
 #  PARSER
@@ -407,6 +415,8 @@ class Parser:
             return self._for_in_stmt()
         if tok.type == TokenType.PRINT:
             return self._print_stmt()
+        if tok.type == TokenType.IMPORT:
+            return self._import_stmt()
         if tok.type == TokenType.LBRACE:
             # Distinguish block from struct literal used as expression stmt
             if self._is_struct_literal():
@@ -515,6 +525,25 @@ class Parser:
         self._eat(TokenType.RPAREN)
         self._eat(TokenType.SEMI)
         return PrintStmt(expr)
+
+    def _import_stmt(self) -> ImportStmt:
+        self._eat(TokenType.IMPORT)
+        tok = self._current()
+        if tok.type != TokenType.STRING:
+            raise ParseError(f"import expects a string path at line {tok.line}, col {tok.col}, got {tok.type.name}")
+        path = tok.value
+        self._eat(TokenType.STRING)
+        self._eat(TokenType.SEMI)
+        # Module name = basename of path with optional .arrow suffix stripped.
+        base = path
+        if base.endswith(".arrow"):
+            base = base[:-len(".arrow")]
+        # Handle both separators so `import "lib/x"` and `import "lib\\x"`
+        # both yield "x" as the namespace.
+        for sep in ("/", "\\"):
+            if sep in base:
+                base = base.rsplit(sep, 1)[1]
+        return ImportStmt(path=path, name=base)
 
     def _return_stmt(self) -> ReturnStmt:
         self._eat(TokenType.RETURN)
@@ -1241,6 +1270,287 @@ class Interpreter:
 
 
 # ─────────────────────────────────────────────
+#  MODULE RESOLVER
+# ─────────────────────────────────────────────
+# Mirrors compiler.arrow's resolver: walks the program, expands every
+# `import "x";` into the imported file's top-level declarations with
+# names mangled to `__mod_<modname>__<orig>`, and rewrites `mod.sym`
+# DotExpr references in the importing file to the mangled identifiers.
+def _validate_module(stmts: list, path: str) -> list[str]:
+    errors = []
+    for s in stmts:
+        if not isinstance(s, (FnDecl, Assignment, ImportStmt)):
+            errors.append(f"{path}: module may only contain fn declarations, assignments, or imports (got {type(s).__name__})")
+    return errors
+
+
+def _collect_top_names(stmts: list) -> set:
+    names = set()
+    for s in stmts:
+        if isinstance(s, FnDecl):
+            names.add(s.name)
+        elif isinstance(s, Assignment):
+            names.add(s.name)
+    return names
+
+
+def _mod_rewrite(node, top_names: set, scope: set, mod_name: str):
+    """Mutate `node` in place — rewrite Identifier references to top-level
+    names (not shadowed by `scope`) to their mangled form."""
+    if isinstance(node, Identifier):
+        if node.name in top_names and node.name not in scope:
+            node.name = f"__mod_{mod_name}__{node.name}"
+        return
+    if isinstance(node, BinOp):
+        _mod_rewrite(node.left, top_names, scope, mod_name)
+        _mod_rewrite(node.right, top_names, scope, mod_name)
+        return
+    if isinstance(node, UnaryOp):
+        _mod_rewrite(node.operand, top_names, scope, mod_name)
+        return
+    if isinstance(node, CallExpr):
+        _mod_rewrite(node.callee, top_names, scope, mod_name)
+        for a in node.args:
+            _mod_rewrite(a, top_names, scope, mod_name)
+        return
+    if isinstance(node, IndexExpr):
+        _mod_rewrite(node.obj, top_names, scope, mod_name)
+        _mod_rewrite(node.index, top_names, scope, mod_name)
+        return
+    if isinstance(node, DotExpr):
+        _mod_rewrite(node.obj, top_names, scope, mod_name)
+        return
+    if isinstance(node, ArrayLit):
+        for e in node.elements:
+            _mod_rewrite(e, top_names, scope, mod_name)
+        return
+    if isinstance(node, StructLit):
+        for _, v in node.fields:
+            _mod_rewrite(v, top_names, scope, mod_name)
+        return
+    if isinstance(node, ArrowFn):
+        sub = scope | set(node.params)
+        if isinstance(node.body, list):
+            for s in node.body:
+                _mod_rewrite_stmt(s, top_names, sub, mod_name)
+        else:
+            _mod_rewrite(node.body, top_names, sub, mod_name)
+        return
+    if isinstance(node, Assignment):
+        _mod_rewrite(node.expr, top_names, scope, mod_name)
+        return
+    if isinstance(node, ReturnStmt):
+        if node.expr is not None:
+            _mod_rewrite(node.expr, top_names, scope, mod_name)
+        return
+    if isinstance(node, PrintStmt):
+        _mod_rewrite(node.expr, top_names, scope, mod_name)
+        return
+    if isinstance(node, IfStmt):
+        _mod_rewrite(node.condition, top_names, scope, mod_name)
+        for s in node.then_body:
+            _mod_rewrite_stmt(s, top_names, scope, mod_name)
+        if node.else_body:
+            for s in node.else_body:
+                _mod_rewrite_stmt(s, top_names, scope, mod_name)
+        return
+    if isinstance(node, WhileStmt):
+        _mod_rewrite(node.condition, top_names, scope, mod_name)
+        for s in node.body:
+            _mod_rewrite_stmt(s, top_names, scope, mod_name)
+        return
+    if isinstance(node, ForInStmt):
+        _mod_rewrite(node.iterable, top_names, scope, mod_name)
+        for s in node.body:
+            _mod_rewrite_stmt(s, top_names, scope | {node.var_name}, mod_name)
+        return
+    if isinstance(node, Block):
+        for s in node.statements:
+            _mod_rewrite_stmt(s, top_names, scope, mod_name)
+        return
+    if isinstance(node, IndexAssign):
+        _mod_rewrite(node.obj, top_names, scope, mod_name)
+        _mod_rewrite(node.index, top_names, scope, mod_name)
+        _mod_rewrite(node.value, top_names, scope, mod_name)
+        return
+    if isinstance(node, DotAssign):
+        _mod_rewrite(node.obj, top_names, scope, mod_name)
+        _mod_rewrite(node.value, top_names, scope, mod_name)
+        return
+    # Literals — nothing to do
+
+
+def _mod_rewrite_stmt(s, top_names: set, scope: set, mod_name: str):
+    _mod_rewrite(s, top_names, scope, mod_name)
+
+
+def _rename_module(stmts: list, mod_name: str) -> list:
+    top_names = _collect_top_names(stmts)
+    for s in stmts:
+        if isinstance(s, FnDecl):
+            s.name = f"__mod_{mod_name}__{s.name}"
+            scope = set(s.params)
+            for body_stmt in s.body:
+                _mod_rewrite_stmt(body_stmt, top_names, scope, mod_name)
+        elif isinstance(s, Assignment):
+            s.name = f"__mod_{mod_name}__{s.name}"
+            _mod_rewrite(s.expr, top_names, set(), mod_name)
+    return stmts
+
+
+def _main_rewrite(node, mod_names: set):
+    """In the importing module, rewrite `mod.sym` DotExpr to a mangled
+    Identifier. Returns the (possibly new) node."""
+    if isinstance(node, DotExpr):
+        if isinstance(node.obj, Identifier) and node.obj.name in mod_names:
+            return Identifier(name=f"__mod_{node.obj.name}__{node.field}")
+        node.obj = _main_rewrite(node.obj, mod_names)
+        return node
+    if isinstance(node, BinOp):
+        node.left = _main_rewrite(node.left, mod_names)
+        node.right = _main_rewrite(node.right, mod_names)
+        return node
+    if isinstance(node, UnaryOp):
+        node.operand = _main_rewrite(node.operand, mod_names)
+        return node
+    if isinstance(node, CallExpr):
+        node.callee = _main_rewrite(node.callee, mod_names)
+        node.args = [_main_rewrite(a, mod_names) for a in node.args]
+        return node
+    if isinstance(node, IndexExpr):
+        node.obj = _main_rewrite(node.obj, mod_names)
+        node.index = _main_rewrite(node.index, mod_names)
+        return node
+    if isinstance(node, ArrayLit):
+        node.elements = [_main_rewrite(e, mod_names) for e in node.elements]
+        return node
+    if isinstance(node, StructLit):
+        node.fields = [(k, _main_rewrite(v, mod_names)) for (k, v) in node.fields]
+        return node
+    if isinstance(node, ArrowFn):
+        if isinstance(node.body, list):
+            for s in node.body:
+                _main_rewrite_stmt(s, mod_names)
+        else:
+            node.body = _main_rewrite(node.body, mod_names)
+        return node
+    return node
+
+
+def _main_rewrite_stmt(s, mod_names: set):
+    if isinstance(s, Assignment):
+        s.expr = _main_rewrite(s.expr, mod_names)
+        return
+    if isinstance(s, ReturnStmt):
+        if s.expr is not None:
+            s.expr = _main_rewrite(s.expr, mod_names)
+        return
+    if isinstance(s, PrintStmt):
+        s.expr = _main_rewrite(s.expr, mod_names)
+        return
+    if isinstance(s, IfStmt):
+        s.condition = _main_rewrite(s.condition, mod_names)
+        for sub in s.then_body:
+            _main_rewrite_stmt(sub, mod_names)
+        if s.else_body:
+            for sub in s.else_body:
+                _main_rewrite_stmt(sub, mod_names)
+        return
+    if isinstance(s, WhileStmt):
+        s.condition = _main_rewrite(s.condition, mod_names)
+        for sub in s.body:
+            _main_rewrite_stmt(sub, mod_names)
+        return
+    if isinstance(s, ForInStmt):
+        s.iterable = _main_rewrite(s.iterable, mod_names)
+        for sub in s.body:
+            _main_rewrite_stmt(sub, mod_names)
+        return
+    if isinstance(s, FnDecl):
+        for sub in s.body:
+            _main_rewrite_stmt(sub, mod_names)
+        return
+    if isinstance(s, Block):
+        for sub in s.statements:
+            _main_rewrite_stmt(sub, mod_names)
+        return
+    if isinstance(s, IndexAssign):
+        s.obj = _main_rewrite(s.obj, mod_names)
+        s.index = _main_rewrite(s.index, mod_names)
+        s.value = _main_rewrite(s.value, mod_names)
+        return
+    if isinstance(s, DotAssign):
+        s.obj = _main_rewrite(s.obj, mod_names)
+        s.value = _main_rewrite(s.value, mod_names)
+        return
+
+
+def _dirname(path: str) -> str:
+    # Handle both Unix '/' and Windows '\\' so the resolver works on either
+    # platform regardless of which separator the user typed.
+    fwd = path.rfind("/")
+    bwd = path.rfind("\\")
+    i = max(fwd, bwd)
+    return path[: i + 1] if i >= 0 else ""
+
+
+def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
+    """Iterative driver mirroring compiler.arrow's __main_logic loop.
+    Returns (resolved_stmts, errors)."""
+    errors = []
+    all_paths = []          # dedup
+    mod_names = set()
+    work = []               # list of {path, name, line, col}
+
+    # Seed from main file's imports.
+    main_dir = _dirname(main_path)
+    filtered_main = []
+    for s in stmts:
+        if isinstance(s, ImportStmt):
+            work.append((main_dir + s.path + ".arrow", s.name))
+            mod_names.add(s.name)
+        else:
+            filtered_main.append(s)
+
+    accumulated = []
+    while work:
+        path, name = work.pop()
+        if path in all_paths:
+            continue
+        all_paths.append(path)
+        try:
+            with open(path, encoding="utf-8") as f:
+                sub_src = f.read()
+        except FileNotFoundError:
+            errors.append(f"import: file not found: {path}")
+            continue
+        try:
+            sub_tokens = Lexer(sub_src).tokenize()
+            sub_stmts = Parser(sub_tokens).parse().statements
+        except (LexerError, ParseError) as e:
+            errors.append(f"{path}: {e}")
+            continue
+
+        errors.extend(_validate_module(sub_stmts, path))
+
+        sub_dir = _dirname(path)
+        new_filtered = []
+        for s in sub_stmts:
+            if isinstance(s, ImportStmt):
+                work.append((sub_dir + s.path + ".arrow", s.name))
+                mod_names.add(s.name)
+            else:
+                new_filtered.append(s)
+        _rename_module(new_filtered, name)
+        accumulated.extend(new_filtered)
+
+    combined = accumulated + filtered_main
+    for s in combined:
+        _main_rewrite_stmt(s, mod_names)
+    return combined, errors
+
+
+# ─────────────────────────────────────────────
 #  RUN / REPL / MAIN
 # ─────────────────────────────────────────────
 def run_source(source: str) -> Interpreter:
@@ -1248,6 +1558,24 @@ def run_source(source: str) -> Interpreter:
     program = Parser(tokens).parse()
     interp = Interpreter()
     interp.run(program)
+    return interp
+
+
+def run_file(filepath: str) -> Interpreter:
+    """Like run_source but with import resolution rooted at the given file."""
+    with open(filepath, encoding="utf-8") as f:
+        source = f.read()
+    tokens = Lexer(source).tokenize()
+    program = Parser(tokens).parse()
+    resolved, errs = resolve_imports(program.statements, filepath)
+    if errs:
+        for e in errs:
+            print(e)
+        print("--")
+        print(f"{len(errs)} import error(s). Compilation aborted.")
+        sys.exit(1)
+    interp = Interpreter()
+    interp.run(Program(resolved))
     return interp
 
 
@@ -1276,9 +1604,7 @@ def main():
     if len(sys.argv) > 1:
         filepath = sys.argv[1]
         try:
-            with open(filepath, encoding="utf-8") as f:
-                source = f.read()
-            run_source(source)
+            run_file(filepath)
         except FileNotFoundError:
             print(f"File not found: {filepath}")
             sys.exit(1)

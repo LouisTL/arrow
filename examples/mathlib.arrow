@@ -1,0 +1,30 @@
+// Arrow Lang — Module example: a math library
+//
+// This file is imported by modules_demo.arrow under the namespace `mathlib`.
+// As a module it may only contain top-level declarations (fns, globals);
+// statements with side effects (prints, bare calls) would be rejected by
+// the import resolver.
+
+fn square(x) { return x * x; }
+fn cube(x) { return x * x * x; }
+
+// Recursive calls inside the module resolve to the same module's `fact`
+// after name-mangling. The resolver tracks scope so a body that introduces
+// `fact` as a local would shadow the top-level binding correctly.
+fn fact(n) {
+    if (n <= 1) { return 1; }
+    return n * fact(n - 1);
+}
+
+fn sum_to(n) {
+    total <- 0;
+    i <- 1;
+    while (i <= n) {
+        total <- total + i;
+        i <- i + 1;
+    }
+    return total;
+}
+
+// A top-level global. Accessible at use sites as `mathlib.pi`.
+pi <- 3;
