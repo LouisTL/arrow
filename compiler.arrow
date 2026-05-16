@@ -430,6 +430,36 @@ fn get_array_elem_type(var_name: str) {
 // Function declarations we need to track
 declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
 
+// Side-table: functions whose body always returns one specific parameter
+// unchanged (like `fn sort(arr) { ...mutations... return arr; }`). For these,
+// the static return type can be specialized at each call site to the type of
+// the corresponding argument — `sort([int])` returns `[int]`, `sort([str])`
+// returns `[str]`, even though the function's param/return annotation is
+// missing. Set by scan_fn_param_returns during compile_via_ir's pre-pass.
+fn_returns_param <- [];
+
+fn set_fn_returns_param(name: str, idx: int) {
+    i <- 0;
+    while (i < len(fn_returns_param)) {
+        if (fn_returns_param[i].name = name) {
+            fn_returns_param[i] <- {name: name, idx: idx};
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(fn_returns_param, {name: name, idx: idx});
+    return false;
+}
+
+fn get_fn_returns_param(name: str): int {
+    i <- 0;
+    while (i < len(fn_returns_param)) {
+        if (fn_returns_param[i].name = name) { return fn_returns_param[i].idx; }
+        i <- i + 1;
+    }
+    return -1;
+}
+
 fn find_fn(name: str) {
     i <- 0;
     while (i < len(declared_fns)) {
@@ -475,8 +505,7 @@ fn set_fn_param_type(fn_name: str, param_idx: int, ptype) {
 }
 
 // Scan all statements for call sites to infer parameter types
-fn scan_call_sites(stmts) {
-    work <- [];
+fn scan_call_sites(stmts) {    work <- [];
     i <- 0;
     while (i < len(stmts)) {
         push(work, stmts[i]);
@@ -757,6 +786,84 @@ fn scan_fns(stmts) {
                 art <- mk_any();
                 if (afn.ret_type_ann.kind != "none") { art <- afn.ret_type_ann; }
                 push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
+            }
+        }
+        i <- i + 1;
+    }
+}
+
+// Walk a function body and collect every ReturnStmt. Uses a flat work list
+// so it descends into if/while/for-in/block bodies uniformly.
+fn collect_returns(body, acc) {
+    work <- [];
+    i <- 0;
+    while (i < len(body)) { push(work, body[i]); i <- i + 1; }
+    wi <- 0;
+    while (wi < len(work)) {
+        nd <- work[wi];
+        wi <- wi + 1;
+        if (nd.node = "ReturnStmt") { push(acc, nd); }
+        if (nd.node = "IfStmt") {
+            j <- 0;
+            while (j < len(nd.then_body)) { push(work, nd.then_body[j]); j <- j + 1; }
+            j <- 0;
+            while (j < len(nd.else_body)) { push(work, nd.else_body[j]); j <- j + 1; }
+        }
+        if (nd.node = "WhileStmt") {
+            j <- 0;
+            while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
+        }
+        if (nd.node = "ForInStmt") {
+            j <- 0;
+            while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
+        }
+        if (nd.node = "Block") {
+            j <- 0;
+            while (j < len(nd.stmts)) { push(work, nd.stmts[j]); j <- j + 1; }
+        }
+    }
+    return acc;
+}
+
+// For each FnDecl, detect the "return-passthrough" pattern: every return in
+// the body returns the SAME parameter identifier (e.g. `return arr;` where
+// `arr` is a param). If so, record the param index in fn_returns_param so
+// call sites can specialize the return type to the caller's argument type.
+//
+// The detection is intentionally conservative: every ReturnStmt must match,
+// and there must be at least one. A function with both `return arr` and
+// `return []` won't qualify; nor will a function with no returns at all.
+fn scan_fn_param_returns(stmts) {
+    i <- 0;
+    while (i < len(stmts)) {
+        if (stmts[i].node = "FnDecl") {
+            params <- stmts[i].params;
+            rets <- [];
+            collect_returns(stmts[i].body, rets);
+            if (len(rets) > 0) {
+                first_idx <- -1;
+                all_match <- true;
+                j <- 0;
+                while (j < len(rets)) {
+                    r <- rets[j];
+                    if (r.expr = false) { all_match <- false; }
+                    else if (r.expr.node != "Identifier") { all_match <- false; }
+                    else {
+                        k <- 0;
+                        idx <- -1;
+                        while (k < len(params)) {
+                            if (params[k] = r.expr.name) { idx <- k; }
+                            k <- k + 1;
+                        }
+                        if (idx = -1) { all_match <- false; }
+                        else if (first_idx = -1) { first_idx <- idx; }
+                        else if (first_idx != idx) { all_match <- false; }
+                    }
+                    j <- j + 1;
+                }
+                if (all_match && first_idx != -1) {
+                    set_fn_returns_param(stmts[i].name, first_idx);
+                }
             }
         }
         i <- i + 1;
@@ -1083,6 +1190,13 @@ fn typeof_expr(nd) {
         rt <- typeof_expr(nd.right);
         if (op = "+") {
             if (lt.kind = "str" || rt.kind = "str") { return mk_str(); }
+            // Array concatenation. types_join handles mismatched element types
+            // (different element kinds collapse to `any`); for matching types
+            // it preserves the element type so a print of the result still
+            // formats elements correctly.
+            if (lt.kind = "array" && rt.kind = "array") {
+                return mk_array(types_join(lt.elem, rt.elem));
+            }
             if (lt.kind = "float" || rt.kind = "float") { return mk_float(); }
             return mk_int();
         }
@@ -1130,16 +1244,42 @@ fn typeof_expr(nd) {
                 return mk_str();
             }
             fi <- find_fn(nm);
-            if (fi != false) { return fi.ret_type; }
+            if (fi != false) {
+                // Param-passthrough specialization: if this fn always returns
+                // a specific parameter unchanged (set by scan_fn_param_returns),
+                // the return type at this call site is the corresponding arg's
+                // type. This recovers element types for patterns like
+                //   fn sort(arr) { ... return arr; }
+                //   sorted <- sort([1,2,3]);   // sorted typed as [int], not any
+                ridx <- get_fn_returns_param(nm);
+                if (ridx != -1 && ridx < len(nd.args)) {
+                    arg_t <- typeof_expr(nd.args[ridx]);
+                    // Only specialize when the arg has a more specific type
+                    // than the declared return — never widen.
+                    if (arg_t.kind != "any" && arg_t.kind != "none") {
+                        return arg_t;
+                    }
+                }
+                return fi.ret_type;
+            }
         }
         return mk_any();
     }
     if (nd.node = "ArrayLit") {
-        // Empty array → unknown element type
+        // Empty array → unknown element type. Push-refinement (see infer_body)
+        // will narrow this as elements get pushed.
         if (len(nd.elements) = 0) { return mk_array(mk_any()); }
-        // Use the first element's type as the array's element type.
-        // (No unification across mixed-type literals yet — that's a future refinement.)
+        // Unify element types across the literal: matching kinds collapse to
+        // that kind, mismatched primitives collapse to `any`, mismatched
+        // composite shapes recurse field/elem-wise. So
+        //   [{value: 1}, {value: "a"}, {value: 2}]
+        // types as `[{value: any}]` instead of `[{value: int}]`.
         et <- typeof_expr(nd.elements[0]);
+        i <- 1;
+        while (i < len(nd.elements)) {
+            et <- types_join(et, typeof_expr(nd.elements[i]));
+            i <- i + 1;
+        }
         return mk_array(et);
     }
     if (nd.node = "IndexExpr") {
@@ -1260,6 +1400,37 @@ fn infer_body(stmts) {
                 }
             }
         }
+        // Push refinement: when a bare `push(arr, val)` appears, widen the
+        // array's element type to include `typeof(val)`. The most common
+        // shape we want to handle:
+        //   items <- [];           // typed [any]
+        //   push(items, "hello");  // refines to [str]
+        //   push(items, "world");  // stays [str]
+        // If a later push contributes a different type, types_join collapses
+        // to `any`, which is the correct fallback.
+        if (s.node = "CallExpr" && s.callee.node = "Identifier"
+                && s.callee.name = "push" && len(s.args) >= 2) {
+            arr_arg <- s.args[0];
+            val_arg <- s.args[1];
+            if (arr_arg.node = "Identifier") {
+                cur_t <- get_var_type(arr_arg.name);
+                if (cur_t.kind = "array") {
+                    val_t <- typeof_expr(val_arg);
+                    // Treat current `any` as "unknown" (bottom) rather than
+                    // "could be anything" (top): narrow toward the pushed
+                    // type. Once we have a concrete element type, future
+                    // pushes use types_join which correctly collapses to any
+                    // if they conflict.
+                    if (cur_t.elem.kind = "any") {
+                        new_elem <- val_t;
+                    } else {
+                        new_elem <- types_join(cur_t.elem, val_t);
+                    }
+                    set_var_type(arr_arg.name, mk_array(new_elem));
+                    if (new_elem.kind = "str") { set_array_elem_type(arr_arg.name, "str"); }
+                }
+            }
+        }
         if (s.node = "Block") { infer_body(s.stmts); }
         i <- i + 1;
     }
@@ -1284,6 +1455,49 @@ fn report_error(line: int, msg: str) {
 // For arrays, recurse into element types. For struct_lits, recurse into fields.
 // Note: "struct" (no field info) is permissive against "struct_lit" — preserves
 // backward compat with code annotated `: struct` before struct_lit existed.
+// Least upper bound on the type lattice — used to unify across mixed-type
+// expressions (array-literal elements, array concatenation, branches of an
+// `if`). The rule of thumb: same type → that type, unrelated → `any`. For
+// composite types (array, struct_lit) we recurse so e.g. `[{value: int}]`
+// joined with `[{value: str}]` becomes `[{value: any}]` rather than `any`.
+//
+//   join(a, none)    = a       — "none" is the bottom (no observed type yet)
+//   join(any, b)     = any     — any swallows
+//   join(int, int)   = int
+//   join(int, str)   = any
+//   join([T], [U])   = [join(T, U)]
+//   join({n: T,...}, {n: U,...})  =  {n: join(T, U), ...}  if shapes match
+fn types_join(a, b) {
+    if (a.kind = "none") { return b; }
+    if (b.kind = "none") { return a; }
+    if (a.kind = "any" || b.kind = "any") { return mk_any(); }
+    if (a.kind != b.kind) { return mk_any(); }
+    // Same kind — primitives are equal under join.
+    if (a.kind = "int" || a.kind = "str" || a.kind = "bool" || a.kind = "float"
+        || a.kind = "struct" || a.kind = "fn") {
+        return a;
+    }
+    if (a.kind = "array") {
+        return mk_array(types_join(a.elem, b.elem));
+    }
+    if (a.kind = "struct_lit") {
+        // Structural join: require positional field-name match.
+        // Unequal length or different names → fall back to `any`.
+        if (len(a.fields) != len(b.fields)) { return mk_any(); }
+        out_fields <- [];
+        i <- 0;
+        while (i < len(a.fields)) {
+            af <- a.fields[i];
+            bf <- b.fields[i];
+            if (af.name != bf.name) { return mk_any(); }
+            push(out_fields, {name: af.name, type: types_join(af.type, bf.type)});
+            i <- i + 1;
+        }
+        return {kind: "struct_lit", fields: out_fields};
+    }
+    return mk_any();
+}
+
 fn types_compat(annot, actual): int {
     if (annot.kind = "none") { return true; }   // no annotation = no check
     if (actual.kind = "none") { return true; }
@@ -1771,7 +1985,73 @@ fn emit_push_helper() {
     emit("");
 }
 
-// ── Emit pop helper ─────────────────────
+// ── Emit array concat helper ────────────
+// arrow_array_concat(a, b) allocates a fresh array containing the elements
+// of `a` followed by `b`. Layout matches `arrow_push`: [len, cap, elems...]
+// where each cell is i64. Used to lower `arr_a + arr_b` at the IR level.
+
+fn emit_array_concat_helper() {
+    emit("define i64 @arrow_array_concat(i64 %a.i, i64 %b.i) {");
+    emit("entry:");
+    emit("  %a = inttoptr i64 %a.i to ptr");
+    emit("  %b = inttoptr i64 %b.i to ptr");
+    emit("  %alenp = getelementptr i64, ptr %a, i64 0");
+    emit("  %alen = load i64, ptr %alenp");
+    emit("  %blenp = getelementptr i64, ptr %b, i64 0");
+    emit("  %blen = load i64, ptr %blenp");
+    emit("  %newlen = add i64 %alen, %blen");
+    // total cells = header (2) + newlen elems
+    emit("  %total = add i64 %newlen, 2");
+    emit("  %bytes = mul i64 %total, 8");
+    emit("  %newptr = call ptr @malloc(i64 %bytes)");
+    // Write header: len, cap (cap = newlen, no slack).
+    emit("  %nlenp = getelementptr i64, ptr %newptr, i64 0");
+    emit("  store i64 %newlen, ptr %nlenp");
+    emit("  %ncapp = getelementptr i64, ptr %newptr, i64 1");
+    emit("  store i64 %newlen, ptr %ncapp");
+    // Copy a's elements: for i in 0..alen, newptr[i+2] = a[i+2]
+    emit("  %ai_slot = alloca i64");
+    emit("  store i64 0, ptr %ai_slot");
+    emit("  br label %a_cond");
+    emit("a_cond:");
+    emit("  %ai = load i64, ptr %ai_slot");
+    emit("  %a_done = icmp sge i64 %ai, %alen");
+    emit("  br i1 %a_done, label %b_start, label %a_body");
+    emit("a_body:");
+    emit("  %a_src_off = add i64 %ai, 2");
+    emit("  %a_src = getelementptr i64, ptr %a, i64 %a_src_off");
+    emit("  %a_val = load i64, ptr %a_src");
+    emit("  %a_dst = getelementptr i64, ptr %newptr, i64 %a_src_off");
+    emit("  store i64 %a_val, ptr %a_dst");
+    emit("  %ai_next = add i64 %ai, 1");
+    emit("  store i64 %ai_next, ptr %ai_slot");
+    emit("  br label %a_cond");
+    // Copy b's elements: for i in 0..blen, newptr[i+2+alen] = b[i+2]
+    emit("b_start:");
+    emit("  %bi_slot = alloca i64");
+    emit("  store i64 0, ptr %bi_slot");
+    emit("  br label %b_cond");
+    emit("b_cond:");
+    emit("  %bi = load i64, ptr %bi_slot");
+    emit("  %b_done = icmp sge i64 %bi, %blen");
+    emit("  br i1 %b_done, label %done, label %b_body");
+    emit("b_body:");
+    emit("  %b_src_off = add i64 %bi, 2");
+    emit("  %b_src = getelementptr i64, ptr %b, i64 %b_src_off");
+    emit("  %b_val = load i64, ptr %b_src");
+    emit("  %b_dst_idx = add i64 %bi, %alen");
+    emit("  %b_dst_off = add i64 %b_dst_idx, 2");
+    emit("  %b_dst = getelementptr i64, ptr %newptr, i64 %b_dst_off");
+    emit("  store i64 %b_val, ptr %b_dst");
+    emit("  %bi_next = add i64 %bi, 1");
+    emit("  store i64 %bi_next, ptr %bi_slot");
+    emit("  br label %b_cond");
+    emit("done:");
+    emit("  %ri = ptrtoint ptr %newptr to i64");
+    emit("  ret i64 %ri");
+    emit("}");
+    emit("");
+}
 
 fn emit_pop_helper() {
     // arrow_pop(arr) -> element at index len-1; decrements len in place.
@@ -2175,6 +2455,53 @@ fn emit_print_helpers() {
     emit("  ret void");
     emit("}");
     emit("");
+
+    // ── Runtime fallback for `any` ────────────
+    //
+    // When a value's static type was lost to `any` (e.g. an unannotated
+    // function return, or a field whose type joined across mixed-shape
+    // literals), we don't know at compile time whether to print it as int
+    // or string. The heuristic — same one used by arrow_safe_strcmp —
+    // checks the value's magnitude:
+    //
+    //   < 1 MiB    → treat as int (real ints rarely reach 2^20)
+    //   ≥ 1 MiB    → treat as a pointer to a C string
+    //
+    // It's not bulletproof (floats stored in `any` slots have bit patterns
+    // above the threshold, large counters can land below pointer space)
+    // but it correctly handles the common cases: small ints, all string
+    // pointers in our arena. We accept the trade-off because the alternative
+    // is no output at all for these values.
+    emit("define void @arrow_print_any(i64 %v) {");
+    emit("entry:");
+    emit("  %small = icmp ult i64 %v, 1048576");
+    emit("  br i1 %small, label %as_int, label %as_str");
+    emit("as_int:");
+    emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %v)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("as_str:");
+    emit("  %sp = inttoptr i64 %v to ptr");
+    emit("  call i32 @puts(ptr %sp)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+
+    // arrow_format_any — same dispatch, but no trailing newline; strings get
+    // quoted (matching the in-collection formatting of all other primitives).
+    emit("define void @arrow_format_any(i64 %v) {");
+    emit("entry:");
+    emit("  %small = icmp ult i64 %v, 1048576");
+    emit("  br i1 %small, label %as_int, label %as_str");
+    emit("as_int:");
+    emit("  call void @arrow_format_int(i64 %v)");
+    emit("  ret void");
+    emit("as_str:");
+    emit("  call void @arrow_format_str_q(i64 %v)");
+    emit("  ret void");
+    emit("}");
+    emit("");
 }
 
 // ── Emit input helper ───────────────────
@@ -2553,6 +2880,10 @@ fn ii_array_push(dst: str, arr, val) {
     // Returns updated array pointer (realloc may move it)
     return ir_inst("array_push", dst, arr.type, [arr, val], false);
 }
+fn ii_array_concat(dst: str, a, b) {
+    // Returns freshly-allocated array containing a's elems followed by b's.
+    return ir_inst("array_concat", dst, a.type, [a, b], false);
+}
 fn ii_array_pop(dst: str, elem_type, arr) {
     return ir_inst("array_pop", dst, elem_type, [arr], false);
 }
@@ -2625,6 +2956,11 @@ fn ii_format_int(val)           { return ir_void_inst("format_int", [val], false
 fn ii_format_str_q(val)         { return ir_void_inst("format_str_q", [val], false); }
 fn ii_format_bool(val)          { return ir_void_inst("format_bool", [val], false); }
 fn ii_format_float(val)         { return ir_void_inst("format_float", [val], false); }
+// Runtime-dispatching variants used when the static type is `any` — they
+// use the int-vs-pointer size heuristic to guess whether to format as int
+// or as a (quoted) string.
+fn ii_print_any(val)            { return ir_void_inst("print_any", [val], false); }
+fn ii_format_any(val)           { return ir_void_inst("format_any", [val], false); }
 fn ii_print_lit(val)            { return ir_void_inst("print_lit", [val], false); }
 fn ii_print_newline()           { return ir_void_inst("print_newline", [], false); }
 // Generic print op — translator code prefers the typed variants
@@ -2797,6 +3133,12 @@ fn ir_render_inst(inst): str {
     if (op = "format_float") {
         return "call void @arrow_format_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
+    if (op = "print_any") {
+        return "call void @arrow_print_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_any") {
+        return "call void @arrow_format_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
     if (op = "print_lit") {
         return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
@@ -2904,6 +3246,10 @@ fn ir_render_inst(inst): str {
     if (op = "array_push") {
         // operands = [arr, val]; runtime call returns updated arr pointer (realloc may move it).
         return inst.dst + " = call i64 @arrow_push(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "array_concat") {
+        // operands = [arr_a, arr_b]; runtime call allocates a fresh array.
+        return inst.dst + " = call i64 @arrow_array_concat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
     }
     if (op = "array_pop") {
         return inst.dst + " = call i64 @arrow_pop(i64 " + ir_render_operand(inst.operands[0]) + ")";
@@ -4136,6 +4482,15 @@ fn ir_emit_binop(b, nd) {
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, mk_str());
         }
+        // Array concatenation — both sides are arrays, lower to a runtime
+        // helper that allocates a fresh array and copies elements. The result
+        // carries the joined element type from typeof_expr so prints format
+        // correctly.
+        if (lt.kind = "array" && rt.kind = "array") {
+            tmp <- ir_fresh_tmp(b, "acat");
+            ir_push_inst(b.cur_block, ii_array_concat(tmp, lhs, rhs));
+            return ir_reg(tmp, mk_array(types_join(lt.elem, rt.elem)));
+        }
         if (lt.kind = "float" || rt.kind = "float") {
             return ir_emit_fbinop(b, "fadd", lhs, lt, rhs, rt);
         }
@@ -4246,8 +4601,18 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
         return 0;
     }
-    // Fallback for any/struct/unknown — best-effort as int. Matches the
-    // behaviour before typed printing existed.
+    // Fallback for any/struct/unknown — use the runtime any-dispatcher,
+    // which heuristically picks int vs string based on the value's
+    // magnitude. Catches cases where static inference couldn't recover an
+    // element type, like an unannotated function return or a field whose
+    // type joined across mixed-shape literals to `any`. For untyped structs
+    // (the `struct` kind, distinct from `struct_lit`) we still fall back to
+    // int — there's no general way to walk an opaque struct at runtime.
+    if (t.kind = "any") {
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_any(val)); }
+        else { ir_push_inst(b.cur_block, ii_format_any(val)); }
+        return 0;
+    }
     if (top_level) { ir_push_inst(b.cur_block, ii_print_int(val)); }
     else { ir_push_inst(b.cur_block, ii_format_int(val)); }
     return 0;
@@ -4874,6 +5239,7 @@ fn llvm_emit_runtime() {
     emit_arena_helper();
     emit_safe_strcmp_helper();
     emit_push_helper();
+    emit_array_concat_helper();
     emit_pop_helper();
     emit_keys_helper();
     emit_struct_find_helper();
@@ -4936,6 +5302,7 @@ fn compile_via_ir(stmts, backend) {
     // Pre-passes: function table, call-site type inference, globals.
     scan_fns(stmts);
     scan_call_sites(stmts);
+    scan_fn_param_returns(stmts);
 
     i <- 0;
     while (i < len(stmts)) {
