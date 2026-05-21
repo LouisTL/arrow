@@ -1504,51 +1504,60 @@ def _main_rewrite(node, mod_names: set, canonical_for: dict):
 
 
 def _main_rewrite_stmt(s, mod_names: set, canonical_for: dict):
+    """Walk a statement, rewriting `mod.sym` DotExpr to mangled Identifiers.
+    Most cases mutate in place and return the same `s`. Bare-expression
+    statements (the parser stores them as the raw expression node) need to
+    return a possibly-new node, so callers must replace the slot in their
+    list with the return value."""
     if isinstance(s, Assignment):
         s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
-        return
+        return s
     if isinstance(s, ReturnStmt):
         if s.expr is not None:
             s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
-        return
+        return s
     if isinstance(s, PrintStmt):
         s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
-        return
+        return s
     if isinstance(s, IfStmt):
         s.condition = _main_rewrite(s.condition, mod_names, canonical_for)
-        for sub in s.then_body:
-            _main_rewrite_stmt(sub, mod_names, canonical_for)
+        for i, sub in enumerate(s.then_body):
+            s.then_body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
         if s.else_body:
-            for sub in s.else_body:
-                _main_rewrite_stmt(sub, mod_names, canonical_for)
-        return
+            for i, sub in enumerate(s.else_body):
+                s.else_body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
+        return s
     if isinstance(s, WhileStmt):
         s.condition = _main_rewrite(s.condition, mod_names, canonical_for)
-        for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names, canonical_for)
-        return
+        for i, sub in enumerate(s.body):
+            s.body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
+        return s
     if isinstance(s, ForInStmt):
         s.iterable = _main_rewrite(s.iterable, mod_names, canonical_for)
-        for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names, canonical_for)
-        return
+        for i, sub in enumerate(s.body):
+            s.body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
+        return s
     if isinstance(s, FnDecl):
-        for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names, canonical_for)
-        return
+        for i, sub in enumerate(s.body):
+            s.body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
+        return s
     if isinstance(s, Block):
-        for sub in s.statements:
-            _main_rewrite_stmt(sub, mod_names, canonical_for)
-        return
+        for i, sub in enumerate(s.statements):
+            s.statements[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
+        return s
     if isinstance(s, IndexAssign):
         s.obj = _main_rewrite(s.obj, mod_names, canonical_for)
         s.index = _main_rewrite(s.index, mod_names, canonical_for)
         s.value = _main_rewrite(s.value, mod_names, canonical_for)
-        return
+        return s
     if isinstance(s, DotAssign):
         s.obj = _main_rewrite(s.obj, mod_names, canonical_for)
         s.value = _main_rewrite(s.value, mod_names, canonical_for)
-        return
+        return s
+    # Fallback: the parser returns bare expression statements (e.g. `foo();`,
+    # `T.helper();`) as the raw expression node, not wrapped in a Stmt class.
+    # Walk through _main_rewrite so DotExprs in them still get mangled.
+    return _main_rewrite(s, mod_names, canonical_for)
 
 
 def _dirname(path: str) -> str:
@@ -1639,8 +1648,8 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
         accumulated.extend(new_filtered)
 
     combined = accumulated + filtered_main
-    for s in combined:
-        _main_rewrite_stmt(s, mod_names, canonical_for)
+    for i, s in enumerate(combined):
+        combined[i] = _main_rewrite_stmt(s, mod_names, canonical_for)
     return combined, errors
 
 

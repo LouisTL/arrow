@@ -1,0 +1,140 @@
+// Arrow Lang compiler — types module
+//
+// Type constructors and a few pure helpers (display, structural join,
+// assignability). All functions here are state-free; they're called from
+// the type checker and IR emitter after the resolver has finished. The
+// surface-type constructors (mk_int through mk_struct_lit) are also used
+// for IR-only types like ptr/i32/fn — kept here for grouping rather than
+// for any deep distinction.
+//
+// Convention: imported as `T` in compiler.arrow. Internal calls between
+// these functions stay unqualified (rename_module mangles them uniformly).
+
+fn mk_int() { return {kind: "int"}; }
+fn mk_str() { return {kind: "str"}; }
+fn mk_bool() { return {kind: "bool"}; }
+fn mk_float() { return {kind: "float"}; }
+fn mk_any() { return {kind: "any"}; }
+fn mk_struct() { return {kind: "struct"}; }
+fn mk_ptr() { return {kind: "ptr"}; }
+fn mk_i32() { return {kind: "i32"}; }
+fn mk_fn() { return {kind: "fn"}; }
+fn mk_none() { return {kind: "none"}; }
+fn mk_array(elem) { return {kind: "array", elem: elem}; }
+fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
+
+// Render a Type as surface syntax for error messages.
+fn type_str(t): str {
+    if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
+    if (t.kind = "struct_lit") {
+        s <- "{";
+        i <- 0;
+        while (i < len(t.fields)) {
+            if (i > 0) { s <- s + ", "; }
+            s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
+            i <- i + 1;
+        }
+        return s + "}";
+    }
+    return t.kind;
+}
+
+// Look up a field's type in a struct_lit fields list. Returns mk_none()
+// if no field with that name exists — callers treat none as "missing".
+fn struct_field_type(fields, name: str) {
+    i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].name = name) { return fields[i].type; }
+        i <- i + 1;
+    }
+    return mk_none();
+}
+
+// Recursive structural equality on Types. Currently unused — kept here
+// because the type checker may want it later for stricter checks.
+fn type_eq(a, b): int {
+    if (a.kind != b.kind) { return false; }
+    if (a.kind = "array") { return type_eq(a.elem, b.elem); }
+    if (a.kind = "struct_lit") {
+        if (len(a.fields) != len(b.fields)) { return false; }
+        i <- 0;
+        while (i < len(a.fields)) {
+            bt <- struct_field_type(b.fields, a.fields[i].name);
+            if (bt.kind = "none") { return false; }
+            if (!type_eq(a.fields[i].type, bt)) { return false; }
+            i <- i + 1;
+        }
+        return true;
+    }
+    return true;
+}
+
+// Least upper bound on two types. Used to unify array element types and
+// to widen variable types across multiple writes. Falls back to `any` for
+// anything that can't be cleanly merged.
+fn types_join(a, b) {
+    if (a.kind = "none") { return b; }
+    if (b.kind = "none") { return a; }
+    if (a.kind = "any" || b.kind = "any") { return mk_any(); }
+    if (a.kind != b.kind) { return mk_any(); }
+    if (a.kind = "int" || a.kind = "str" || a.kind = "bool" || a.kind = "float"
+        || a.kind = "struct" || a.kind = "fn") {
+        return a;
+    }
+    if (a.kind = "array") {
+        return mk_array(types_join(a.elem, b.elem));
+    }
+    if (a.kind = "struct_lit") {
+        if (len(a.fields) != len(b.fields)) { return mk_any(); }
+        out_fields <- [];
+        i <- 0;
+        while (i < len(a.fields)) {
+            af <- a.fields[i];
+            bf <- b.fields[i];
+            if (af.name != bf.name) { return mk_any(); }
+            push(out_fields, {name: af.name, type: types_join(af.type, bf.type)});
+            i <- i + 1;
+        }
+        return {kind: "struct_lit", fields: out_fields};
+    }
+    return mk_any();
+}
+
+// Is `actual` assignable to a slot declared with `annot`? Permissive:
+// none/any/struct/fn slots accept anything, numeric kinds are
+// interchangeable, arrays/struct_lits recurse with width subtyping.
+fn types_compat(annot, actual): int {
+    if (annot.kind = "none") { return true; }
+    if (actual.kind = "none") { return true; }
+    if (annot.kind = "any") { return true; }
+    if (actual.kind = "any") { return true; }
+    if (annot.kind = "struct") { return true; }
+    if (actual.kind = "struct") { return true; }
+    if (annot.kind = "fn") { return true; }
+    if (actual.kind = "fn") { return true; }
+    // bool and int share the i64 runtime representation — interchangeable.
+    if (annot.kind = "int" && actual.kind = "bool") { return true; }
+    if (annot.kind = "bool" && actual.kind = "int") { return true; }
+    // Floats also live in i64 slots (via bitcast). Allow assigning across
+    // float/int/bool freely — the arithmetic emitter promotes at use sites.
+    if (annot.kind = "float" && (actual.kind = "int" || actual.kind = "bool")) { return true; }
+    if (annot.kind = "int" && actual.kind = "float") { return true; }
+    if (annot.kind = "bool" && actual.kind = "float") { return true; }
+    if (annot.kind = "array" && actual.kind = "array") {
+        return types_compat(annot.elem, actual.elem);
+    }
+    if (annot.kind = "struct_lit" && actual.kind = "struct_lit") {
+        // Width subtyping: every field declared in annot must appear in
+        // actual with a compatible type. Extra fields in actual are fine.
+        i <- 0;
+        while (i < len(annot.fields)) {
+            af <- annot.fields[i];
+            bt <- struct_field_type(actual.fields, af.name);
+            if (bt.kind = "none") { return false; }
+            if (!types_compat(af.type, bt)) { return false; }
+            i <- i + 1;
+        }
+        return true;
+    }
+    return annot.kind = actual.kind;
+}

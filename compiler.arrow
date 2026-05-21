@@ -11,6 +11,13 @@
 //  where type is "int" or "str".
 // ═══════════════════════════════════════════
 
+// Type system primitives and pure type-level helpers live in their own
+// module. Imported as `T` — usage looks like `T.T.mk_int()`, `T.T.types_join(a,b)`,
+// `T.T.types_compat(annot, actual)`. The resolver loads compiler/types.arrow
+// via the search-path fallback (next to the arrow executable) so this
+// works regardless of where the user invoked the compiler from.
+import "compiler/types" as T;
+
 // ── Lexer ───────────────────────────────
 fn is_digit(c: int): int{return c>=48&&c<=57;}
 fn is_alpha(c: int): int{return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
@@ -517,49 +524,56 @@ fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
 fn main_rewrite_stmts(stmts, mod_names) {
     i <- 0;
     while (i < len(stmts)) {
-        main_rewrite_stmt(stmts[i], mod_names);
+        stmts[i] <- main_rewrite_stmt(stmts[i], mod_names);
         i <- i + 1;
     }
     return 0;
 }
 
+// Rewrites a single statement in place where possible, but returns the
+// (possibly new) statement node — callers must replace the slot they
+// pulled it from. The fallback path covers bare expression statements
+// (e.g. `T.helper();`): the parser stores those as the raw expression
+// node, so without this walk the rewriter would miss DotExprs inside.
 fn main_rewrite_stmt(s, mod_names) {
-    if (s.node = "Assignment") { s.expr <- main_rewrite_value(s.expr, mod_names); return 0; }
+    if (s.node = "Assignment") { s.expr <- main_rewrite_value(s.expr, mod_names); return s; }
     if (s.node = "ReturnStmt") {
         if (s.expr != false) { s.expr <- main_rewrite_value(s.expr, mod_names); }
-        return 0;
+        return s;
     }
-    if (s.node = "PrintStmt") { s.expr <- main_rewrite_value(s.expr, mod_names); return 0; }
+    if (s.node = "PrintStmt") { s.expr <- main_rewrite_value(s.expr, mod_names); return s; }
     if (s.node = "IfStmt") {
         s.cond <- main_rewrite_value(s.cond, mod_names);
         main_rewrite_stmts(s.then_body, mod_names);
         main_rewrite_stmts(s.else_body, mod_names);
-        return 0;
+        return s;
     }
     if (s.node = "WhileStmt") {
         s.cond <- main_rewrite_value(s.cond, mod_names);
         main_rewrite_stmts(s.body, mod_names);
-        return 0;
+        return s;
     }
     if (s.node = "ForInStmt") {
         s.iterable <- main_rewrite_value(s.iterable, mod_names);
         main_rewrite_stmts(s.body, mod_names);
-        return 0;
+        return s;
     }
-    if (s.node = "Block") { main_rewrite_stmts(s.stmts, mod_names); return 0; }
-    if (s.node = "FnDecl") { main_rewrite_stmts(s.body, mod_names); return 0; }
+    if (s.node = "Block") { main_rewrite_stmts(s.stmts, mod_names); return s; }
+    if (s.node = "FnDecl") { main_rewrite_stmts(s.body, mod_names); return s; }
     if (s.node = "IndexAssign") {
         s.obj <- main_rewrite_value(s.obj, mod_names);
         s.index <- main_rewrite_value(s.index, mod_names);
         s.value <- main_rewrite_value(s.value, mod_names);
-        return 0;
+        return s;
     }
     if (s.node = "DotAssign") {
         s.obj <- main_rewrite_value(s.obj, mod_names);
         s.value <- main_rewrite_value(s.value, mod_names);
-        return 0;
+        return s;
     }
-    return 0;
+    // Bare-expression statement: walk through the value rewriter so any
+    // DotExprs inside (`T.foo()`, `mod.bar`, etc.) get mangled too.
+    return main_rewrite_value(s, mod_names);
 }
 
 // Recursively rewrite an expression. Returns the (possibly new) node — for
@@ -836,7 +850,7 @@ fn get_var_type(name: str) {
         if (types[i].name = name) { return types[i].vtype; }
         i <- i - 1;
     }
-    return mk_any();
+    return T.mk_any();
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
@@ -871,15 +885,15 @@ fn get_field_type(fields, fname: str) {
     while (i < len(fields)) {
         if (fields[i].fname = fname) {
             ft <- fields[i].ftype;
-            if (ft = "int") { return mk_int(); }
-            if (ft = "str") { return mk_str(); }
-            if (ft = "struct") { return mk_struct(); }
-            if (ft = "fn") { return mk_fn(); }
-            return mk_any();
+            if (ft = "int") { return T.mk_int(); }
+            if (ft = "str") { return T.mk_str(); }
+            if (ft = "struct") { return T.mk_struct(); }
+            if (ft = "fn") { return T.mk_fn(); }
+            return T.mk_any();
         }
         i <- i + 1;
     }
-    return mk_any();
+    return T.mk_any();
 }
 
 // Track array element types: var_name -> elem_type ("int" or "str")
@@ -923,8 +937,8 @@ fn get_array_elem_type(var_name: str) {
     i <- len(types) - 1;
     while (i >= 0) {
         if (types[i].var_name = var_name) {
-            if (types[i].elem_type = "str") { return mk_str(); }
-            return mk_int();
+            if (types[i].elem_type = "str") { return T.mk_str(); }
+            return T.mk_int();
         }
         i <- i - 1;
     }
@@ -932,12 +946,12 @@ fn get_array_elem_type(var_name: str) {
     i <- 0;
     while (i < len(global_array_types)) {
         if (global_array_types[i].var_name = var_name) {
-            if (global_array_types[i].elem_type = "str") { return mk_str(); }
-            return mk_int();
+            if (global_array_types[i].elem_type = "str") { return T.mk_str(); }
+            return T.mk_int();
         }
         i <- i + 1;
     }
-    return mk_any();
+    return T.mk_any();
 }
 
 // Function declarations we need to track
@@ -1088,7 +1102,7 @@ fn scs_expr(nd, work) {
                 while (j < len(nd.args)) {
                     if (j < fi.param_count) {
                         if (is_str_expr(nd.args[j])) {
-                            set_fn_param_type(fi.name, j, mk_str());
+                            set_fn_param_type(fi.name, j, T.mk_str());
                         }
                     }
                     j <- j + 1;
@@ -1135,82 +1149,8 @@ fn scs_expr(nd, work) {
 //  used by the IR emitter for codegen decisions.
 // ═══════════════════════════════════════════
 
-fn mk_int() { return {kind: "int"}; }
-fn mk_str() { return {kind: "str"}; }
-fn mk_bool() { return {kind: "bool"}; }
-fn mk_float() { return {kind: "float"}; }
-fn mk_any() { return {kind: "any"}; }
-fn mk_struct() { return {kind: "struct"}; }
-// IR-only: an opaque LLVM `ptr`. Used for extern declarations that take
-// raw pointer args (printf, puts, fopen, etc.). Distinct from mk_str()
-// because the latter renders as i64 (Arrow's universal value width).
-fn mk_ptr() { return {kind: "ptr"}; }
-// IR-only: 32-bit integer for C-ABI return types (printf, puts, fflush all
-// return int, which is i32 on the platforms we target).
-fn mk_i32() { return {kind: "i32"}; }
-fn mk_fn() { return {kind: "fn"}; }
-fn mk_none() { return {kind: "none"}; }
-fn mk_array(elem) { return {kind: "array", elem: elem}; }
-fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
-
-// Render a Type as surface syntax for error messages.
-fn type_str(t): str {
-    if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
-    if (t.kind = "struct_lit") {
-        s <- "{";
-        i <- 0;
-        while (i < len(t.fields)) {
-            if (i > 0) { s <- s + ", "; }
-            s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
-            i <- i + 1;
-        }
-        return s + "}";
-    }
-    return t.kind;
-}
-
-// Convert a kind string (from typed-value .type strings) to a Type.
-// Used at the codegen → type-system boundary. Does NOT handle composite
-// types — those come from the parser, not from value tags.
-fn parse_type_ann(s: str) {
-    if (s = "int") { return mk_int(); }
-    if (s = "str") { return mk_str(); }
-    if (s = "bool") { return mk_bool(); }
-    if (s = "float") { return mk_float(); }
-    if (s = "any") { return mk_any(); }
-    if (s = "struct") { return mk_struct(); }
-    if (s = "fn") { return mk_fn(); }
-    return mk_any();
-}
-
-// Look up a field's type in a struct_lit's fields list. Returns mk_none() if absent.
-fn struct_field_type(fields, name: str) {
-    i <- 0;
-    while (i < len(fields)) {
-        if (fields[i].name = name) { return fields[i].type; }
-        i <- i + 1;
-    }
-    return mk_none();
-}
-
-// Recursive structural equality on Types.
-fn type_eq(a, b): int {
-    if (a.kind != b.kind) { return false; }
-    if (a.kind = "array") { return type_eq(a.elem, b.elem); }
-    if (a.kind = "struct_lit") {
-        if (len(a.fields) != len(b.fields)) { return false; }
-        // Order-independent: every field in a must exist with matching type in b
-        i <- 0;
-        while (i < len(a.fields)) {
-            bt <- struct_field_type(b.fields, a.fields[i].name);
-            if (bt.kind = "none") { return false; }
-            if (!type_eq(a.fields[i].type, bt)) { return false; }
-            i <- i + 1;
-        }
-        return true;
-    }
-    return true;
-}
+// Type system primitives, structural helpers, and pure type-level
+// queries live in compiler/types.arrow (imported as T below).
 
 // ── Typed result helpers (universe 2) ────
 fn tv(reg: str, vtype: str) { return {reg: reg, type: vtype, fields: false}; }
@@ -1250,24 +1190,24 @@ fn scan_fns(stmts) {
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            // param_types_ann from AST is already a list of Type values (mk_none() if absent)
+            // param_types_ann from AST is already a list of Type values (T.mk_none() if absent)
             // param_types is the working type used for inference (starts at any, widens via call sites)
             pt <- [];
             j <- 0;
             while (j < len(stmts[i].params)) {
-                ann <- mk_none();
+                ann <- T.mk_none();
                 if (j < len(stmts[i].param_types_ann)) {
                     ann <- stmts[i].param_types_ann[j];
                 }
                 if (ann.kind != "none") {
                     push(pt, ann);
                 } else {
-                    push(pt, mk_any());
+                    push(pt, T.mk_any());
                 }
                 j <- j + 1;
             }
             // Use return type annotation if present (a Type value)
-            rt <- mk_any();
+            rt <- T.mk_any();
             if (stmts[i].ret_type_ann.kind != "none") {
                 rt <- stmts[i].ret_type_ann;
             }
@@ -1284,7 +1224,7 @@ fn scan_fns(stmts) {
                 apt_ann <- [];
                 k <- 0;
                 while (k < len(afn.params)) {
-                    ann <- mk_none();
+                    ann <- T.mk_none();
                     if (k < len(afn.param_types_ann)) {
                         ann <- afn.param_types_ann[k];
                     }
@@ -1292,11 +1232,11 @@ fn scan_fns(stmts) {
                     if (ann.kind != "none") {
                         push(apt, ann);
                     } else {
-                        push(apt, mk_any());
+                        push(apt, T.mk_any());
                     }
                     k <- k + 1;
                 }
-                art <- mk_any();
+                art <- T.mk_any();
                 if (afn.ret_type_ann.kind != "none") { art <- afn.ret_type_ann; }
                 push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
             }
@@ -1530,7 +1470,7 @@ fn is_str_expr(nd): int {
     // (body, args, params, etc. are arrays). The lie was latent because len() and
     // other code paths defaulted to array ops regardless of the tag. Removing the
     // heuristic means some DotExpr-returning-str cases (field lookups that really
-    // do return strings) fall through to mk_any() — which is fine for correctness,
+    // do return strings) fall through to T.mk_any() — which is fine for correctness,
     // just slightly less precise.
     if (nd.node = "BinOp") {
         if (nd.op = "+") {
@@ -1688,73 +1628,73 @@ fn emit_itoa_helper() {
 // types instead of "any" for local variables.
 
 fn typeof_expr(nd) {
-    if (nd.node = "NumberLit") { return mk_int(); }
-    if (nd.node = "FloatLit") { return mk_float(); }
-    if (nd.node = "StringLit") { return mk_str(); }
-    if (nd.node = "BoolLit") { return mk_bool(); }
+    if (nd.node = "NumberLit") { return T.mk_int(); }
+    if (nd.node = "FloatLit") { return T.mk_float(); }
+    if (nd.node = "StringLit") { return T.mk_str(); }
+    if (nd.node = "BoolLit") { return T.mk_bool(); }
     if (nd.node = "Identifier") {
         return get_var_type(nd.name);
     }
     if (nd.node = "BinOp") {
         op <- nd.op;
-        if (op = "&&" || op = "||") { return mk_bool(); }
-        if (op = "=" || op = "!=" || op = "<" || op = ">" || op = "<=" || op = ">=") { return mk_bool(); }
+        if (op = "&&" || op = "||") { return T.mk_bool(); }
+        if (op = "=" || op = "!=" || op = "<" || op = ">" || op = "<=" || op = ">=") { return T.mk_bool(); }
         lt <- typeof_expr(nd.left);
         rt <- typeof_expr(nd.right);
         if (op = "+") {
-            if (lt.kind = "str" || rt.kind = "str") { return mk_str(); }
+            if (lt.kind = "str" || rt.kind = "str") { return T.mk_str(); }
             // Array concatenation. types_join handles mismatched element types
             // (different element kinds collapse to `any`); for matching types
             // it preserves the element type so a print of the result still
             // formats elements correctly.
             if (lt.kind = "array" && rt.kind = "array") {
-                return mk_array(types_join(lt.elem, rt.elem));
+                return T.mk_array(T.types_join(lt.elem, rt.elem));
             }
-            if (lt.kind = "float" || rt.kind = "float") { return mk_float(); }
-            return mk_int();
+            if (lt.kind = "float" || rt.kind = "float") { return T.mk_float(); }
+            return T.mk_int();
         }
         // Arithmetic — float-propagating: any float operand makes the result float.
-        if (lt.kind = "float" || rt.kind = "float") { return mk_float(); }
-        return mk_int();
+        if (lt.kind = "float" || rt.kind = "float") { return T.mk_float(); }
+        return T.mk_int();
     }
     if (nd.node = "UnaryOp") {
-        if (nd.op = "!") { return mk_bool(); }
+        if (nd.op = "!") { return T.mk_bool(); }
         // Unary `-` preserves the operand's numeric type (int or float).
         if (nd.op = "-") {
             ot <- typeof_expr(nd.operand);
-            if (ot.kind = "float") { return mk_float(); }
-            return mk_int();
+            if (ot.kind = "float") { return T.mk_float(); }
+            return T.mk_int();
         }
-        return mk_int();
+        return T.mk_int();
     }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             nm <- nd.callee.name;
-            if (nm = "len") { return mk_int(); }
-            if (nm = "str_len") { return mk_int(); }
-            if (nm = "char_code") { return mk_int(); }
-            if (nm = "char_at") { return mk_str(); }
-            if (nm = "from_char_code") { return mk_str(); }
-            if (nm = "substring") { return mk_str(); }
-            if (nm = "input") { return mk_str(); }
-            if (nm = "read_file") { return mk_str(); }
-            if (nm = "write_file") { return mk_int(); }
-            if (nm = "append_file") { return mk_int(); }
-            if (nm = "exec_cmd") { return mk_int(); }
-            if (nm = "push") { return mk_int(); }
+            if (nm = "len") { return T.mk_int(); }
+            if (nm = "str_len") { return T.mk_int(); }
+            if (nm = "char_code") { return T.mk_int(); }
+            if (nm = "char_at") { return T.mk_str(); }
+            if (nm = "from_char_code") { return T.mk_str(); }
+            if (nm = "substring") { return T.mk_str(); }
+            if (nm = "input") { return T.mk_str(); }
+            if (nm = "read_file") { return T.mk_str(); }
+            if (nm = "write_file") { return T.mk_int(); }
+            if (nm = "append_file") { return T.mk_int(); }
+            if (nm = "exec_cmd") { return T.mk_int(); }
+            if (nm = "push") { return T.mk_int(); }
             if (nm = "pop") {
                 // Element type if known, else any
                 if (len(nd.args) > 0) {
                     at <- typeof_expr(nd.args[0]);
                     if (at.kind = "array") { return at.elem; }
                 }
-                return mk_any();
+                return T.mk_any();
             }
-            if (nm = "keys") { return mk_array(mk_str()); }
-            if (nm = "print") { return mk_int(); }
+            if (nm = "keys") { return T.mk_array(T.mk_str()); }
+            if (nm = "print") { return T.mk_int(); }
             if (nm = "args") {
-                if (len(nd.args) = 0) { return mk_int(); }
-                return mk_str();
+                if (len(nd.args) = 0) { return T.mk_int(); }
+                return T.mk_str();
             }
             fi <- find_fn(nm);
             if (fi != false) {
@@ -1776,12 +1716,12 @@ fn typeof_expr(nd) {
                 return fi.ret_type;
             }
         }
-        return mk_any();
+        return T.mk_any();
     }
     if (nd.node = "ArrayLit") {
         // Empty array → unknown element type. Push-refinement (see infer_body)
         // will narrow this as elements get pushed.
-        if (len(nd.elements) = 0) { return mk_array(mk_any()); }
+        if (len(nd.elements) = 0) { return T.mk_array(T.mk_any()); }
         // Unify element types across the literal: matching kinds collapse to
         // that kind, mismatched primitives collapse to `any`, mismatched
         // composite shapes recurse field/elem-wise. So
@@ -1790,33 +1730,33 @@ fn typeof_expr(nd) {
         et <- typeof_expr(nd.elements[0]);
         i <- 1;
         while (i < len(nd.elements)) {
-            et <- types_join(et, typeof_expr(nd.elements[i]));
+            et <- T.types_join(et, typeof_expr(nd.elements[i]));
             i <- i + 1;
         }
-        return mk_array(et);
+        return T.mk_array(et);
     }
     if (nd.node = "IndexExpr") {
         // Indexing a string yields a single-char string (char_at semantics).
         // Indexing an array yields the element type. Anything else is unknown.
         if (nd.obj.node = "Identifier") {
             ot <- get_var_type(nd.obj.name);
-            if (ot.kind = "str") { return mk_str(); }
+            if (ot.kind = "str") { return T.mk_str(); }
             if (ot.kind = "array") { return ot.elem; }
             // Fall back to the side table for arrays we set up before var_types existed
             return get_array_elem_type(nd.obj.name);
         }
         // Index into a non-Identifier (e.g. nested [[int]] subscript)
         ot <- typeof_expr(nd.obj);
-        if (ot.kind = "str") { return mk_str(); }
+        if (ot.kind = "str") { return T.mk_str(); }
         if (ot.kind = "array") { return ot.elem; }
-        return mk_any();
+        return T.mk_any();
     }
     if (nd.node = "DotExpr") {
         if (nd.obj.node = "Identifier") {
             // Prefer the struct_lit Type from var_types if present
             ot <- get_var_type(nd.obj.name);
             if (ot.kind = "struct_lit") {
-                ft <- struct_field_type(ot.fields, nd.field);
+                ft <- T.struct_field_type(ot.fields, nd.field);
                 if (ft.kind != "none") { return ft; }
             }
             // Fall back to legacy struct_layouts side table
@@ -1828,10 +1768,10 @@ fn typeof_expr(nd) {
         // Index into a non-Identifier (e.g. arr[0].field where arr is [{...}])
         ot <- typeof_expr(nd.obj);
         if (ot.kind = "struct_lit") {
-            ft <- struct_field_type(ot.fields, nd.field);
+            ft <- T.struct_field_type(ot.fields, nd.field);
             if (ft.kind != "none") { return ft; }
         }
-        return mk_any();
+        return T.mk_any();
     }
     if (nd.node = "StructLit") {
         // Build a struct_lit type from the literal's fields
@@ -1842,10 +1782,10 @@ fn typeof_expr(nd) {
             push(fs, {name: f.key, type: typeof_expr(f.val)});
             i <- i + 1;
         }
-        return mk_struct_lit(fs);
+        return T.mk_struct_lit(fs);
     }
-    if (nd.node = "ArrowFn") { return mk_fn(); }
-    return mk_any();
+    if (nd.node = "ArrowFn") { return T.mk_fn(); }
+    return T.mk_any();
 }
 
 // Walk a body of statements, updating var_types for each assignment
@@ -1894,10 +1834,10 @@ fn infer_body(stmts) {
             // Loop variable: if iterable is a string, element is str char (a string)
             it_ty <- typeof_expr(s.iterable);
             if (it_ty.kind = "str") {
-                set_var_type(s.var_name, mk_str());
+                set_var_type(s.var_name, T.mk_str());
             } else {
                 // Array iteration: elem type from array
-                et <- mk_any();
+                et <- T.mk_any();
                 if (s.iterable.node = "Identifier") {
                     et <- get_array_elem_type(s.iterable.name);
                 }
@@ -1937,9 +1877,9 @@ fn infer_body(stmts) {
                     if (cur_t.elem.kind = "any") {
                         new_elem <- val_t;
                     } else {
-                        new_elem <- types_join(cur_t.elem, val_t);
+                        new_elem <- T.types_join(cur_t.elem, val_t);
                     }
-                    set_var_type(arr_arg.name, mk_array(new_elem));
+                    set_var_type(arr_arg.name, T.mk_array(new_elem));
                     if (new_elem.kind = "str") { set_array_elem_type(arr_arg.name, "str"); }
                 }
             }
@@ -1963,96 +1903,6 @@ fn report_error(line: int, col: int, msg: str) {
     push(type_errors, {line: line, col: col, msg: msg});
 }
 
-// Two types are compatible when they're equal, when either is "any" or "none",
-// or when either is a structural type we can't yet model precisely.
-// For arrays, recurse into element types. For struct_lits, recurse into fields.
-// Note: "struct" (no field info) is permissive against "struct_lit" — preserves
-// backward compat with code annotated `: struct` before struct_lit existed.
-// Least upper bound on the type lattice — used to unify across mixed-type
-// expressions (array-literal elements, array concatenation, branches of an
-// `if`). The rule of thumb: same type → that type, unrelated → `any`. For
-// composite types (array, struct_lit) we recurse so e.g. `[{value: int}]`
-// joined with `[{value: str}]` becomes `[{value: any}]` rather than `any`.
-//
-//   join(a, none)    = a       — "none" is the bottom (no observed type yet)
-//   join(any, b)     = any     — any swallows
-//   join(int, int)   = int
-//   join(int, str)   = any
-//   join([T], [U])   = [join(T, U)]
-//   join({n: T,...}, {n: U,...})  =  {n: join(T, U), ...}  if shapes match
-fn types_join(a, b) {
-    if (a.kind = "none") { return b; }
-    if (b.kind = "none") { return a; }
-    if (a.kind = "any" || b.kind = "any") { return mk_any(); }
-    if (a.kind != b.kind) { return mk_any(); }
-    // Same kind — primitives are equal under join.
-    if (a.kind = "int" || a.kind = "str" || a.kind = "bool" || a.kind = "float"
-        || a.kind = "struct" || a.kind = "fn") {
-        return a;
-    }
-    if (a.kind = "array") {
-        return mk_array(types_join(a.elem, b.elem));
-    }
-    if (a.kind = "struct_lit") {
-        // Structural join: require positional field-name match.
-        // Unequal length or different names → fall back to `any`.
-        if (len(a.fields) != len(b.fields)) { return mk_any(); }
-        out_fields <- [];
-        i <- 0;
-        while (i < len(a.fields)) {
-            af <- a.fields[i];
-            bf <- b.fields[i];
-            if (af.name != bf.name) { return mk_any(); }
-            push(out_fields, {name: af.name, type: types_join(af.type, bf.type)});
-            i <- i + 1;
-        }
-        return {kind: "struct_lit", fields: out_fields};
-    }
-    return mk_any();
-}
-
-fn types_compat(annot, actual): int {
-    if (annot.kind = "none") { return true; }   // no annotation = no check
-    if (actual.kind = "none") { return true; }
-    if (annot.kind = "any") { return true; }
-    if (actual.kind = "any") { return true; }
-    if (annot.kind = "struct") { return true; }
-    if (actual.kind = "struct") { return true; }
-    if (annot.kind = "fn") { return true; }
-    if (actual.kind = "fn") { return true; }
-    // bool and int share the same runtime representation (i64). Treat them as
-    // interchangeable for compatibility purposes — programs that store a
-    // comparison result into an `int`-annotated slot, or use a numeric value
-    // where a `bool` is expected, should keep type-checking.
-    if (annot.kind = "int" && actual.kind = "bool") { return true; }
-    if (annot.kind = "bool" && actual.kind = "int") { return true; }
-    // Floats are stored in i64 slots via bitcast, so storage is uniform with int.
-    // Assigning an int to a float slot (or vice versa) is also allowed and the
-    // arithmetic emitter will promote at use sites. This keeps the typecheck
-    // permissive for the common case `x: float <- 3` and `y: int <- 1.5`.
-    if (annot.kind = "float" && (actual.kind = "int" || actual.kind = "bool")) { return true; }
-    if (annot.kind = "int" && actual.kind = "float") { return true; }
-    if (annot.kind = "bool" && actual.kind = "float") { return true; }
-    if (annot.kind = "array" && actual.kind = "array") {
-        return types_compat(annot.elem, actual.elem);
-    }
-    if (annot.kind = "struct_lit" && actual.kind = "struct_lit") {
-        // Every field in annot must be present in actual with a compatible type.
-        // (Width subtyping: actual may have extra fields. This matches typical structural
-        //  typing and lets you pass a richer struct where a smaller shape is expected.)
-        i <- 0;
-        while (i < len(annot.fields)) {
-            af <- annot.fields[i];
-            bt <- struct_field_type(actual.fields, af.name);
-            if (bt.kind = "none") { return false; }
-            if (!types_compat(af.type, bt)) { return false; }
-            i <- i + 1;
-        }
-        return true;
-    }
-    return annot.kind = actual.kind;
-}
-
 fn check_body(stmts) {
     i <- 0;
     while (i < len(stmts)) {
@@ -2065,8 +1915,8 @@ fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
             actual <- typeof_expr(s.expr);
-            if (!types_compat(s.type_ann, actual)) {
-                report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + type_str(s.type_ann) + " but assigned " + type_str(actual));
+            if (!T.types_compat(s.type_ann, actual)) {
+                report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
             }
         }
         check_expr(s.expr);
@@ -2080,8 +1930,8 @@ fn check_stmt(s) {
                 if (fi != false) {
                     if (fi.ret_type_ann.kind != "none") {
                         actual <- typeof_expr(s.expr);
-                        if (!types_compat(fi.ret_type_ann, actual)) {
-                            report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + type_str(fi.ret_type_ann) + " but returning " + type_str(actual));
+                        if (!T.types_compat(fi.ret_type_ann, actual)) {
+                            report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
                         }
                     }
                 }
@@ -2133,8 +1983,8 @@ fn check_expr(e) {
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "none") {
                             actual <- typeof_expr(e.args[j]);
-                            if (!types_compat(ann, actual)) {
-                                report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_str(ann) + " but got " + type_str(actual));
+                            if (!T.types_compat(ann, actual)) {
+                                report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
                             }
                         }
                     }
@@ -3105,7 +2955,7 @@ if (rc_detect = 0) {
 //    Instruction =
 //      { op: str,            // "add", "strcat", "call", ...
 //        dst: str,           // result register name, or "" when void
-//        dst_type: Type,     // mk_none() when void
+//        dst_type: Type,     // T.mk_none() when void
 //        operands: [Value],  // inputs
 //        extra: <any> }      // op-specific (call target, field name, etc.)
 //
@@ -3160,25 +3010,25 @@ fn ir_reg(name: str, t) {
 }
 
 fn ir_const_int(n: int) {
-    return {kind: "const_int", val: n, type: mk_int()};
+    return {kind: "const_int", val: n, type: T.mk_int()};
 }
 
 // Float constant: `val` is the source-level text ("1.5", "3.14159", "0.1").
 // Rendered as the bare text — LLVM accepts decimal float literals in any
 // position that takes a `double` operand (e.g. `fadd double 1.5, %x`).
 fn ir_const_float(val) {
-    return {kind: "const_float", val: val, type: mk_float()};
+    return {kind: "const_float", val: val, type: T.mk_float()};
 }
 
 fn ir_const_str(id: str) {
     // id is a string-table id like "str7" (produced by add_string-style API)
-    return {kind: "const_str", id: id, type: mk_str()};
+    return {kind: "const_str", id: id, type: T.mk_str()};
 }
 
 // Variant that takes a custom id (e.g. "fmt") rather than the auto-generated
 // "strN". Used by hand-built IR code that wants specific global names.
 fn ir_const_str_raw(id: str) {
-    return {kind: "const_str", id: id, type: mk_str()};
+    return {kind: "const_str", id: id, type: T.mk_str()};
 }
 
 fn ir_label(name: str) {
@@ -3197,7 +3047,7 @@ fn ir_inst(op: str, dst: str, dst_type, operands, extra) {
 
 // Convenience: a void instruction (no result).
 fn ir_void_inst(op: str, operands, extra) {
-    return {op: op, dst: "", dst_type: mk_none(), operands: operands, extra: extra};
+    return {op: op, dst: "", dst_type: T.mk_none(), operands: operands, extra: extra};
 }
 
 // ── BasicBlock ──────────────────────────────────────
@@ -3304,12 +3154,12 @@ fn ir_mod_add_extern(m, name: str, params, ret_type, is_variadic: int) {
 // Each wraps ir_inst with the right operand ordering. Extra field carries
 // op-specific data (the callee name for `call`, field name for struct_get, etc.).
 
-fn ii_add(dst: str, l, r)       { return ir_inst("add",     dst, mk_int(), [l, r], false); }
-fn ii_sub(dst: str, l, r)       { return ir_inst("sub",     dst, mk_int(), [l, r], false); }
-fn ii_mul(dst: str, l, r)       { return ir_inst("mul",     dst, mk_int(), [l, r], false); }
-fn ii_sdiv(dst: str, l, r)      { return ir_inst("sdiv",    dst, mk_int(), [l, r], false); }
-fn ii_srem(dst: str, l, r)      { return ir_inst("srem",    dst, mk_int(), [l, r], false); }
-fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, mk_int(), [v],    false); }
+fn ii_add(dst: str, l, r)       { return ir_inst("add",     dst, T.mk_int(), [l, r], false); }
+fn ii_sub(dst: str, l, r)       { return ir_inst("sub",     dst, T.mk_int(), [l, r], false); }
+fn ii_mul(dst: str, l, r)       { return ir_inst("mul",     dst, T.mk_int(), [l, r], false); }
+fn ii_sdiv(dst: str, l, r)      { return ir_inst("sdiv",    dst, T.mk_int(), [l, r], false); }
+fn ii_srem(dst: str, l, r)      { return ir_inst("srem",    dst, T.mk_int(), [l, r], false); }
+fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, T.mk_int(), [v],    false); }
 
 // ── Float arithmetic ──────────────────
 //
@@ -3326,67 +3176,67 @@ fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, mk_int(), [v], 
 // with i64 registers will produce LLVM type errors at clang time, which is a
 // loud failure mode and helpful for catching codegen bugs.
 
-fn ii_fadd(dst: str, l, r)      { return ir_inst("fadd",    dst, mk_float(), [l, r], false); }
-fn ii_fsub(dst: str, l, r)      { return ir_inst("fsub",    dst, mk_float(), [l, r], false); }
-fn ii_fmul(dst: str, l, r)      { return ir_inst("fmul",    dst, mk_float(), [l, r], false); }
-fn ii_fdiv(dst: str, l, r)      { return ir_inst("fdiv",    dst, mk_float(), [l, r], false); }
-fn ii_fneg(dst: str, v)         { return ir_inst("fneg",    dst, mk_float(), [v],    false); }
+fn ii_fadd(dst: str, l, r)      { return ir_inst("fadd",    dst, T.mk_float(), [l, r], false); }
+fn ii_fsub(dst: str, l, r)      { return ir_inst("fsub",    dst, T.mk_float(), [l, r], false); }
+fn ii_fmul(dst: str, l, r)      { return ir_inst("fmul",    dst, T.mk_float(), [l, r], false); }
+fn ii_fdiv(dst: str, l, r)      { return ir_inst("fdiv",    dst, T.mk_float(), [l, r], false); }
+fn ii_fneg(dst: str, v)         { return ir_inst("fneg",    dst, T.mk_float(), [v],    false); }
 // LLVM fcmp predicates: oeq, one, olt, ole, ogt, oge. The "o" variants are
 // "ordered" — they return false if either operand is NaN. We use them so
 // `nan = nan` is false, matching Python/IEEE.
 fn ii_fcmp(dst: str, op: str, l, r) {
-    return ir_inst("fcmp", dst, mk_int(), [l, r], op);
+    return ir_inst("fcmp", dst, T.mk_int(), [l, r], op);
 }
 
 // Cast i64 (storage form of a float) ↔ double.
-fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, mk_float(), [v], false); }
-fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, mk_int(),   [v], false); }
+fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, T.mk_float(), [v], false); }
+fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, T.mk_int(),   [v], false); }
 // Cast i64 (an int value) to double via signed int-to-fp.
-fn ii_sitofp(dst: str, v)       { return ir_inst("sitofp",    dst, mk_float(), [v], false); }
+fn ii_sitofp(dst: str, v)       { return ir_inst("sitofp",    dst, T.mk_float(), [v], false); }
 // Cast double back to a signed i64 (truncate-toward-zero).
-fn ii_fptosi(dst: str, v)       { return ir_inst("fptosi",    dst, mk_int(),   [v], false); }
+fn ii_fptosi(dst: str, v)       { return ir_inst("fptosi",    dst, T.mk_int(),   [v], false); }
 // Zero-extend i1 → i64. Used after fcmp to get a bool-as-int.
-fn ii_zext_i1(dst: str, v)      { return ir_inst("zext_i1",   dst, mk_int(),   [v], false); }
+fn ii_zext_i1(dst: str, v)      { return ir_inst("zext_i1",   dst, T.mk_int(),   [v], false); }
 
 fn ii_icmp(dst: str, op: str, l, r) {
     // op is "eq","ne","slt","sle","sgt","sge"
-    return ir_inst("icmp", dst, mk_int(), [l, r], op);
+    return ir_inst("icmp", dst, T.mk_int(), [l, r], op);
 }
 
 fn ii_strcmp(dst: str, op: str, l, r) {
-    return ir_inst("strcmp", dst, mk_int(), [l, r], op);
+    return ir_inst("strcmp", dst, T.mk_int(), [l, r], op);
 }
 
 fn ii_alloca(dst: str, t)       { return ir_inst("alloca",  dst, t,        [],     false); }
 fn ii_load(dst: str, t, ptr)    { return ir_inst("load",    dst, t,        [ptr],  false); }
 fn ii_store(val, ptr)           { return ir_void_inst("store",              [val, ptr], false); }
 
-fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, mk_str(), [l, r], false); }
-fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, mk_int(), [s],    false); }
-fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, mk_str(), [n], false); }
+fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, T.mk_str(), [l, r], false); }
+fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, T.mk_int(), [s],    false); }
+fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, T.mk_str(), [n], false); }
 
 // String ops. Each one is lowered inline by the LLVM renderer to match
 // what the runtime expects.
-fn ii_char_code(dst: str, s)        { return ir_inst("char_code", dst, mk_int(), [s], false); }
-fn ii_char_at(dst: str, s, idx)     { return ir_inst("char_at",   dst, mk_str(), [s, idx], false); }
-fn ii_from_char_code(dst: str, n)   { return ir_inst("from_char_code", dst, mk_str(), [n], false); }
+fn ii_char_code(dst: str, s)        { return ir_inst("char_code", dst, T.mk_int(), [s], false); }
+fn ii_char_at(dst: str, s, idx)     { return ir_inst("char_at",   dst, T.mk_str(), [s, idx], false); }
+fn ii_from_char_code(dst: str, n)   { return ir_inst("from_char_code", dst, T.mk_str(), [n], false); }
 // substring is delegated to a runtime helper @arrow_substring — keeps the
 // IR linear instead of generating a copy loop.
-fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, mk_str(), [s, st, ed], false); }
+fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, T.mk_str(), [s, st, ed], false); }
 
 // IO ops — each calls into the corresponding arrow_* runtime helper.
-fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, mk_str(), [path], false); }
-fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, mk_int(), [p, c], false); }
-fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, mk_int(), [p, c], false); }
-fn ii_exec_cmd(dst: str, c)         { return ir_inst("exec_cmd",    dst, mk_int(), [c], false); }
-fn ii_input(dst: str)               { return ir_inst("input",       dst, mk_str(), [],   false); }
-fn ii_input_with_prompt(dst: str, p) { return ir_inst("input",       dst, mk_str(), [p],  false); }
+fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, T.mk_str(), [path], false); }
+fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, T.mk_int(), [p, c], false); }
+fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, T.mk_int(), [p, c], false); }
+fn ii_exec_cmd(dst: str, c)         { return ir_inst("exec_cmd",    dst, T.mk_int(), [c], false); }
+fn ii_input(dst: str)               { return ir_inst("input",       dst, T.mk_str(), [],   false); }
+fn ii_input_with_prompt(dst: str, p) { return ir_inst("input",       dst, T.mk_str(), [p],  false); }
 
 fn ii_array_new(dst: str, elem_type, elems) {
     // elems is [Value]; elem_type is a Type (element kind)
-    return ir_inst("array_new", dst, mk_array(elem_type), elems, elem_type);
+    return ir_inst("array_new", dst, T.mk_array(elem_type), elems, elem_type);
 }
-fn ii_array_len(dst: str, arr) { return ir_inst("array_len", dst, mk_int(), [arr], false); }
+fn ii_array_len(dst: str, arr) { return ir_inst("array_len", dst, T.mk_int(), [arr], false); }
 fn ii_array_get(dst: str, elem_type, arr, idx) {
     return ir_inst("array_get", dst, elem_type, [arr, idx], false);
 }
@@ -3394,7 +3244,7 @@ fn ii_array_set(prefix: str, arr, idx, val) {
     // prefix is a fresh register-name root used by the renderer to synthesize
     // the intermediate cast/GEP/store registers. Caller's responsibility to
     // make it unique within the function (e.g. ir_fresh_tmp(b, "aset")).
-    return ir_inst("array_set", prefix, mk_none(), [arr, idx, val], false);
+    return ir_inst("array_set", prefix, T.mk_none(), [arr, idx, val], false);
 }
 fn ii_array_push(dst: str, arr, val) {
     // Returns updated array pointer (realloc may move it)
@@ -3410,16 +3260,16 @@ fn ii_array_pop(dst: str, elem_type, arr) {
 
 fn ii_struct_new(dst: str, fields) {
     // fields: [{name: str, val: Value}]
-    return ir_inst("struct_new", dst, mk_struct(), [], fields);
+    return ir_inst("struct_new", dst, T.mk_struct(), [], fields);
 }
 fn ii_struct_get(dst: str, field_type, s, field: str) {
     return ir_inst("struct_get", dst, field_type, [s], field);
 }
 fn ii_struct_set(prefix: str, s, field: str, val) {
-    return ir_inst("struct_set", prefix, mk_none(), [s, val], field);
+    return ir_inst("struct_set", prefix, T.mk_none(), [s, val], field);
 }
 fn ii_struct_keys(dst: str, s) {
-    return ir_inst("struct_keys", dst, mk_array(mk_str()), [s], false);
+    return ir_inst("struct_keys", dst, T.mk_array(T.mk_str()), [s], false);
 }
 
 fn ii_call(dst: str, ret_type, callee: str, args) {
@@ -3438,7 +3288,7 @@ fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
 // `closure_call`: load fn_ptr + env_ptr from a pair, indirect-call with env
 // prepended to the user args. operands = [pair_ptr, arg0, arg1, ...].
 fn ii_closure_make(dst: str, fn_name: str, captures) {
-    return ir_inst("closure_make", dst, mk_int(), captures, fn_name);
+    return ir_inst("closure_make", dst, T.mk_int(), captures, fn_name);
 }
 fn ii_closure_call(dst: str, ret_type, pair_val, args) {
     ops <- [pair_val];
@@ -3451,7 +3301,7 @@ fn ii_br(label: str)            { return ir_void_inst("br", [ir_label(label)], f
 fn ii_cond_br(i1_reg: str, cond, then_lbl: str, else_lbl: str) {
     // i1_reg is the name for the intermediate icmp-ne result (e.g. "%br1").
     // Must be unique within the function — caller's responsibility.
-    return ir_inst("cond_br", i1_reg, mk_none(), [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
+    return ir_inst("cond_br", i1_reg, T.mk_none(), [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
 }
 fn ii_ret(val)                  { return ir_void_inst("ret", [val], false); }
 fn ii_ret_void()                { return ir_void_inst("ret_void", [], false); }
@@ -3464,7 +3314,7 @@ fn ii_print_int(val)            { return ir_void_inst("print_int", [val], false)
 fn ii_print_str(ptr_reg: str, val) {
     // ptr_reg is the name for the intermediate inttoptr cast (e.g. "%pp1").
     // Caller's responsibility to make it unique within the function.
-    return ir_inst("print_str", ptr_reg, mk_none(), [val], false);
+    return ir_inst("print_str", ptr_reg, T.mk_none(), [val], false);
 }
 fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false); }
 fn ii_print_float(val)          { return ir_void_inst("print_float", [val], false); }
@@ -3489,11 +3339,11 @@ fn ii_print_newline()           { return ir_void_inst("print_newline", [], false
 fn ii_print(val)                { return ir_void_inst("print", [val], false); }
 
 // Logical NOT: dst = (operand == 0) ? 1 : 0, i64. Used by UnaryOp("!").
-fn ii_lnot(dst: str, v)         { return ir_inst("lnot", dst, mk_int(), [v], false); }
+fn ii_lnot(dst: str, v)         { return ir_inst("lnot", dst, T.mk_int(), [v], false); }
 
 // Low-level escape hatches for the current runtime:
-fn ii_ptrtoint(dst: str, v)     { return ir_inst("ptrtoint", dst, mk_int(), [v], false); }
-fn ii_inttoptr(dst: str, v)     { return ir_inst("inttoptr", dst, mk_any(), [v], false); }
+fn ii_ptrtoint(dst: str, v)     { return ir_inst("ptrtoint", dst, T.mk_int(), [v], false); }
+fn ii_inttoptr(dst: str, v)     { return ir_inst("inttoptr", dst, T.mk_any(), [v], false); }
 
 // ── LLVM rendering ──────────────────────────────────
 //
@@ -4198,7 +4048,7 @@ fn ir_get_local_slot(b, name: str): str {
     push(b.locals, {name: name, reg: reg});
     // Always emit allocas in the entry block (first block of the function).
     // LLVM convention; also keeps alloca out of loops where it would reset each iter.
-    ir_push_inst(b.func.blocks[0], ii_alloca(reg, mk_int()));
+    ir_push_inst(b.func.blocks[0], ii_alloca(reg, T.mk_int()));
     return reg;
 }
 
@@ -4269,13 +4119,13 @@ fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
 
     // Build the shim function: env param + user params, all i64.
     shim_params <- [];
-    push(shim_params, {name: "env", type: mk_int()});
+    push(shim_params, {name: "env", type: T.mk_int()});
     i <- 0;
     while (i < param_count) {
-        push(shim_params, {name: "p" + i, type: mk_int()});
+        push(shim_params, {name: "p" + i, type: T.mk_int()});
         i <- i + 1;
     }
-    shim <- ir_function(shim_name, shim_params, mk_int());
+    shim <- ir_function(shim_name, shim_params, T.mk_int());
     bb <- ir_block("entry");
     ir_fn_add_block(shim, bb);
 
@@ -4283,12 +4133,12 @@ fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
     fwd_args <- [];
     i <- 0;
     while (i < param_count) {
-        push(fwd_args, ir_reg("%p" + i + ".arg", mk_int()));
+        push(fwd_args, ir_reg("%p" + i + ".arg", T.mk_int()));
         i <- i + 1;
     }
     rtmp <- "%shim_r";
-    ir_push_inst(bb, ii_call(rtmp, mk_int(), fn_name, fwd_args));
-    ir_set_terminator(bb, ii_ret(ir_reg(rtmp, mk_int())));
+    ir_push_inst(bb, ii_call(rtmp, T.mk_int(), fn_name, fwd_args));
+    ir_set_terminator(bb, ii_ret(ir_reg(rtmp, T.mk_int())));
 
     ir_mod_add_function(m, shim);
     return shim_name;
@@ -4305,7 +4155,7 @@ fn ir_emit_expr(b, nd) {
         // round-to-nearest, matching the interpreter's Python conversion.
         d_tmp <- ir_fresh_tmp(b, "fconst");
         ir_push_inst(b.cur_block, ii_bc_d_to_i(d_tmp, ir_const_float(nd.value)));
-        return ir_reg(d_tmp, mk_float());
+        return ir_reg(d_tmp, T.mk_float());
     }
     if (nd.node = "StringLit") {
         // Pool the string in the module table. Return a const_str value
@@ -4317,7 +4167,7 @@ fn ir_emit_expr(b, nd) {
         // a ptrtoint into a fresh register.
         tmp <- ir_fresh_tmp(b, "s");
         ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
-        return ir_reg(tmp, mk_str());
+        return ir_reg(tmp, T.mk_str());
     }
     if (nd.node = "BoolLit") {
         if (nd.value = "true") { return ir_const_int(1); }
@@ -4334,8 +4184,8 @@ fn ir_emit_expr(b, nd) {
         }
         if (!is_loc && is_global(nd.name)) {
             tmp <- ir_fresh_tmp(b, "ld");
-            ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg("@g_" + nd.name, mk_int())));
-            return ir_reg(tmp, mk_int());
+            ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg("@g_" + nd.name, T.mk_int())));
+            return ir_reg(tmp, T.mk_int());
         }
         // Reference to a regular FnDecl as a value (e.g. apply(add, 10, 20)).
         // Wrap in a closure pair so the call-site's closure-call convention
@@ -4347,13 +4197,13 @@ fn ir_emit_expr(b, nd) {
                 shim_name <- ir_ensure_fn_shim(b.mod, nd.name, fi_ref.param_count);
                 cm_tmp <- ir_fresh_tmp(b, "fnref");
                 ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, shim_name, []));
-                return ir_reg(cm_tmp, mk_int());
+                return ir_reg(cm_tmp, T.mk_int());
             }
         }
         slot <- ir_get_local_slot(b, nd.name);
         tmp <- ir_fresh_tmp(b, "ld");
-        ir_push_inst(b.cur_block, ii_load(tmp, mk_int(), ir_reg(slot, mk_int())));
-        return ir_reg(tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
+        return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "BinOp") {
         return ir_emit_binop(b, nd);
@@ -4367,19 +4217,19 @@ fn ir_emit_expr(b, nd) {
             if (ot.kind = "float") {
                 dd <- ir_to_double_reg(b, operand, ot);
                 fr <- ir_fresh_tmp(b, "fr");
-                ir_push_inst(b.cur_block, ii_fneg(fr, ir_reg(dd, mk_float())));
+                ir_push_inst(b.cur_block, ii_fneg(fr, ir_reg(dd, T.mk_float())));
                 i64r <- ir_fresh_tmp(b, "fi");
-                ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, mk_float())));
-                return ir_reg(i64r, mk_float());
+                ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, T.mk_float())));
+                return ir_reg(i64r, T.mk_float());
             }
             tmp <- ir_fresh_tmp(b, "neg");
             ir_push_inst(b.cur_block, ii_neg(tmp, operand));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nd.op = "!") {
             tmp <- ir_fresh_tmp(b, "not");
             ir_push_inst(b.cur_block, ii_lnot(tmp, operand));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         print("ir_emit_expr UnaryOp: unsupported op " + nd.op);
         return ir_const_int(0);
@@ -4399,8 +4249,8 @@ fn ir_emit_expr(b, nd) {
                 i <- i + 1;
             }
             tmp <- ir_fresh_tmp(b, "icc");
-            ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), callee_val, args));
-            return ir_reg(tmp, mk_int());
+            ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), callee_val, args));
+            return ir_reg(tmp, T.mk_int());
         }
         nm <- nd.callee.name;
 
@@ -4416,7 +4266,7 @@ fn ir_emit_expr(b, nd) {
             } else {
                 ir_push_inst(b.cur_block, ii_array_len(tmp, arg));
             }
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "push") {
             arr <- ir_emit_expr(b, nd.args[0]);
@@ -4429,10 +4279,10 @@ fn ir_emit_expr(b, nd) {
             // realloc — which silently shrinks the array next time it's read.
             if (nd.args[0].node = "Identifier") {
                 if (is_global(nd.args[0].name)) {
-                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg("@g_" + nd.args[0].name, mk_int())));
+                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, T.mk_int()), ir_reg("@g_" + nd.args[0].name, T.mk_int())));
                 } else {
                     slot <- ir_get_local_slot(b, nd.args[0].name);
-                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, mk_int()), ir_reg(slot, mk_int())));
+                    ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, T.mk_int()), ir_reg(slot, T.mk_int())));
                 }
             } else if (nd.args[0].node = "DotExpr") {
                 // Re-evaluate the obj. Reusing the earlier-evaluated `arr`
@@ -4440,26 +4290,26 @@ fn ir_emit_expr(b, nd) {
                 obj_v <- ir_emit_expr(b, nd.args[0].obj);
                 fid <- ir_mod_add_str(b.mod, nd.args[0].field);
                 prefix <- ir_fresh_tmp(b, "pset");
-                ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, ir_reg(tmp, mk_int())));
+                ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, ir_reg(tmp, T.mk_int())));
             } else if (nd.args[0].node = "IndexExpr") {
                 obj_v <- ir_emit_expr(b, nd.args[0].obj);
                 idx_v <- ir_emit_expr(b, nd.args[0].index);
                 prefix <- ir_fresh_tmp(b, "paset");
-                ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, mk_int())));
+                ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, T.mk_int())));
             }
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "pop") {
             arr <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "pop");
-            ir_push_inst(b.cur_block, ii_array_pop(tmp, mk_int(), arr));
-            return ir_reg(tmp, mk_int());
+            ir_push_inst(b.cur_block, ii_array_pop(tmp, T.mk_int(), arr));
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "keys") {
             s <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "keys");
             ir_push_inst(b.cur_block, ii_struct_keys(tmp, s));
-            return ir_reg(tmp, mk_array(mk_str()));
+            return ir_reg(tmp, T.mk_array(T.mk_str()));
         }
 
         // Cluster-3 string + IO builtins.
@@ -4467,26 +4317,26 @@ fn ir_emit_expr(b, nd) {
             arg <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "sl");
             ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_code") {
             arg <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_char_code(tmp, arg));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_at") {
             sarg <- ir_emit_expr(b, nd.args[0]);
             iarg <- ir_emit_expr(b, nd.args[1]);
             tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, sarg, iarg));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         if (nm = "from_char_code") {
             arg <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "fcc");
             ir_push_inst(b.cur_block, ii_from_char_code(tmp, arg));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         if (nm = "substring") {
             sarg <- ir_emit_expr(b, nd.args[0]);
@@ -4494,33 +4344,33 @@ fn ir_emit_expr(b, nd) {
             edarg <- ir_emit_expr(b, nd.args[2]);
             tmp <- ir_fresh_tmp(b, "sub");
             ir_push_inst(b.cur_block, ii_substring(tmp, sarg, stargv, edarg));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         if (nm = "read_file") {
             arg <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "rf");
             ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         if (nm = "write_file") {
             parg <- ir_emit_expr(b, nd.args[0]);
             carg <- ir_emit_expr(b, nd.args[1]);
             tmp <- ir_fresh_tmp(b, "wf");
             ir_push_inst(b.cur_block, ii_write_file(tmp, parg, carg));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "append_file") {
             parg <- ir_emit_expr(b, nd.args[0]);
             carg <- ir_emit_expr(b, nd.args[1]);
             tmp <- ir_fresh_tmp(b, "af");
             ir_push_inst(b.cur_block, ii_append_file(tmp, parg, carg));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "exec_cmd") {
             arg <- ir_emit_expr(b, nd.args[0]);
             tmp <- ir_fresh_tmp(b, "ec");
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         if (nm = "input") {
             tmp <- ir_fresh_tmp(b, "in");
@@ -4530,7 +4380,7 @@ fn ir_emit_expr(b, nd) {
             } else {
                 ir_push_inst(b.cur_block, ii_input(tmp));
             }
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         if (nm = "args") {
             // Two forms: args() returns argc-1 (script arg count, excluding
@@ -4538,12 +4388,12 @@ fn ir_emit_expr(b, nd) {
             // the @g_argc / @g_argv globals populated by main.
             tmp <- ir_fresh_tmp(b, "args");
             if (len(nd.args) = 0) {
-                ir_push_inst(b.cur_block, ir_inst("args_count", tmp, mk_int(), [], false));
-                return ir_reg(tmp, mk_int());
+                ir_push_inst(b.cur_block, ir_inst("args_count", tmp, T.mk_int(), [], false));
+                return ir_reg(tmp, T.mk_int());
             }
             iarg <- ir_emit_expr(b, nd.args[0]);
-            ir_push_inst(b.cur_block, ir_inst("args_get", tmp, mk_str(), [iarg], false));
-            return ir_reg(tmp, mk_str());
+            ir_push_inst(b.cur_block, ir_inst("args_get", tmp, T.mk_str(), [iarg], false));
+            return ir_reg(tmp, T.mk_str());
         }
 
         // Closure invocation: if `nm` was assigned an ArrowFn earlier in this
@@ -4563,9 +4413,9 @@ fn ir_emit_expr(b, nd) {
             pair_tmp <- ir_fresh_tmp(b, "pair");
             if (is_loc) {
                 slot <- ir_get_local_slot(b, nm);
-                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+                ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
             } else {
-                ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
+                ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
             // Evaluate user args.
             args <- [];
@@ -4575,8 +4425,8 @@ fn ir_emit_expr(b, nd) {
                 i <- i + 1;
             }
             tmp <- ir_fresh_tmp(b, "cc");
-            ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), ir_reg(pair_tmp, mk_int()), args));
-            return ir_reg(tmp, mk_int());
+            ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
+            return ir_reg(tmp, T.mk_int());
         }
 
         // Indirect call via variable: if `nm` isn't a known top-level fn but
@@ -4606,9 +4456,9 @@ fn ir_emit_expr(b, nd) {
                 pair_tmp <- ir_fresh_tmp(b, "pair");
                 if (is_loc) {
                     slot <- ir_get_local_slot(b, nm);
-                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg(slot, mk_int())));
+                    ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
                 } else {
-                    ir_push_inst(b.cur_block, ii_load(pair_tmp, mk_int(), ir_reg("@g_" + nm, mk_int())));
+                    ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
                 }
                 args <- [];
                 i <- 0;
@@ -4617,8 +4467,8 @@ fn ir_emit_expr(b, nd) {
                     i <- i + 1;
                 }
                 tmp <- ir_fresh_tmp(b, "cc");
-                ir_push_inst(b.cur_block, ii_closure_call(tmp, mk_int(), ir_reg(pair_tmp, mk_int()), args));
-                return ir_reg(tmp, mk_int());
+                ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
+                return ir_reg(tmp, T.mk_int());
             }
         }
 
@@ -4630,8 +4480,8 @@ fn ir_emit_expr(b, nd) {
             i <- i + 1;
         }
         tmp <- ir_fresh_tmp(b, "call");
-        ir_push_inst(b.cur_block, ii_call(tmp, mk_int(), nm, args));
-        return ir_reg(tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_call(tmp, T.mk_int(), nm, args));
+        return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "ArrayLit") {
         elems <- [];
@@ -4641,8 +4491,8 @@ fn ir_emit_expr(b, nd) {
             i <- i + 1;
         }
         tmp <- ir_fresh_tmp(b, "arr");
-        ir_push_inst(b.cur_block, ii_array_new(tmp, mk_int(), elems));
-        return ir_reg(tmp, mk_array(mk_int()));
+        ir_push_inst(b.cur_block, ii_array_new(tmp, T.mk_int(), elems));
+        return ir_reg(tmp, T.mk_array(T.mk_int()));
     }
     if (nd.node = "IndexExpr") {
         // Dispatch on the object's static type (via typeof_expr — populated
@@ -4655,19 +4505,19 @@ fn ir_emit_expr(b, nd) {
         if (ot.kind = "str") {
             tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, obj, idx));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         tmp <- ir_fresh_tmp(b, "idx");
-        ir_push_inst(b.cur_block, ii_array_get(tmp, mk_int(), obj, idx));
-        return ir_reg(tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_array_get(tmp, T.mk_int(), obj, idx));
+        return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "DotExpr") {
         obj <- ir_emit_expr(b, nd.obj);
         // Pool the field name in the module's string table.
         fid <- ir_mod_add_str(b.mod, nd.field);
         tmp <- ir_fresh_tmp(b, "dot");
-        ir_push_inst(b.cur_block, ii_struct_get(tmp, mk_int(), obj, fid));
-        return ir_reg(tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_struct_get(tmp, T.mk_int(), obj, fid));
+        return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "StructLit") {
         // Pool field names; build the struct_new instruction with {key_id, val} entries.
@@ -4683,9 +4533,9 @@ fn ir_emit_expr(b, nd) {
         }
         tmp <- ir_fresh_tmp(b, "sl");
         // Replace the operands list with [] since the renderer reads from extra.
-        inst <- ir_inst("struct_new", tmp, mk_struct(), [], fields);
+        inst <- ir_inst("struct_new", tmp, T.mk_struct(), [], fields);
         ir_push_inst(b.cur_block, inst);
-        return ir_reg(tmp, mk_struct());
+        return ir_reg(tmp, T.mk_struct());
     }
     if (nd.node = "ArrowFn") {
         // 1) Find captures in the body.
@@ -4702,13 +4552,13 @@ fn ir_emit_expr(b, nd) {
         afn_name <- "__arrow_" + arrow_fn_counter[0];
 
         // Build the IR Function. Param list = [env, user params...].
-        ir_params <- [{name: "env", type: mk_int()}];
+        ir_params <- [{name: "env", type: T.mk_int()}];
         i <- 0;
         while (i < len(nd.params)) {
-            push(ir_params, {name: nd.params[i], type: mk_int()});
+            push(ir_params, {name: nd.params[i], type: T.mk_int()});
             i <- i + 1;
         }
-        afn <- ir_function(afn_name, ir_params, mk_int());
+        afn <- ir_function(afn_name, ir_params, T.mk_int());
         afn_entry <- ir_block("entry");
         ir_fn_add_block(afn, afn_entry);
 
@@ -4753,9 +4603,9 @@ fn ir_emit_expr(b, nd) {
         while (i < len(nd.params)) {
             pname <- nd.params[i];
             pslot <- ir_get_local_slot(sub, pname);
-            ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", mk_int()), ir_reg(pslot, mk_int())));
+            ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(pslot, T.mk_int())));
             // Default param type = any. (We could plumb param_types_ann later.)
-            set_var_type(pname, mk_any());
+            set_var_type(pname, T.mk_any());
             i <- i + 1;
         }
 
@@ -4766,8 +4616,8 @@ fn ir_emit_expr(b, nd) {
                 cname <- captures[i];
                 cslot <- ir_get_local_slot(sub, cname);
                 load_reg <- ir_fresh_tmp(sub, "cval");
-                ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, mk_int(), [ir_reg("%env.arg", mk_int()), ir_const_int(i)], false));
-                ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, mk_int()), ir_reg(cslot, mk_int())));
+                ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, T.mk_int(), [ir_reg("%env.arg", T.mk_int()), ir_const_int(i)], false));
+                ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, T.mk_int()), ir_reg(cslot, T.mk_int())));
                 set_var_type(cname, cap_outer_types[i]);
                 i <- i + 1;
             }
@@ -4775,7 +4625,7 @@ fn ir_emit_expr(b, nd) {
 
         // Body. ArrowFn bodies can be either a list of statements (block form)
         // or a single expression (expression form).
-        ret_type_inferred <- mk_any();
+        ret_type_inferred <- T.mk_any();
         if (nd.is_expr) {
             v <- ir_emit_expr(sub, nd.body);
             ir_set_terminator(sub.cur_block, ii_ret(v));
@@ -4834,8 +4684,8 @@ fn ir_emit_expr(b, nd) {
         while (i < len(captures)) {
             cap_slot <- ir_get_local_slot(b, captures[i]);
             cap_tmp <- ir_fresh_tmp(b, "cap");
-            ir_push_inst(b.cur_block, ii_load(cap_tmp, mk_int(), ir_reg(cap_slot, mk_int())));
-            push(cap_vals, ir_reg(cap_tmp, mk_int()));
+            ir_push_inst(b.cur_block, ii_load(cap_tmp, T.mk_int(), ir_reg(cap_slot, T.mk_int())));
+            push(cap_vals, ir_reg(cap_tmp, T.mk_int()));
             i <- i + 1;
         }
         cm_tmp <- ir_fresh_tmp(b, "cm");
@@ -4854,7 +4704,7 @@ fn ir_emit_expr(b, nd) {
                 ret_fields: false,
                 param_types: [],
                 param_types_ann: [],
-                ret_type_ann: mk_none(),
+                ret_type_ann: T.mk_none(),
                 is_arrow_var: false
             });
         } else {
@@ -4867,7 +4717,7 @@ fn ir_emit_expr(b, nd) {
         return {
             kind: "reg",
             name: cm_tmp,
-            type: mk_int(),
+            type: T.mk_int(),
             // Marker so ir_emit_stmt's Assignment branch recognizes this came
             // from an ArrowFn and registers a closure_var entry.
             arrow_fn_name: afn_name,
@@ -4891,8 +4741,8 @@ fn ir_emit_binop(b, nd) {
         // eval LHS, branch on truthiness; true path evaluates RHS and stores;
         // join block loads the result.
         res_slot_name <- ir_fresh_tmp(b, "and_res");
-        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, mk_int()));
-        ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, mk_int())));
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, T.mk_int()));
+        ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, T.mk_int())));
 
         lhs <- ir_emit_expr(b, nd.left);
 
@@ -4905,7 +4755,7 @@ fn ir_emit_binop(b, nd) {
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
         rhs <- ir_emit_expr(b, nd.right);
-        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, mk_int())));
+        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
         end_bb <- ir_block(end_lbl);
@@ -4913,15 +4763,15 @@ fn ir_emit_binop(b, nd) {
         b.cur_block <- end_bb;
 
         result_tmp <- ir_fresh_tmp(b, "andres");
-        ir_push_inst(b.cur_block, ii_load(result_tmp, mk_int(), ir_reg(res_slot_name, mk_int())));
-        return ir_reg(result_tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_load(result_tmp, T.mk_int(), ir_reg(res_slot_name, T.mk_int())));
+        return ir_reg(result_tmp, T.mk_int());
     }
 
     if (op = "||") {
         // Mirror of && with the default set to 1; LHS true short-circuits to end.
         res_slot_name <- ir_fresh_tmp(b, "or_res");
-        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, mk_int()));
-        ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, mk_int())));
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, T.mk_int()));
+        ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, T.mk_int())));
 
         lhs <- ir_emit_expr(b, nd.left);
 
@@ -4935,7 +4785,7 @@ fn ir_emit_binop(b, nd) {
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
         rhs <- ir_emit_expr(b, nd.right);
-        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, mk_int())));
+        ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
         end_bb <- ir_block(end_lbl);
@@ -4943,8 +4793,8 @@ fn ir_emit_binop(b, nd) {
         b.cur_block <- end_bb;
 
         result_tmp <- ir_fresh_tmp(b, "orres");
-        ir_push_inst(b.cur_block, ii_load(result_tmp, mk_int(), ir_reg(res_slot_name, mk_int())));
-        return ir_reg(result_tmp, mk_int());
+        ir_push_inst(b.cur_block, ii_load(result_tmp, T.mk_int(), ir_reg(res_slot_name, T.mk_int())));
+        return ir_reg(result_tmp, T.mk_int());
     }
 
     // Arithmetic and comparison — both operands are eagerly evaluated.
@@ -4961,7 +4811,7 @@ fn ir_emit_binop(b, nd) {
         if (lt.kind = "str" || rt.kind = "str" || (lt.kind = "any" && rt.kind = "any")) {
             tmp <- ir_fresh_tmp(b, "scmp");
             ir_push_inst(b.cur_block, ii_strcmp(tmp, ir_cmp_op(op), lhs, rhs));
-            return ir_reg(tmp, mk_int());
+            return ir_reg(tmp, T.mk_int());
         }
         // Float comparison: if either side is statically float, promote both
         // to double and use fcmp. The other-side promotion handles mixed
@@ -4970,12 +4820,12 @@ fn ir_emit_binop(b, nd) {
             ld <- ir_to_double_reg(b, lhs, lt);
             rd <- ir_to_double_reg(b, rhs, rt);
             tmp <- ir_fresh_tmp(b, "fc");
-            ir_push_inst(b.cur_block, ii_fcmp(tmp, ir_fcmp_op(op), ir_reg(ld, mk_float()), ir_reg(rd, mk_float())));
-            return ir_reg(tmp, mk_bool());
+            ir_push_inst(b.cur_block, ii_fcmp(tmp, ir_fcmp_op(op), ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float())));
+            return ir_reg(tmp, T.mk_bool());
         }
         tmp <- ir_fresh_tmp(b, "cmp");
         ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
-        return ir_reg(tmp, mk_int());
+        return ir_reg(tmp, T.mk_int());
     }
     if (op = "+") {
         // Distinguish string concat from integer add via static typing.
@@ -4991,16 +4841,16 @@ fn ir_emit_binop(b, nd) {
             if (lt.kind = "int") {
                 t <- ir_fresh_tmp(b, "i2s");
                 ir_push_inst(b.cur_block, ii_int_to_str(t, lhs));
-                lhs_s <- ir_reg(t, mk_str());
+                lhs_s <- ir_reg(t, T.mk_str());
             }
             if (rt.kind = "int") {
                 t <- ir_fresh_tmp(b, "i2s");
                 ir_push_inst(b.cur_block, ii_int_to_str(t, rhs));
-                rhs_s <- ir_reg(t, mk_str());
+                rhs_s <- ir_reg(t, T.mk_str());
             }
             tmp <- ir_fresh_tmp(b, "scat");
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
-            return ir_reg(tmp, mk_str());
+            return ir_reg(tmp, T.mk_str());
         }
         // Array concatenation — both sides are arrays, lower to a runtime
         // helper that allocates a fresh array and copies elements. The result
@@ -5009,14 +4859,14 @@ fn ir_emit_binop(b, nd) {
         if (lt.kind = "array" && rt.kind = "array") {
             tmp <- ir_fresh_tmp(b, "acat");
             ir_push_inst(b.cur_block, ii_array_concat(tmp, lhs, rhs));
-            return ir_reg(tmp, mk_array(types_join(lt.elem, rt.elem)));
+            return ir_reg(tmp, T.mk_array(T.types_join(lt.elem, rt.elem)));
         }
         if (lt.kind = "float" || rt.kind = "float") {
             return ir_emit_fbinop(b, "fadd", lhs, lt, rhs, rt);
         }
         tmp <- ir_fresh_tmp(b, "add");
         ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs));
-        return ir_reg(tmp, mk_int());
+        return ir_reg(tmp, T.mk_int());
     }
 
     // Numeric arithmetic — route through float if either side is float.
@@ -5026,21 +4876,21 @@ fn ir_emit_binop(b, nd) {
 
     if (op = "-") {
         if (use_float) { return ir_emit_fbinop(b, "fsub", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+        tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "*") {
         if (use_float) { return ir_emit_fbinop(b, "fmul", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+        tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "/") {
         if (use_float) { return ir_emit_fbinop(b, "fdiv", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+        tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "%") {
         // `%` on floats is unusual but defined (frem) — kept as int-only here
         // to match Python semantics where `1.5 % 1.0` doesn't usually appear
         // in Arrow programs. If we want it later, add fmod via libc.
-        tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, mk_int());
+        tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
 
     print("ir_emit_binop: unsupported op " + op);
@@ -5054,13 +4904,13 @@ fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
     ld <- ir_to_double_reg(b, lhs, lt);
     rd <- ir_to_double_reg(b, rhs, rt);
     fr <- ir_fresh_tmp(b, "fr");
-    if (fop = "fadd") { ir_push_inst(b.cur_block, ii_fadd(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
-    else if (fop = "fsub") { ir_push_inst(b.cur_block, ii_fsub(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
-    else if (fop = "fmul") { ir_push_inst(b.cur_block, ii_fmul(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
-    else if (fop = "fdiv") { ir_push_inst(b.cur_block, ii_fdiv(fr, ir_reg(ld, mk_float()), ir_reg(rd, mk_float()))); }
+    if (fop = "fadd") { ir_push_inst(b.cur_block, ii_fadd(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
+    else if (fop = "fsub") { ir_push_inst(b.cur_block, ii_fsub(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
+    else if (fop = "fmul") { ir_push_inst(b.cur_block, ii_fmul(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
+    else if (fop = "fdiv") { ir_push_inst(b.cur_block, ii_fdiv(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
     i64r <- ir_fresh_tmp(b, "fi");
-    ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, mk_float())));
-    return ir_reg(i64r, mk_float());
+    ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, T.mk_float())));
+    return ir_reg(i64r, T.mk_float());
 }
 
 // ── Typed printing of composite values ──────────────
@@ -5082,7 +4932,7 @@ fn ir_emit_lit(b, text: str) {
     sid <- ir_mod_add_str(b.mod, text);
     tmp <- ir_fresh_tmp(b, "lit");
     ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
-    ir_push_inst(b.cur_block, ii_print_lit(ir_reg(tmp, mk_int())));
+    ir_push_inst(b.cur_block, ii_print_lit(ir_reg(tmp, T.mk_int())));
     return 0;
 }
 
@@ -5151,8 +5001,8 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
     // Index counter slot — allocated in the entry block (LLVM convention,
     // and avoids re-allocating on each loop iteration).
     idx_slot <- ir_fresh_tmp(b, "fidx");
-    ir_push_inst(b.func.blocks[0], ii_alloca(idx_slot, mk_int()));
-    ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.func.blocks[0], ii_alloca(idx_slot, T.mk_int()));
+    ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(idx_slot, T.mk_int())));
 
     cond_lbl <- ir_fresh_block_lbl(b, "fac");
     body_lbl <- ir_fresh_block_lbl(b, "fab");
@@ -5167,22 +5017,22 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
     ir_fn_add_block(b.func, cond_bb);
     b.cur_block <- cond_bb;
     i_c <- ir_fresh_tmp(b, "fi");
-    ir_push_inst(b.cur_block, ii_load(i_c, mk_int(), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.cur_block, ii_load(i_c, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
     cmp <- ir_fresh_tmp(b, "fcmp");
-    ir_push_inst(b.cur_block, ii_icmp(cmp, "slt", ir_reg(i_c, mk_int()), ir_reg(len_reg, mk_int())));
+    ir_push_inst(b.cur_block, ii_icmp(cmp, "slt", ir_reg(i_c, T.mk_int()), ir_reg(len_reg, T.mk_int())));
     br_t1 <- ir_fresh_tmp(b, "br");
-    ir_set_terminator(b.cur_block, ii_cond_br(br_t1, ir_reg(cmp, mk_int()), body_lbl, end_lbl));
+    ir_set_terminator(b.cur_block, ii_cond_br(br_t1, ir_reg(cmp, T.mk_int()), body_lbl, end_lbl));
 
     // body: if i = 0 → elem (skip separator), else → sep block
     body_bb <- ir_block(body_lbl);
     ir_fn_add_block(b.func, body_bb);
     b.cur_block <- body_bb;
     i_b <- ir_fresh_tmp(b, "fi");
-    ir_push_inst(b.cur_block, ii_load(i_b, mk_int(), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.cur_block, ii_load(i_b, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
     is_first <- ir_fresh_tmp(b, "ffirst");
-    ir_push_inst(b.cur_block, ii_icmp(is_first, "eq", ir_reg(i_b, mk_int()), ir_const_int(0)));
+    ir_push_inst(b.cur_block, ii_icmp(is_first, "eq", ir_reg(i_b, T.mk_int()), ir_const_int(0)));
     br_t2 <- ir_fresh_tmp(b, "br");
-    ir_set_terminator(b.cur_block, ii_cond_br(br_t2, ir_reg(is_first, mk_int()), elem_lbl, sep_lbl));
+    ir_set_terminator(b.cur_block, ii_cond_br(br_t2, ir_reg(is_first, T.mk_int()), elem_lbl, sep_lbl));
 
     // sep: print ", " then fall through to elem
     sep_bb <- ir_block(sep_lbl);
@@ -5196,16 +5046,16 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
     ir_fn_add_block(b.func, elem_bb);
     b.cur_block <- elem_bb;
     i_e <- ir_fresh_tmp(b, "fi");
-    ir_push_inst(b.cur_block, ii_load(i_e, mk_int(), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.cur_block, ii_load(i_e, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
     elem_reg <- ir_fresh_tmp(b, "felem");
-    ir_push_inst(b.cur_block, ii_array_get(elem_reg, mk_int(), arr_val, ir_reg(i_e, mk_int())));
-    ir_emit_format_value(b, ir_reg(elem_reg, mk_int()), elem_type, false);
+    ir_push_inst(b.cur_block, ii_array_get(elem_reg, T.mk_int(), arr_val, ir_reg(i_e, T.mk_int())));
+    ir_emit_format_value(b, ir_reg(elem_reg, T.mk_int()), elem_type, false);
     // increment counter
     i_n <- ir_fresh_tmp(b, "fi");
-    ir_push_inst(b.cur_block, ii_load(i_n, mk_int(), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.cur_block, ii_load(i_n, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
     nx <- ir_fresh_tmp(b, "fnext");
-    ir_push_inst(b.cur_block, ii_add(nx, ir_reg(i_n, mk_int()), ir_const_int(1)));
-    ir_push_inst(b.cur_block, ii_store(ir_reg(nx, mk_int()), ir_reg(idx_slot, mk_int())));
+    ir_push_inst(b.cur_block, ii_add(nx, ir_reg(i_n, T.mk_int()), ir_const_int(1)));
+    ir_push_inst(b.cur_block, ii_store(ir_reg(nx, T.mk_int()), ir_reg(idx_slot, T.mk_int())));
     ir_set_terminator(b.cur_block, ii_br(cond_lbl));
 
     // end: print "]"
@@ -5230,8 +5080,8 @@ fn ir_emit_format_struct(b, struct_val, fields) {
         // regardless; format_value re-interprets it through f.type.
         fid <- ir_mod_add_str(b.mod, f.name);
         fld_reg <- ir_fresh_tmp(b, "fld");
-        ir_push_inst(b.cur_block, ii_struct_get(fld_reg, mk_int(), struct_val, fid));
-        ir_emit_format_value(b, ir_reg(fld_reg, mk_int()), f.type, false);
+        ir_push_inst(b.cur_block, ii_struct_get(fld_reg, T.mk_int(), struct_val, fid));
+        ir_emit_format_value(b, ir_reg(fld_reg, T.mk_int()), f.type, false);
         i <- i + 1;
     }
     ir_emit_lit(b, "}");
@@ -5256,7 +5106,7 @@ fn ir_emit_stmt(b, stmt) {
         // promote int→float at storage time. Without this, storing the raw
         // i64 bits of an int into a float slot would later be bitcast to
         // double, producing a tiny denormal instead of the intended value.
-        slot_t <- mk_none();
+        slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
         } else {
@@ -5269,8 +5119,8 @@ fn ir_emit_stmt(b, stmt) {
             dr <- ir_fresh_tmp(b, "fsi");
             ir_push_inst(b.cur_block, ii_sitofp(dr, v));
             i64r <- ir_fresh_tmp(b, "fi");
-            ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(dr, mk_float())));
-            v <- ir_reg(i64r, mk_float());
+            ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(dr, T.mk_float())));
+            v <- ir_reg(i64r, T.mk_float());
         }
         // A name resolves to its global @g_<n> only inside __main_logic (which
         // wraps the program's top-level statements). Inside any other function,
@@ -5280,10 +5130,10 @@ fn ir_emit_stmt(b, stmt) {
         // code happens to use both at top level and inside function bodies.
         is_top_level <- (b.func.name = "__main_logic");
         if (is_global(stmt.name) && is_top_level) {
-            ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, mk_int())));
+            ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
         } else {
             slot <- ir_get_local_slot(b, stmt.name);
-            ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, mk_int())));
+            ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, T.mk_int())));
         }
         // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
         // record this var as holding a closure so future CallExpr on this name
@@ -5440,7 +5290,7 @@ fn ir_emit_stmt(b, stmt) {
         b.for_idx_counter[0] <- b.for_idx_counter[0] + 1;
         idx_name <- "_for_idx_" + b.for_idx_counter[0];
 
-        idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: mk_none()};
+        idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: T.mk_none()};
         ir_emit_stmt(b, idx_init);
 
         // condition: idx_name < len(coll)
@@ -5456,13 +5306,13 @@ fn ir_emit_stmt(b, stmt) {
             node: "Assignment",
             name: stmt.var_name,
             expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: idx_name}},
-            type_ann: mk_none()
+            type_ann: T.mk_none()
         };
         inc_idx <- {
             node: "Assignment",
             name: idx_name,
             expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: idx_name}, right: {node: "NumberLit", value: 1}},
-            type_ann: mk_none()
+            type_ann: T.mk_none()
         };
         new_body <- [bind_x];
         i <- 0;
@@ -5511,10 +5361,10 @@ fn emit_function_via_ir(nd, mod) {
     params <- [];
     i <- 0;
     while (i < len(nd.params)) {
-        push(params, {name: nd.params[i], type: mk_int()});
+        push(params, {name: nd.params[i], type: T.mk_int()});
         i <- i + 1;
     }
-    f <- ir_function(nd.name, params, mk_int());
+    f <- ir_function(nd.name, params, T.mk_int());
 
     ent_bb <- ir_block("entry");
     ir_fn_add_block(f, ent_bb);
@@ -5567,7 +5417,7 @@ fn emit_function_via_ir(nd, mod) {
         if (fi_info != false && i < len(fi_info.param_types)) {
             set_var_type(nd.params[i], fi_info.param_types[i]);
         } else {
-            set_var_type(nd.params[i], mk_any());
+            set_var_type(nd.params[i], T.mk_any());
         }
         i <- i + 1;
     }
@@ -5583,7 +5433,7 @@ fn emit_function_via_ir(nd, mod) {
     while (i < len(nd.params)) {
         pname <- nd.params[i];
         slot <- ir_get_local_slot(b, pname);
-        ir_push_inst(b.cur_block, ii_store(ir_reg("%" + pname + ".arg", mk_int()), ir_reg(slot, mk_int())));
+        ir_push_inst(b.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(slot, T.mk_int())));
         i <- i + 1;
     }
 
@@ -5860,18 +5710,18 @@ fn compile_via_ir(stmts, backend) {
         name: "__main_logic",
         params: [],
         param_types_ann: [],
-        ret_type: mk_int(),
+        ret_type: T.mk_int(),
         body: top_stmts
     };
     // Register __main_logic in the function table so calls / lookups resolve.
     push(declared_fns, {
         name: "__main_logic",
         param_count: 0,
-        ret_type: mk_int(),
+        ret_type: T.mk_int(),
         ret_fields: [],
         param_types: [],
         param_types_ann: [],
-        ret_type_ann: mk_none(),
+        ret_type_ann: T.mk_none(),
         is_arrow_var: false
     });
     ir_mod_add_function(m, emit_function_via_ir(main_logic_fn, m));
