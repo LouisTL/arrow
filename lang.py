@@ -11,6 +11,7 @@ Features:
     - Structs: {name: "Alice", age: 30}, dot access/assign
 """
 
+import os
 import sys
 from enum import Enum, auto
 from dataclasses import dataclass
@@ -1128,11 +1129,15 @@ class Interpreter:
             path = self._eval(args[0])
             if not isinstance(path, str):
                 raise RuntimeError_("read_file() requires a string path")
+            # Return "" on missing file to match the native compiler's
+            # behavior — Arrow programs that probe for optional files (the
+            # resolver's search-path fallback, for one) rely on the empty
+            # result as a signal rather than an exception.
             try:
                 with open(path, encoding="utf-8") as f:
                     return f.read()
             except FileNotFoundError:
-                raise RuntimeError_(f"File not found: {path}")
+                return ""
             except Exception as e:
                 raise RuntimeError_(f"Error reading file: {e}")
 
@@ -1563,59 +1568,70 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
     path_canonical = {}     # path → first-seen namespace name
     canonical_for = {}      # alias → canonical (identity entry per name)
     mod_names = set()
-    work = []               # list of (path, name)
+    work = []               # list of (relative_path, raw_path, name)
+
+    # Search-path fallback: lang.py's own directory contains the std/ tree,
+    # so an import that doesn't resolve relative to the importing file can
+    # still find a stdlib module under <lang.py's dir>/<raw_path>.arrow.
+    # Matches the compiler-side fallback (dirname(args(-1))).
+    _STDLIB_DIR = _dirname(os.path.abspath(__file__))
 
     # Seed from main file's imports.
     main_dir = _dirname(main_path)
     filtered_main = []
     for s in stmts:
         if isinstance(s, ImportStmt):
-            work.append((main_dir + s.path + ".arrow", s.name))
+            work.append((main_dir + s.path + ".arrow", s.path, s.name))
             mod_names.add(s.name)
         else:
             filtered_main.append(s)
 
     accumulated = []
     while work:
-        path, name = work.pop()
-        if path in all_paths:
+        primary_path, raw_path, name = work.pop()
+        # Resolve: relative-to-importer first, then exe-dir fallback.
+        resolved_path = primary_path
+        sub_src = None
+        if os.path.exists(primary_path):
+            with open(primary_path, encoding="utf-8") as f:
+                sub_src = f.read()
+        else:
+            fb_path = _STDLIB_DIR + raw_path + ".arrow"
+            if os.path.exists(fb_path):
+                resolved_path = fb_path
+                with open(fb_path, encoding="utf-8") as f:
+                    sub_src = f.read()
+        if sub_src is None:
+            errors.append(f"import: file not found: {primary_path}")
+            continue
+        if resolved_path in all_paths:
             # Already loaded; possibly a different alias.
-            canon = path_canonical[path]
+            canon = path_canonical[resolved_path]
             if name != canon:
                 canonical_for[name] = canon
             continue
-        all_paths.append(path)
-        path_canonical[path] = name
+        all_paths.append(resolved_path)
+        path_canonical[resolved_path] = name
         canonical_for[name] = name
         try:
-            with open(path, encoding="utf-8") as f:
-                sub_src = f.read()
-        except FileNotFoundError:
-            errors.append(f"import: file not found: {path}")
-            continue
-        try:
             sub_tokens = Lexer(sub_src).tokenize()
-            sub_parser = Parser(sub_tokens, src_file=path)
+            sub_parser = Parser(sub_tokens, src_file=resolved_path)
             sub_program = sub_parser.parse()
             sub_stmts = sub_program.statements
             errors.extend(sub_parser.errors)
-            # If the imported file had any parse errors, skip its module
-            # entirely — its decls are unreliable and would mostly cause
-            # follow-on type errors. We've already collected the errors,
-            # so the user sees them in the final report.
             if sub_parser.errors:
                 continue
         except (LexerError, ParseError) as e:
-            errors.append(f"{path}: {e}")
+            errors.append(f"{resolved_path}: {e}")
             continue
 
-        errors.extend(_validate_module(sub_stmts, path))
+        errors.extend(_validate_module(sub_stmts, resolved_path))
 
-        sub_dir = _dirname(path)
+        sub_dir = _dirname(resolved_path)
         new_filtered = []
         for s in sub_stmts:
             if isinstance(s, ImportStmt):
-                work.append((sub_dir + s.path + ".arrow", s.name))
+                work.append((sub_dir + s.path + ".arrow", s.path, s.name))
                 mod_names.add(s.name)
             else:
                 new_filtered.append(s)

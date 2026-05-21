@@ -1,0 +1,23 @@
+// Arrow Lang — std/math
+//
+// Tiny math helpers. The intent is to demonstrate the search-path
+// mechanism with something useful; we'll grow this in later passes as
+// the language gets more capable.
+//
+// All functions are pure and rely only on the language's primitive
+// arithmetic, so they're safe to call from any context.
+
+fn abs(x) {
+    if (x < 0) { return -x; }
+    return x;
+}
+
+fn min(a, b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+fn max(a, b) {
+    if (a > b) { return a; }
+    return b;
+}

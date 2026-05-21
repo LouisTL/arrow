@@ -1,0 +1,21 @@
+// Arrow Lang — Std lib demo
+//
+// `import "std/math";` doesn't find `examples/std/math.arrow`, so the
+// resolver falls back to the arrow executable's directory, where
+// `std/math.arrow` lives — this is the search-path mechanism in action.
+
+import "std/math";
+
+print(math.abs(-5));        // 5
+print(math.abs(7));         // 7
+print(math.min(3, 8));      // 3
+print(math.max(3, 8));      // 8
+
+// Composes naturally with regular code.
+fn dist(a, b) {
+    return math.abs(a - b);
+}
+print(dist(10, 3));         // 7
+print(dist(3, 10));         // 7
+
+print("Done!");

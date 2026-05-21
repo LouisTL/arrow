@@ -487,6 +487,11 @@ fn rename_module(stmts, mod_name: str) {
 // shared work lists. Pure: doesn't read or tokenize files itself — that
 // has to happen at __main_logic level so the global parser state can be
 // re-written. Returns the input list with ImportStmt entries filtered out.
+//
+// The work item carries both the relative-to-importer path AND the raw
+// import string. If the relative resolution doesn't find the file, the
+// work-loop body retries against a search-path fallback (the directory
+// containing the arrow executable — useful for std lib lookups).
 fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
     out <- [];
     i <- 0;
@@ -494,7 +499,7 @@ fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
         s <- stmts[i];
         if (s.node = "ImportStmt") {
             target_path <- dir + s.path + ".arrow";
-            push(work_paths, {path: target_path, name: s.name, line: s.line, col: s.col});
+            push(work_paths, {path: target_path, raw_path: s.path, name: s.name, line: s.line, col: s.col});
             push(work_dirs, dir);
             if (!name_in(mod_names, s.name)) { push(mod_names, s.name); }
         } else {
@@ -5964,17 +5969,34 @@ if (args() > 0) {
         pop(work_paths);
         pop(work_dirs);
 
-        // Dedup: only load each file once.
+        // Resolve the path: try relative to importer first; if not found,
+        // try the search-path fallback (the directory containing the arrow
+        // executable, where std/ lives). Read the file content once, here,
+        // so we can settle on a path before doing any dedup or bookkeeping.
+        resolved_path <- item.path;
+        sub_src <- read_file(resolved_path);
+        if (len(sub_src) = 0) {
+            exe_dir <- dirname(args(-1));
+            fb_path <- exe_dir + item.raw_path + ".arrow";
+            fb_src <- read_file(fb_path);
+            if (len(fb_src) > 0) {
+                resolved_path <- fb_path;
+                sub_src <- fb_src;
+            }
+        }
+
+        // Dedup: only load each file once. Uses the resolved path so a
+        // fallback hit dedups against any future relative-path resolution
+        // that lands on the same file.
         already <- false;
         existing_canonical <- "";
         ii <- 0;
         while (ii < len(all_paths)) {
-            if (all_paths[ii] = item.path) {
+            if (all_paths[ii] = resolved_path) {
                 already <- true;
-                // Look up the name this path was first loaded as.
                 jj <- 0;
                 while (jj < len(path_canonical)) {
-                    if (path_canonical[jj].path = item.path) {
+                    if (path_canonical[jj].path = resolved_path) {
                         existing_canonical <- path_canonical[jj].name;
                     }
                     jj <- jj + 1;
@@ -5990,33 +6012,21 @@ if (args() > 0) {
                 push(canonical_for, {name: item.name, canonical: existing_canonical});
             }
         } else {
-            push(all_paths, item.path);
-            push(path_canonical, {path: item.path, name: item.name});
-            // Identity entry — keeps the rewriter simple: every alias has a
-            // canonical, even when they're the same name.
+            push(all_paths, resolved_path);
+            push(path_canonical, {path: resolved_path, name: item.name});
             push(canonical_for, {name: item.name, canonical: item.name});
-            sub_src <- read_file(item.path);
-            // read_file returns "" both for empty files and for missing
-            // files. Treat empty-on-import as a missing-file error — an
-            // empty .arrow file is technically valid but importing it would
-            // be silently useless, so a clear diagnostic beats a cryptic
-            // undefined-symbol failure later in clang.
             if (len(sub_src) = 0) {
                 push(import_errors, "import: cannot read file (missing or empty): " + item.path);
             } else {
-                // Global write to `toks` is the whole reason this loop lives in
-                // __main_logic. Same for pos[0]. Set parse_src_file so any
-                // errors recorded by this parse get tagged with the right file.
                 toks <- tokenize(sub_src);
                 pos[0] <- 0;
-                parse_src_file[0] <- item.path;
+                parse_src_file[0] <- resolved_path;
                 sub_stmts <- pp();
-                validate_module(sub_stmts, item.path);
-                // Sub-imports inherit from the importer's directory.
-                sub_dir <- dirname(item.path);
+                validate_module(sub_stmts, resolved_path);
+                // Sub-imports resolve relative to THIS file's directory.
+                sub_dir <- dirname(resolved_path);
                 sub_stmts <- extract_imports(sub_stmts, sub_dir, work_paths, work_dirs, all_mod_names);
                 renamed <- rename_module(sub_stmts, item.name);
-                // Splice this module's decls into the accumulator.
                 kk <- 0;
                 while (kk < len(renamed)) {
                     push(all_imported_stmts, renamed[kk]);
