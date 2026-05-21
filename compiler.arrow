@@ -60,13 +60,78 @@ fn tokenize(src: str){
 
 // ── Parser ──────────────────────────────
 toks<-[];pos<-[0];
+
+// Parse errors are accumulated rather than printed. Like type_errors and
+// import_errors, they're flushed at the end of compilation; if any are
+// present, compilation aborts cleanly before emitting IR. Per-error
+// metadata: source file (so import-time parses can be tagged), line, col.
+parse_errors <- [];
+parse_src_file <- ["<unknown>"];  // updated per-parse so each error knows its file
+// Once we've registered a parse error in the current statement, suppress
+// further errors until the statement-level recovery in pp() resyncs. This
+// turns "missing ) inside a fn header" from a cascade of 2-3 errors into a
+// single one pointing at the actual cause. Reset at the start of each
+// top-level statement.
+panic_mode <- [false];
+
+fn parse_error(line: int, col: int, msg: str) {
+    if (panic_mode[0]) { return false; }
+    push(parse_errors, {file: parse_src_file[0], line: line, col: col, msg: msg});
+    panic_mode[0] <- true;
+    return false;
+}
+
 fn ci(e: str): int{return toks[pos[0]].type=e;}
 fn pi(o: int,e: str): int{x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
 fn adv(){pos[0]<-pos[0]+1;}
 fn cv(): str{return toks[pos[0]].value;}
-fn eat(e: str){t<-toks[pos[0]];if(t.type!=e){print("Parse error: expected "+e+" got "+t.type+" at "+t.line+":"+t.col);}pos[0]<-pos[0]+1;return t;}
+fn eat(e: str){
+    t<-toks[pos[0]];
+    if(t.type!=e){parse_error(t.line, t.col, "expected " + e + ", got " + t.type);}
+    pos[0]<-pos[0]+1;
+    return t;
+}
 fn ev(e: str): str{t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
-fn pp(){ss<-[];while(!ci("EOF")){push(ss,ps());}return ss;}
+
+// Skip tokens until we reach a likely statement boundary. Used to recover
+// from a parse error: discard the rest of the broken statement, then resume
+// parsing fresh from the next plausible start point. Sync points:
+//   - SEMI       — end of an expression statement / assignment; consume it
+//   - RBRACE     — end of a block; stop before it so the enclosing parser
+//                  (if/while/fn) sees it cleanly
+//   - top-level  — fn, if, while, for, return, print, import — start of a
+//     keyword     new statement; stop before it
+//   - EOF        — end of file; stop
+fn sync_to_stmt_boundary() {
+    while (!ci("EOF") && !ci("SEMI") && !ci("RBRACE")
+            && !ci("fn") && !ci("if") && !ci("while") && !ci("for")
+            && !ci("return") && !ci("print") && !ci("import")) {
+        adv();
+    }
+    if (ci("SEMI")) { adv(); }
+}
+
+fn pp(){
+    ss<-[];
+    while(!ci("EOF")){
+        start_pos <- pos[0];
+        start_errs <- len(parse_errors);
+        panic_mode[0] <- false;  // fresh statement → fresh error budget
+        s <- ps();
+        if (len(parse_errors) > start_errs) {
+            // This statement registered new parse errors. Skip whatever the
+            // sub-parsers consumed and resync to the next statement so we
+            // can report independent errors instead of a cascade. Force one
+            // advance if the parser didn't move at all (defensive against
+            // an infinite loop on a corrupt token stream).
+            if (pos[0] = start_pos) { adv(); }
+            sync_to_stmt_boundary();
+        } else {
+            push(ss, s);
+        }
+    }
+    return ss;
+}
 fn ps(){
     if(ci("fn")){return pfd();}if(ci("return")){return prt();}
     if(ci("if")){return pif();}if(ci("while")){return pwh();}
@@ -87,7 +152,7 @@ fn pim(){
     ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;
     eat("import");
     pt<-toks[pos[0]];
-    if(pt.type!="STRING"){print("Parse error at "+pt.line+":"+pt.col+": import expects a string path, got "+pt.type);adv();return{node:"NumberLit",value:"0"};}
+    if(pt.type!="STRING"){parse_error(pt.line, pt.col, "import expects a string path, got " + pt.type);adv();return{node:"NumberLit",value:"0"};}
     pth<-pt.value;
     adv();
     // Default namespace name: basename of path with .arrow stripped.
@@ -103,7 +168,7 @@ fn pim(){
         adv();
         if(!ci("IDENT")){
             t<-toks[pos[0]];
-            print("Parse error at "+t.line+":"+t.col+": `as` expects an identifier, got "+t.type);
+            parse_error(t.line, t.col, "`as` expects an identifier, got " + t.type);
         } else {
             base<-cv();
             adv();
@@ -148,7 +213,7 @@ fn ppm(){
     if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
     if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
     if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
-    print("Parse error at " + toks[pos[0]].line + ":" + toks[pos[0]].col + ": unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
+    parse_error(toks[pos[0]].line, toks[pos[0]].col, "unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
 }
 
 
@@ -5870,6 +5935,7 @@ if (args() > 0) {
 
     toks <- tokenize(source);
     pos[0] <- 0;
+    parse_src_file[0] <- input_file;
     main_ast <- pp();
     src_filename[0] <- input_file;
 
@@ -5939,9 +6005,11 @@ if (args() > 0) {
                 push(import_errors, "import: cannot read file (missing or empty): " + item.path);
             } else {
                 // Global write to `toks` is the whole reason this loop lives in
-                // __main_logic. Same for pos[0].
+                // __main_logic. Same for pos[0]. Set parse_src_file so any
+                // errors recorded by this parse get tagged with the right file.
                 toks <- tokenize(sub_src);
                 pos[0] <- 0;
+                parse_src_file[0] <- item.path;
                 sub_stmts <- pp();
                 validate_module(sub_stmts, item.path);
                 // Sub-imports inherit from the importer's directory.
@@ -5971,7 +6039,19 @@ if (args() > 0) {
     // module bodies (the latter may have nested calls to `mod.sym`).
     main_rewrite_stmts(combined, all_mod_names);
 
-    if (len(import_errors) > 0) {
+    if (len(parse_errors) > 0) {
+        // Parse errors take priority — type errors and import errors are
+        // unreliable when the AST is malformed, so report parse problems and
+        // stop here.
+        jj <- 0;
+        while (jj < len(parse_errors)) {
+            e <- parse_errors[jj];
+            print(e.file + ":" + e.line + ":" + e.col + ": parse error: " + e.msg);
+            jj <- jj + 1;
+        }
+        print("--");
+        print(len(parse_errors) + " parse error(s). Compilation aborted.");
+    } else if (len(import_errors) > 0) {
         jj <- 0;
         while (jj < len(import_errors)) {
             print(import_errors[jj]);

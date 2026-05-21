@@ -365,9 +365,39 @@ class ParseError(Exception):
 
 
 class Parser:
-    def __init__(self, tokens: list[Token]):
+    # Sync points for statement-level error recovery — mirror compiler.arrow's
+    # `sync_to_stmt_boundary`. SEMI ends a statement; RBRACE ends a block;
+    # the top-level keywords start a fresh statement.
+    _SYNC_STARTERS = frozenset({
+        TokenType.FN, TokenType.IF, TokenType.WHILE, TokenType.FOR,
+        TokenType.RETURN, TokenType.PRINT, TokenType.IMPORT,
+    })
+
+    def __init__(self, tokens: list[Token], src_file: str = "<unknown>"):
         self.tokens = tokens
         self.pos = 0
+        # Accumulated parse errors for batch reporting. `parse()` returns
+        # the program AND this list, so callers can decide whether to halt.
+        self.errors: list[str] = []
+        self.src_file = src_file
+        # See compiler.arrow's panic_mode: once one error fires in a
+        # statement we suppress follow-on errors until the recovery resyncs.
+        self._panic = False
+
+    def _record_error(self, msg: str, line: int, col: int):
+        if self._panic:
+            return
+        self.errors.append(f"{self.src_file}:{line}:{col}: parse error: {msg}")
+        self._panic = True
+
+    def _sync(self):
+        """Advance to a statement boundary so we can resume cleanly."""
+        while self._current().type not in (
+            TokenType.EOF, TokenType.SEMI, TokenType.RBRACE
+        ) and self._current().type not in self._SYNC_STARTERS:
+            self.pos += 1
+        if self._current().type == TokenType.SEMI:
+            self.pos += 1
 
     def _current(self) -> Token:
         return self.tokens[self.pos]
@@ -376,7 +406,7 @@ class Parser:
         tok = self._current()
         if tok.type != tt:
             raise ParseError(
-                f"Expected {tt.name}, got {tok.type.name} ({tok.value!r}) "
+                f"expected {tt.name}, got {tok.type.name} ({tok.value!r}) "
                 f"at line {tok.line}, col {tok.col}")
         self.pos += 1
         return tok
@@ -397,7 +427,26 @@ class Parser:
     def parse(self) -> Program:
         stmts = []
         while self._current().type != TokenType.EOF:
-            stmts.append(self._statement())
+            # A stray close-brace at top level is recovery residue: the
+            # enclosing block was abandoned mid-parse because of an earlier
+            # error. Skipping silently avoids cascading a confusing
+            # "unexpected RBRACE" on top of the real diagnostic.
+            if self._current().type == TokenType.RBRACE:
+                self.pos += 1
+                continue
+            start_pos = self.pos
+            self._panic = False
+            try:
+                stmts.append(self._statement())
+            except ParseError as e:
+                tok = self._current()
+                msg = str(e)
+                if " at line " in msg:
+                    msg = msg.rsplit(" at line ", 1)[0]
+                self._record_error(msg, tok.line, tok.col)
+                if self.pos == start_pos:
+                    self.pos += 1
+                self._sync()
         return Program(stmts)
 
     def _statement(self):
@@ -1546,7 +1595,16 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
             continue
         try:
             sub_tokens = Lexer(sub_src).tokenize()
-            sub_stmts = Parser(sub_tokens).parse().statements
+            sub_parser = Parser(sub_tokens, src_file=path)
+            sub_program = sub_parser.parse()
+            sub_stmts = sub_program.statements
+            errors.extend(sub_parser.errors)
+            # If the imported file had any parse errors, skip its module
+            # entirely — its decls are unreliable and would mostly cause
+            # follow-on type errors. We've already collected the errors,
+            # so the user sees them in the final report.
+            if sub_parser.errors:
+                continue
         except (LexerError, ParseError) as e:
             errors.append(f"{path}: {e}")
             continue
@@ -1573,9 +1631,16 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
 # ─────────────────────────────────────────────
 #  RUN / REPL / MAIN
 # ─────────────────────────────────────────────
-def run_source(source: str) -> Interpreter:
+def run_source(source: str, src_file: str = "<input>") -> Interpreter:
     tokens = Lexer(source).tokenize()
-    program = Parser(tokens).parse()
+    parser = Parser(tokens, src_file=src_file)
+    program = parser.parse()
+    if parser.errors:
+        for e in parser.errors:
+            print(e)
+        print("--")
+        print(f"{len(parser.errors)} parse error(s). Compilation aborted.")
+        sys.exit(1)
     interp = Interpreter()
     interp.run(program)
     return interp
@@ -1586,13 +1651,31 @@ def run_file(filepath: str) -> Interpreter:
     with open(filepath, encoding="utf-8") as f:
         source = f.read()
     tokens = Lexer(source).tokenize()
-    program = Parser(tokens).parse()
-    resolved, errs = resolve_imports(program.statements, filepath)
-    if errs:
-        for e in errs:
+    parser = Parser(tokens, src_file=filepath)
+    program = parser.parse()
+    # Parse errors take priority — type errors and import errors on a
+    # malformed AST aren't useful, so report parse issues and stop.
+    if parser.errors:
+        for e in parser.errors:
             print(e)
         print("--")
-        print(f"{len(errs)} import error(s). Compilation aborted.")
+        print(f"{len(parser.errors)} parse error(s). Compilation aborted.")
+        sys.exit(1)
+    resolved, errs = resolve_imports(program.statements, filepath)
+    # `errs` may contain parser errors from imported files; classify them.
+    parse_errs = [e for e in errs if ": parse error: " in e]
+    other_errs = [e for e in errs if ": parse error: " not in e]
+    if parse_errs:
+        for e in parse_errs:
+            print(e)
+        print("--")
+        print(f"{len(parse_errs)} parse error(s). Compilation aborted.")
+        sys.exit(1)
+    if other_errs:
+        for e in other_errs:
+            print(e)
+        print("--")
+        print(f"{len(other_errs)} import error(s). Compilation aborted.")
         sys.exit(1)
     interp = Interpreter()
     interp.run(Program(resolved))
