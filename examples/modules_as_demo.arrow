@@ -1,0 +1,26 @@
+// Arrow Lang — `import "x" as y` aliases
+//
+// The default namespace is the file's basename, but you can override it
+// with `as <name>`. Multiple aliases pointing at the same file all resolve
+// to the same definitions (the first-imported alias wins the canonical
+// mangling; later ones become pointers to it).
+
+import "mathlib" as m;
+import "mathlib" as ml;      // alias #2 for the same file
+
+// Each alias works at the use site.
+print(m.square(6));          // 36
+print(ml.cube(3));           // 27
+
+// And they share state: calling through different aliases hits the same
+// definitions, so the value is consistent.
+print(m.pi);                 // 3
+print(ml.pi);                // 3
+
+// The original basename `mathlib` was never bound — only `m` and `ml`
+// are namespaces in this file. So `m.fact` and `ml.fact` work; bare
+// `mathlib.fact` would be a parse / resolution error.
+print(m.fact(5));            // 120
+print(ml.fact(6));           // 720
+
+print("Done!");

@@ -533,16 +533,25 @@ class Parser:
             raise ParseError(f"import expects a string path at line {tok.line}, col {tok.col}, got {tok.type.name}")
         path = tok.value
         self._eat(TokenType.STRING)
-        self._eat(TokenType.SEMI)
-        # Module name = basename of path with optional .arrow suffix stripped.
+        # Default namespace = basename of path, strip optional .arrow.
         base = path
         if base.endswith(".arrow"):
             base = base[:-len(".arrow")]
-        # Handle both separators so `import "lib/x"` and `import "lib\\x"`
-        # both yield "x" as the namespace.
         for sep in ("/", "\\"):
             if sep in base:
                 base = base.rsplit(sep, 1)[1]
+        # Optional `as <ident>` override. `as` is not a reserved keyword;
+        # we recognize it by peeking at the next IDENT token's value so it
+        # remains usable as a regular variable name elsewhere.
+        nxt = self._current()
+        if nxt.type == TokenType.IDENT and nxt.value == "as":
+            self._eat(TokenType.IDENT)
+            alias_tok = self._current()
+            if alias_tok.type != TokenType.IDENT:
+                raise ParseError(f"`as` expects an identifier at line {alias_tok.line}, col {alias_tok.col}, got {alias_tok.type.name}")
+            base = alias_tok.value
+            self._eat(TokenType.IDENT)
+        self._eat(TokenType.SEMI)
         return ImportStmt(path=path, name=base)
 
     def _return_stmt(self) -> ReturnStmt:
@@ -1398,90 +1407,93 @@ def _rename_module(stmts: list, mod_name: str) -> list:
     return stmts
 
 
-def _main_rewrite(node, mod_names: set):
+def _main_rewrite(node, mod_names: set, canonical_for: dict):
     """In the importing module, rewrite `mod.sym` DotExpr to a mangled
-    Identifier. Returns the (possibly new) node."""
+    Identifier. `canonical_for` maps each alias to the canonical name under
+    which the module's symbols were actually renamed (identity for the common
+    one-import-per-file case). Returns the (possibly new) node."""
     if isinstance(node, DotExpr):
         if isinstance(node.obj, Identifier) and node.obj.name in mod_names:
-            return Identifier(name=f"__mod_{node.obj.name}__{node.field}")
-        node.obj = _main_rewrite(node.obj, mod_names)
+            canon = canonical_for.get(node.obj.name, node.obj.name)
+            return Identifier(name=f"__mod_{canon}__{node.field}")
+        node.obj = _main_rewrite(node.obj, mod_names, canonical_for)
         return node
     if isinstance(node, BinOp):
-        node.left = _main_rewrite(node.left, mod_names)
-        node.right = _main_rewrite(node.right, mod_names)
+        node.left = _main_rewrite(node.left, mod_names, canonical_for)
+        node.right = _main_rewrite(node.right, mod_names, canonical_for)
         return node
     if isinstance(node, UnaryOp):
-        node.operand = _main_rewrite(node.operand, mod_names)
+        node.operand = _main_rewrite(node.operand, mod_names, canonical_for)
         return node
     if isinstance(node, CallExpr):
-        node.callee = _main_rewrite(node.callee, mod_names)
-        node.args = [_main_rewrite(a, mod_names) for a in node.args]
+        node.callee = _main_rewrite(node.callee, mod_names, canonical_for)
+        node.args = [_main_rewrite(a, mod_names, canonical_for) for a in node.args]
         return node
     if isinstance(node, IndexExpr):
-        node.obj = _main_rewrite(node.obj, mod_names)
-        node.index = _main_rewrite(node.index, mod_names)
+        node.obj = _main_rewrite(node.obj, mod_names, canonical_for)
+        node.index = _main_rewrite(node.index, mod_names, canonical_for)
         return node
     if isinstance(node, ArrayLit):
-        node.elements = [_main_rewrite(e, mod_names) for e in node.elements]
+        node.elements = [_main_rewrite(e, mod_names, canonical_for) for e in node.elements]
         return node
     if isinstance(node, StructLit):
-        node.fields = [(k, _main_rewrite(v, mod_names)) for (k, v) in node.fields]
+        node.fields = [(k, _main_rewrite(v, mod_names, canonical_for)) for (k, v) in node.fields]
         return node
     if isinstance(node, ArrowFn):
         if isinstance(node.body, list):
             for s in node.body:
-                _main_rewrite_stmt(s, mod_names)
+                _main_rewrite_stmt(s, mod_names, canonical_for)
         else:
-            node.body = _main_rewrite(node.body, mod_names)
+            node.body = _main_rewrite(node.body, mod_names, canonical_for)
         return node
     return node
 
 
-def _main_rewrite_stmt(s, mod_names: set):
+def _main_rewrite_stmt(s, mod_names: set, canonical_for: dict):
     if isinstance(s, Assignment):
-        s.expr = _main_rewrite(s.expr, mod_names)
+        s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
         return
     if isinstance(s, ReturnStmt):
         if s.expr is not None:
-            s.expr = _main_rewrite(s.expr, mod_names)
+            s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
         return
     if isinstance(s, PrintStmt):
-        s.expr = _main_rewrite(s.expr, mod_names)
+        s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
         return
     if isinstance(s, IfStmt):
-        s.condition = _main_rewrite(s.condition, mod_names)
+        s.condition = _main_rewrite(s.condition, mod_names, canonical_for)
         for sub in s.then_body:
-            _main_rewrite_stmt(sub, mod_names)
+            _main_rewrite_stmt(sub, mod_names, canonical_for)
         if s.else_body:
             for sub in s.else_body:
-                _main_rewrite_stmt(sub, mod_names)
+                _main_rewrite_stmt(sub, mod_names, canonical_for)
         return
     if isinstance(s, WhileStmt):
-        s.condition = _main_rewrite(s.condition, mod_names)
+        s.condition = _main_rewrite(s.condition, mod_names, canonical_for)
         for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names)
+            _main_rewrite_stmt(sub, mod_names, canonical_for)
         return
     if isinstance(s, ForInStmt):
-        s.iterable = _main_rewrite(s.iterable, mod_names)
+        s.iterable = _main_rewrite(s.iterable, mod_names, canonical_for)
         for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names)
+            _main_rewrite_stmt(sub, mod_names, canonical_for)
         return
     if isinstance(s, FnDecl):
         for sub in s.body:
-            _main_rewrite_stmt(sub, mod_names)
+            _main_rewrite_stmt(sub, mod_names, canonical_for)
         return
     if isinstance(s, Block):
         for sub in s.statements:
-            _main_rewrite_stmt(sub, mod_names)
+            _main_rewrite_stmt(sub, mod_names, canonical_for)
         return
     if isinstance(s, IndexAssign):
-        s.obj = _main_rewrite(s.obj, mod_names)
-        s.index = _main_rewrite(s.index, mod_names)
-        s.value = _main_rewrite(s.value, mod_names)
+        s.obj = _main_rewrite(s.obj, mod_names, canonical_for)
+        s.index = _main_rewrite(s.index, mod_names, canonical_for)
+        s.value = _main_rewrite(s.value, mod_names, canonical_for)
         return
     if isinstance(s, DotAssign):
-        s.obj = _main_rewrite(s.obj, mod_names)
-        s.value = _main_rewrite(s.value, mod_names)
+        s.obj = _main_rewrite(s.obj, mod_names, canonical_for)
+        s.value = _main_rewrite(s.value, mod_names, canonical_for)
         return
 
 
@@ -1499,8 +1511,10 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
     Returns (resolved_stmts, errors)."""
     errors = []
     all_paths = []          # dedup
+    path_canonical = {}     # path → first-seen namespace name
+    canonical_for = {}      # alias → canonical (identity entry per name)
     mod_names = set()
-    work = []               # list of {path, name, line, col}
+    work = []               # list of (path, name)
 
     # Seed from main file's imports.
     main_dir = _dirname(main_path)
@@ -1516,8 +1530,14 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
     while work:
         path, name = work.pop()
         if path in all_paths:
+            # Already loaded; possibly a different alias.
+            canon = path_canonical[path]
+            if name != canon:
+                canonical_for[name] = canon
             continue
         all_paths.append(path)
+        path_canonical[path] = name
+        canonical_for[name] = name
         try:
             with open(path, encoding="utf-8") as f:
                 sub_src = f.read()
@@ -1546,7 +1566,7 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
 
     combined = accumulated + filtered_main
     for s in combined:
-        _main_rewrite_stmt(s, mod_names)
+        _main_rewrite_stmt(s, mod_names, canonical_for)
     return combined, errors
 
 

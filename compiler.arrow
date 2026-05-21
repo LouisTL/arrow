@@ -79,7 +79,10 @@ fn ps(){
 // Module import: `import "path/to/file";` — the file (with `.arrow` appended)
 // is loaded relative to the importing file's directory. The basename without
 // extension becomes the namespace name used at access sites (`base.symbol`).
-// The resolver runs after parsing and rewrites the AST in place.
+// Optional `as <ident>` overrides the namespace name:
+//   import "lib/strings" as str;
+// `as` is not a reserved keyword — it's only recognized contextually here,
+// so users can still name a variable `as`.
 fn pim(){
     ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;
     eat("import");
@@ -87,16 +90,26 @@ fn pim(){
     if(pt.type!="STRING"){print("Parse error at "+pt.line+":"+pt.col+": import expects a string path, got "+pt.type);adv();return{node:"NumberLit",value:"0"};}
     pth<-pt.value;
     adv();
-    eat("SEMI");
-    // Compute module basename from path: strip trailing ".arrow" if present,
-    // then take the part after the last "/". So "lib/strings" → "strings",
-    // "utils" → "utils", "lib/strings.arrow" → "strings".
+    // Default namespace name: basename of path with .arrow stripped.
     base<-pth;
     bl<-len(base);
     if(bl>6&&substring(base,bl-6,bl)=".arrow"){base<-substring(base,0,bl-6);bl<-bl-6;}
     si<-bl-1;
-    while(si>=0&&char_at(base,si)!="/"){si<-si-1;}
+    while(si>=0&&char_at(base,si)!="/"&&char_at(base,si)!="\\"){si<-si-1;}
     if(si>=0){base<-substring(base,si+1,bl);}
+    // Optional `as <ident>` override. Recognized by contextual lookahead on
+    // the identifier value, not as a reserved keyword.
+    if(ci("IDENT")&&cv()="as"){
+        adv();
+        if(!ci("IDENT")){
+            t<-toks[pos[0]];
+            print("Parse error at "+t.line+":"+t.col+": `as` expects an identifier, got "+t.type);
+        } else {
+            base<-cv();
+            adv();
+        }
+    }
+    eat("SEMI");
     return{node:"ImportStmt",path:pth,name:base,line:ln,col:cl};
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
@@ -208,6 +221,24 @@ fn validate_module(stmts, path: str) {
         }
         i <- i + 1;
     }
+}
+
+// Maps a namespace name (the "as" alias, or the default basename) to the
+// canonical name under which the module's symbols were actually renamed.
+// When you `import "x" as foo; import "x" as bar;`, the first import wins
+// the canonical name and the second is recorded here as bar→foo so that
+// `bar.fn()` resolves to the same `__mod_foo__fn` definition. For the common
+// case (one import per file), every alias maps to itself, and this table
+// becomes a no-op identity.
+canonical_for <- [];
+
+fn canonical_of(name: str): str {
+    i <- 0;
+    while (i < len(canonical_for)) {
+        if (canonical_for[i].name = name) { return canonical_for[i].canonical; }
+        i <- i + 1;
+    }
+    return name;
 }
 
 // Walk a stmt list rewriting Identifier and CallExpr-callee references to
@@ -467,9 +498,12 @@ fn main_rewrite_value(e, mod_names) {
     if (e.node = "DotExpr") {
         // If the base is an imported namespace, replace `mod.sym` with the
         // mangled identifier. Otherwise recurse into the base for nested
-        // rewrites (e.g. `x.field` where x is a normal struct).
+        // rewrites (e.g. `x.field` where x is a normal struct). The
+        // namespace name may be an alias from `import "x" as y` — look up
+        // the canonical name so all aliases pointing at the same file
+        // resolve to the same definitions.
         if (e.obj.node = "Identifier" && name_in(mod_names, e.obj.name)) {
-            return {node: "Identifier", name: "__mod_" + e.obj.name + "__" + e.field};
+            return {node: "Identifier", name: "__mod_" + canonical_of(e.obj.name) + "__" + e.field};
         }
         e.obj <- main_rewrite_value(e.obj, mod_names);
         return e;
@@ -5848,6 +5882,8 @@ if (args() > 0) {
     import_errors <- [];
     all_paths <- [];                    // dedup of files already loaded
     all_mod_names <- [];                // namespaces seen anywhere
+    path_canonical <- [];               // [{path, name}] — first name wins per path
+    canonical_for <- [];                // alias-name → canonical mapping
     work_paths <- [];                   // pending {path, name, line, col}
     work_dirs <- [];                    // parallel: dir to resolve from
     all_imported_stmts <- [];           // accumulated, renamed
@@ -5864,16 +5900,35 @@ if (args() > 0) {
 
         // Dedup: only load each file once.
         already <- false;
+        existing_canonical <- "";
         ii <- 0;
         while (ii < len(all_paths)) {
-            if (all_paths[ii] = item.path) { already <- true; }
+            if (all_paths[ii] = item.path) {
+                already <- true;
+                // Look up the name this path was first loaded as.
+                jj <- 0;
+                while (jj < len(path_canonical)) {
+                    if (path_canonical[jj].path = item.path) {
+                        existing_canonical <- path_canonical[jj].name;
+                    }
+                    jj <- jj + 1;
+                }
+            }
             ii <- ii + 1;
         }
         if (already) {
-            // Different import statement, same file — namespace already
-            // recorded by extract_imports, so just skip.
+            // Same file, possibly different alias. If this import uses a
+            // different `as` name from the first one, record the alias so
+            // `<this_name>.sym` resolves to `__mod_<canonical>__sym`.
+            if (item.name != existing_canonical) {
+                push(canonical_for, {name: item.name, canonical: existing_canonical});
+            }
         } else {
             push(all_paths, item.path);
+            push(path_canonical, {path: item.path, name: item.name});
+            // Identity entry — keeps the rewriter simple: every alias has a
+            // canonical, even when they're the same name.
+            push(canonical_for, {name: item.name, canonical: item.name});
             sub_src <- read_file(item.path);
             // read_file returns "" both for empty files and for missing
             // files. Treat empty-on-import as a missing-file error — an
