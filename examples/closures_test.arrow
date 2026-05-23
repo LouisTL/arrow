@@ -7,7 +7,7 @@ fn add(a, b) {
 print(add(3, 4));
 
 // ── Arrow function ──────────────────────
-mul <- (a, b) => a * b;
+var mul <- (a, b) => a * b;
 print(mul(6, 7));
 
 // ── Recursion ───────────────────────────
@@ -21,8 +21,8 @@ print(factorial(10));
 fn make_adder(n) {
     return (x) => x + n;
 }
-add5 <- make_adder(5);
-add10 <- make_adder(10);
+var add5 <- make_adder(5);
+var add10 <- make_adder(10);
 print(add5(3));
 print(add10(3));
 
@@ -30,8 +30,8 @@ print(add10(3));
 fn make_multiplier(factor) {
     return (x) => x * factor;
 }
-double <- make_multiplier(2);
-triple <- make_multiplier(3);
+var double <- make_multiplier(2);
+var triple <- make_multiplier(3);
 print(double(7));
 print(triple(7));
 
@@ -46,15 +46,15 @@ print(apply(mul, 5, 8));
 fn compose(f, g) {
     return (x) => f(g(x));
 }
-inc <- (x) => x + 1;
-dbl <- (x) => x * 2;
-inc_after_dbl <- compose(inc, dbl);
+var inc <- (x) => x + 1;
+var dbl <- (x) => x * 2;
+var inc_after_dbl <- compose(inc, dbl);
 print(inc_after_dbl(5));
 
 // ── Higher-order with arrays ────────────
 fn map(arr, f) {
-    result <- [];
-    i <- 0;
+    var result <- [];
+    var i <- 0;
     while (i < len(arr)) {
         push(result, f(arr[i]));
         i <- i + 1;
@@ -62,12 +62,12 @@ fn map(arr, f) {
     return result;
 }
 
-doubled <- map([1, 2, 3, 4], (x) => x * 2);
+var doubled <- map([1, 2, 3, 4], (x) => x * 2);
 print(doubled);
 
 fn filter(arr, pred) {
-    result <- [];
-    i <- 0;
+    var result <- [];
+    var i <- 0;
     while (i < len(arr)) {
         if (pred(arr[i])) {
             push(result, arr[i]);
@@ -77,13 +77,13 @@ fn filter(arr, pred) {
     return result;
 }
 
-evens <- filter([1, 2, 3, 4, 5, 6, 7, 8], (x) => x % 2 = 0);
+var evens <- filter([1, 2, 3, 4, 5, 6, 7, 8], (x) => x % 2 = 0);
 print(evens);
 
 // ── Reduce ──────────────────────────────
 fn reduce(arr, init, f) {
-    acc <- init;
-    i <- 0;
+    var acc <- init;
+    var i <- 0;
     while (i < len(arr)) {
         acc <- f(acc, arr[i]);
         i <- i + 1;
@@ -91,12 +91,12 @@ fn reduce(arr, init, f) {
     return acc;
 }
 
-product <- reduce([1, 2, 3, 4, 5], 1, (a, b) => a * b);
+var product <- reduce([1, 2, 3, 4, 5], 1, (a, b) => a * b);
 print(product);
 
 // ── ForEach with closure ────────────────
 fn forEach(arr, f) {
-    i <- 0;
+    var i <- 0;
     while (i < len(arr)) {
         f(arr[i]);
         i <- i + 1;
@@ -117,15 +117,15 @@ print(make_inc()(5));        // 6
 print(make_adder(10)(7));    // 17
 
 // Triple-nested currying — every (b)(c) is an indirect call.
-add3 <- (a) => (b) => (c) => a + b + c;
+var add3 <- (a) => (b) => (c) => a + b + c;
 print(add3(1)(2)(3));        // 6
 
 // Indirect call via array index and struct field.
-fns <- [(x) => x + 1, (x) => x * 10, (x) => x - 100];
+var fns <- [(x) => x + 1, (x) => x * 10, (x) => x - 100];
 print(fns[0](5));            // 6
 print(fns[1](5));            // 50
 
-ops <- {inc: (x) => x + 1, dec: (x) => x - 1};
+var ops <- {inc: (x) => x + 1, dec: (x) => x - 1};
 print(ops.inc(10));          // 11
 print(ops.dec(10));          // 9
 
@@ -134,20 +134,20 @@ print(ops.dec(10));          // 9
 // can read it. Before fixing capture detection, the outer wouldn't notice
 // the inner needed `outer_var` and the inner would read garbage.
 fn factory() {
-    outer_var <- 100;
-    f <- (mult) => (x) => x * mult + outer_var;
+    var outer_var <- 100;
+    var f <- (mult) => (x) => x * mult + outer_var;
     return f;
 }
-make <- factory();
+var make <- factory();
 print(make(2)(5));           // 5*2 + 100 = 110
 print(make(3)(7));           // 7*3 + 100 = 121
 
 // Capture chain through three levels via FnDecl wrapper.
 fn triple_capture() {
-    a <- 1;
+    var a <- 1;
     return (b) => (c) => a * 100 + b * 10 + c;
 }
-g <- triple_capture();
+var g <- triple_capture();
 print(g(2)(3));              // 123
 print(g(5)(7));              // 157
 
@@ -159,24 +159,26 @@ fn clamp_factory(lo, hi) {
         return x;
     };
 }
-clamp <- clamp_factory(0, 10);
+var clamp <- clamp_factory(0, 10);
 print(clamp(-5));            // 0
 print(clamp(5));             // 5
 print(clamp(15));            // 10
 
 // Captures are by-value snapshots: each closure stores its own copy of
-// captured values at creation time, so the counter is "frozen at 1".
+// captured values at creation time. To "modify" the captured value, the
+// closure has to explicitly shadow it with `var` — the snapshot then
+// reads the captured `n`, and the new local `n` lives only for this call.
 fn make_counter() {
-    n <- 0;
+    var n <- 0;
     return () => {
-        n <- n + 1;
+        var n <- n + 1;
         return n;
     };
 }
-c1 <- make_counter();
+var c1 <- make_counter();
 print(c1());                 // 1
 print(c1());                 // 1   ← snapshot semantics
-c2 <- make_counter();
+var c2 <- make_counter();
 print(c2());                 // 1   ← independent counter
 
 print("Done!");

@@ -1,7 +1,7 @@
 // Arrow Lang v0.4 — Structs Demo
 
 // ── Basic struct ────────────────────────
-person <- {name: "Alice", age: 30};
+var person <- {name: "Alice", age: 30};
 print(person);
 print(person.name);
 print(person.age);
@@ -11,7 +11,7 @@ person.age <- 31;
 print(person.age);
 
 // ── Nested structs ──────────────────────
-ast <- {
+var ast <- {
     op: "+",
     left: {type: "number", value: 1},
     right: {type: "number", value: 2}
@@ -21,7 +21,7 @@ print(ast.left.value);
 print(ast.right.value);
 
 // ── Struct with different value types ───
-config <- {
+var config <- {
     debug: true,
     max_retries: 3,
     name: "app"
@@ -30,7 +30,7 @@ print(config.debug);
 print(config.name);
 
 // ── Structs in arrays ──────────────────
-tokens <- [
+var tokens <- [
     {type: "NUMBER", value: 42},
     {type: "PLUS", value: "+"},
     {type: "NUMBER", value: 8}
@@ -49,15 +49,15 @@ print(describe(person));
 fn make_point(x, y) {
     return {x: x, y: y};
 }
-p1 <- make_point(3, 4);
-p2 <- make_point(10, 20);
+var p1 <- make_point(3, 4);
+var p2 <- make_point(10, 20);
 print(p1);
 print(p2);
 
 // ── Distance function ──────────────────
 fn distance_squared(a, b) {
-    dx <- b.x - a.x;
-    dy <- b.y - a.y;
+    var dx <- b.x - a.x;
+    var dy <- b.y - a.y;
     return dx * dx + dy * dy;
 }
 print(distance_squared(p1, p2));
@@ -66,7 +66,7 @@ print(distance_squared(p1, p2));
 print(keys(person));
 
 // ── Empty struct ────────────────────────
-empty <- {};
+var empty <- {};
 print(empty);
 
 // ── Struct as a mini-object with methods ─
@@ -77,7 +77,7 @@ fn make_counter(start) {
     };
 }
 
-counter <- make_counter(0);
+var counter <- make_counter(0);
 print(counter.count);
 counter.count <- counter.count + 1;
 counter.count <- counter.count + 1;
@@ -90,10 +90,10 @@ fn make_token(type, val) {
 }
 
 fn tokenize_digits(s) {
-    result <- [];
-    i <- 0;
+    var result <- [];
+    var i <- 0;
     while (i < len(s)) {
-        ch <- s[i];
+        var ch <- s[i];
         if (ch = "1" || ch = "2" || ch = "3" || ch = "4" || ch = "5" ||
             ch = "6" || ch = "7" || ch = "8" || ch = "9" || ch = "0") {
             push(result, make_token("DIGIT", ch));
@@ -107,8 +107,8 @@ fn tokenize_digits(s) {
     return result;
 }
 
-toks <- tokenize_digits("12+34-5");
-i <- 0;
+var toks <- tokenize_digits("12+34-5");
+var i <- 0;
 while (i < len(toks)) {
     print(toks[i].type + ":" + toks[i].value);
     i <- i + 1;

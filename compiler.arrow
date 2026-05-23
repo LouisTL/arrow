@@ -24,16 +24,16 @@ fn is_alpha(c: int): int{return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
 fn is_alnum(c: int): int{return is_digit(c)||is_alpha(c);}
 fn is_ws(c: int): int{return c=32||c=9||c=10||c=13;}
 fn mktok(t: str,v: str,l: int,c: int){return{type:t,value:v,line:l,col:c};}
-fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}if(w="import"){return true;}return false;}
+fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}if(w="import"){return true;}if(w="var"){return true;}return false;}
 
 fn tokenize(src: str){
-    ts<-[];p<-0;ln<-1;cl<-1;sl<-str_len(src);
-    while(p<sl){ch<-char_code(char_at(src,p));
+    var ts<-[];var p<-0;var ln<-1;var cl<-1;var sl<-str_len(src);
+    while(p<sl){var ch<-char_code(char_at(src,p));
         if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
         else if(ch=47&&p+1<sl&&char_code(char_at(src,p+1))=47){while(p<sl&&char_code(char_at(src,p))!=10){p<-p+1;}}
-        else if(is_digit(ch)){s<-p;sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}if(p+1<sl&&char_at(src,p)="."&&is_digit(char_code(char_at(src,p+1)))){p<-p+1;cl<-cl+1;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("FLOAT",substring(src,s,p),ln,sc));}else{push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}}
-        else if(ch=34){sc<-cl;p<-p+1;cl<-cl+1;sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
-        else if(is_alpha(ch)){s<-p;sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
+        else if(is_digit(ch)){var s<-p;var sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}if(p+1<sl&&char_at(src,p)="."&&is_digit(char_code(char_at(src,p+1)))){p<-p+1;cl<-cl+1;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("FLOAT",substring(src,s,p),ln,sc));}else{push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}}
+        else if(ch=34){var sc<-cl;p<-p+1;cl<-cl+1;var sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){var c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;var nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
+        else if(is_alpha(ch)){var s<-p;var sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}var w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
         else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=45){push(ts,mktok("ARROW","<-",ln,cl));p<-p+2;cl<-cl+2;}
         else if(ch=61&&p+1<sl&&char_code(char_at(src,p+1))=62){push(ts,mktok("FAT_ARROW","=>",ln,cl));p<-p+2;cl<-cl+2;}
         else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("LTE","<=",ln,cl));p<-p+2;cl<-cl+2;}
@@ -66,20 +66,20 @@ fn tokenize(src: str){
 }
 
 // ── Parser ──────────────────────────────
-toks<-[];pos<-[0];
+var toks<-[];var pos<-[0];
 
 // Parse errors are accumulated rather than printed. Like type_errors and
 // import_errors, they're flushed at the end of compilation; if any are
 // present, compilation aborts cleanly before emitting IR. Per-error
 // metadata: source file (so import-time parses can be tagged), line, col.
-parse_errors <- [];
-parse_src_file <- ["<unknown>"];  // updated per-parse so each error knows its file
+var parse_errors <- [];
+var parse_src_file <- ["<unknown>"];  // updated per-parse so each error knows its file
 // Once we've registered a parse error in the current statement, suppress
 // further errors until the statement-level recovery in pp() resyncs. This
 // turns "missing ) inside a fn header" from a cascade of 2-3 errors into a
 // single one pointing at the actual cause. Reset at the start of each
 // top-level statement.
-panic_mode <- [false];
+var panic_mode <- [false];
 
 fn parse_error(line: int, col: int, msg: str) {
     if (panic_mode[0]) { return false; }
@@ -89,16 +89,16 @@ fn parse_error(line: int, col: int, msg: str) {
 }
 
 fn ci(e: str): int{return toks[pos[0]].type=e;}
-fn pi(o: int,e: str): int{x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
+fn pi(o: int,e: str): int{var x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
 fn adv(){pos[0]<-pos[0]+1;}
 fn cv(): str{return toks[pos[0]].value;}
 fn eat(e: str){
-    t<-toks[pos[0]];
+    var t<-toks[pos[0]];
     if(t.type!=e){parse_error(t.line, t.col, "expected " + e + ", got " + t.type);}
     pos[0]<-pos[0]+1;
     return t;
 }
-fn ev(e: str): str{t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
+fn ev(e: str): str{var t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
 
 // Skip tokens until we reach a likely statement boundary. Used to recover
 // from a parse error: discard the rest of the broken statement, then resume
@@ -119,12 +119,12 @@ fn sync_to_stmt_boundary() {
 }
 
 fn pp(){
-    ss<-[];
+    var ss<-[];
     while(!ci("EOF")){
-        start_pos <- pos[0];
-        start_errs <- len(parse_errors);
+        var start_pos <- pos[0];
+        var start_errs <- len(parse_errors);
         panic_mode[0] <- false;  // fresh statement → fresh error budget
-        s <- ps();
+        var s <- ps();
         if (len(parse_errors) > start_errs) {
             // This statement registered new parse errors. Skip whatever the
             // sub-parsers consumed and resync to the next statement so we
@@ -144,9 +144,10 @@ fn ps(){
     if(ci("if")){return pif();}if(ci("while")){return pwh();}
     if(ci("for")){return pfi();}if(ci("print")){return ppr();}
     if(ci("import")){return pim();}
-    if(ci("LBRACE")){if(isl()){e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
+    if(ci("var")){return pvd();}
+    if(ci("LBRACE")){if(isl()){var e<-pe();eat("SEMI");return e;}return{node:"Block",stmts:pb()};}
     if(ci("IDENT")){if(pi(1,"ARROW")){return pas();}if(pi(1,"COLON")){return ptd();}if(pi(1,"LBRACKET")||pi(1,"DOT")){return ppa();}}
-    e<-pe();eat("SEMI");return e;
+    var e<-pe();eat("SEMI");return e;
 }
 // Module import: `import "path/to/file";` — the file (with `.arrow` appended)
 // is loaded relative to the importing file's directory. The basename without
@@ -156,17 +157,17 @@ fn ps(){
 // `as` is not a reserved keyword — it's only recognized contextually here,
 // so users can still name a variable `as`.
 fn pim(){
-    ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;
+    var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;
     eat("import");
-    pt<-toks[pos[0]];
+    var pt<-toks[pos[0]];
     if(pt.type!="STRING"){parse_error(pt.line, pt.col, "import expects a string path, got " + pt.type);adv();return{node:"NumberLit",value:"0"};}
-    pth<-pt.value;
+    var pth<-pt.value;
     adv();
     // Default namespace name: basename of path with .arrow stripped.
-    base<-pth;
-    bl<-len(base);
+    var base<-pth;
+    var bl<-len(base);
     if(bl>6&&substring(base,bl-6,bl)=".arrow"){base<-substring(base,0,bl-6);bl<-bl-6;}
-    si<-bl-1;
+    var si<-bl-1;
     while(si>=0&&char_at(base,si)!="/"&&char_at(base,si)!="\\"){si<-si-1;}
     if(si>=0){base<-substring(base,si+1,bl);}
     // Optional `as <ident>` override. Recognized by contextual lookahead on
@@ -174,7 +175,7 @@ fn pim(){
     if(ci("IDENT")&&cv()="as"){
         adv();
         if(!ci("IDENT")){
-            t<-toks[pos[0]];
+            var t<-toks[pos[0]];
             parse_error(t.line, t.col, "`as` expects an identifier, got " + t.type);
         } else {
             base<-cv();
@@ -185,41 +186,45 @@ fn pim(){
     return{node:"ImportStmt",path:pth,name:base,line:ln,col:cl};
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
-fn pb(){eat("LBRACE");ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pty(){if(ci("LBRACKET")){eat("LBRACKET");et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){fn1<-ev("IDENT");eat("COLON");ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}fn2<-ev("IDENT");eat("COLON");ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
-fn pas(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;n<-ev("IDENT");eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},line:ln,col:cl};}
-fn ptd(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;n<-ev("IDENT");eat("COLON");ta<-pty();eat("ARROW");e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,line:ln,col:cl};}
-fn ppa(){e<-pe();if(ci("ARROW")){eat("ARROW");v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
-fn ppr(){eat("print");eat("LPAREN");e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
-fn prt(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
-fn pfd(){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;eat("fn");n<-ev("IDENT");eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
-fn ppl(){eat("LPAREN");p<-[];pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
-fn pif(){eat("if");eat("LPAREN");c<-pe();eat("RPAREN");tb<-pb();eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
-fn pwh(){eat("while");eat("LPAREN");c<-pe();eat("RPAREN");b<-pb();return{node:"WhileStmt",cond:c,body:b};}
-fn pfi(){eat("for");eat("LPAREN");v<-ev("IDENT");eat("in");it<-pe();eat("RPAREN");b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
+fn pty(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
+fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},is_decl:false,line:ln,col:cl};}
+fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
+// var x [: type] <- expr;  — declaration; carries is_decl:true so the
+// scope checker can enforce same-scope no-redeclaration and reject bare
+// reassignments to names that were never declared (Item 1's strict mode).
+fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");var n<-ev("IDENT");var ta<-{kind:"none"};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};}
+fn ppa(){var e<-pe();if(ci("ARROW")){eat("ARROW");var v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
+fn ppr(){eat("print");eat("LPAREN");var e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
+fn prt(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}var e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
+fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-ev("IDENT");eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){var pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
+fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
+fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
+fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
+fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
-fn iaf(): int{d<-0;i<-pos[0];while(i<len(toks)){t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
-fn paf(){pl<-ppl();rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
-fn por(){l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
-fn pan(){l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
-fn peq(){l<-pcm();while(ci("EQ")||ci("NEQ")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
-fn pcm(){l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:ppad()};}return l;}
-fn ppad(){l<-pmu();while(ci("PLUS")||ci("MINUS")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
-fn pmu(){l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
+fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
+fn paf(){var pl<-ppl();var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
+fn por(){var l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
+fn pan(){var l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
+fn peq(){var l<-pcm();while(ci("EQ")||ci("NEQ")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
+fn pcm(){var l<-ppad();while(ci("LT")||ci("GT")||ci("LTE")||ci("GTE")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:ppad()};}return l;}
+fn ppad(){var l<-pmu();while(ci("PLUS")||ci("MINUS")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pmu()};}return l;}
+fn pmu(){var l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pun()};}return l;}
 fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
-fn ppf(){e<-ppm();dn<-false;while(!dn){if(ci("LPAREN")){cln<-toks[pos[0]].line;ccl<-toks[pos[0]].col;eat("LPAREN");a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln,col:ccl};}
-    else if(ci("LBRACKET")){eat("LBRACKET");x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
-    else if(ci("DOT")){eat("DOT");f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
+fn ppf(){var e<-ppm();var dn<-false;while(!dn){if(ci("LPAREN")){var cln<-toks[pos[0]].line;var ccl<-toks[pos[0]].col;eat("LPAREN");var a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln,col:ccl};}
+    else if(ci("LBRACKET")){eat("LBRACKET");var x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
+    else if(ci("DOT")){eat("DOT");var f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
 fn ppm(){
-    if(ci("NUMBER")){v<-cv();adv();return{node:"NumberLit",value:v};}
-    if(ci("FLOAT")){v<-cv();adv();return{node:"FloatLit",value:v};}
-    if(ci("STRING")){v<-cv();adv();return{node:"StringLit",value:v};}
-    if(ci("BOOL")){v<-cv();adv();return{node:"BoolLit",value:v};}
-    if(ci("IDENT")){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;v<-cv();adv();return{node:"Identifier",name:v,line:ln,col:cl};}
-    if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
-    if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
-    if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
+    if(ci("NUMBER")){var v<-cv();adv();return{node:"NumberLit",value:v};}
+    if(ci("FLOAT")){var v<-cv();adv();return{node:"FloatLit",value:v};}
+    if(ci("STRING")){var v<-cv();adv();return{node:"StringLit",value:v};}
+    if(ci("BOOL")){var v<-cv();adv();return{node:"BoolLit",value:v};}
+    if(ci("IDENT")){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var v<-cv();adv();return{node:"Identifier",name:v,line:ln,col:cl};}
+    if(ci("LBRACKET")){eat("LBRACKET");var el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
+    if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var k<-ev("IDENT");eat("COLON");var v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
+    if(ci("LPAREN")){eat("LPAREN");var e<-pe();eat("RPAREN");return e;}
     parse_error(toks[pos[0]].line, toks[pos[0]].col, "unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
 }
 
@@ -252,13 +257,13 @@ fn ppm(){
 
 // Strip ".arrow" suffix if present, then take the basename for namespace use.
 fn module_basename(path: str): str {
-    bl <- len(path);
-    base <- path;
+    var bl <- len(path);
+    var base <- path;
     if (bl > 6 && substring(base, bl - 6, bl) = ".arrow") {
         base <- substring(base, 0, bl - 6);
         bl <- bl - 6;
     }
-    si <- bl - 1;
+    var si <- bl - 1;
     while (si >= 0 && char_at(base, si) != "/" && char_at(base, si) != "\\") { si <- si - 1; }
     if (si >= 0) { base <- substring(base, si + 1, bl); }
     return base;
@@ -267,27 +272,27 @@ fn module_basename(path: str): str {
 // Return everything up to and including the last "/" or "\\" — handle both
 // so Windows paths like ".\examples\foo.arrow" produce ".\examples\\".
 fn dirname(path: str): str {
-    bl <- len(path);
-    i <- bl - 1;
+    var bl <- len(path);
+    var i <- bl - 1;
     while (i >= 0 && char_at(path, i) != "/" && char_at(path, i) != "\\") { i <- i - 1; }
     if (i < 0) { return ""; }
     return substring(path, 0, i + 1);
 }
 
 // Global state for the resolver.
-imported_paths <- [];        // [str] — paths we've already resolved (dedup)
-imported_mod_names <- [];    // [str] — namespace names exposed to caller
-import_in_progress <- [];    // [str] — stack used for cycle detection
-import_errors <- [];         // [str] — accumulated import-time errors
+var imported_paths <- [];        // [str] — paths we've already resolved (dedup)
+var imported_mod_names <- [];    // [str] — namespace names exposed to caller
+var import_in_progress <- [];    // [str] — stack used for cycle detection
+var import_errors <- [];         // [str] — accumulated import-time errors
 
 // Reject anything that would have a side effect at import time.
 fn validate_module(stmts, path: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
-        ok <- (s.node = "FnDecl" || s.node = "Assignment" || s.node = "ImportStmt");
+        var s <- stmts[i];
+        var ok <- (s.node = "FnDecl" || s.node = "Assignment" || s.node = "ImportStmt");
         if (!ok) {
-            ln <- 0;
+            var ln <- 0;
             if (s.line != false) { ln <- s.line; }
             push(import_errors, path + ":" + ln + ": module may only contain fn declarations, assignments, or imports (got " + s.node + ")");
         }
@@ -302,10 +307,10 @@ fn validate_module(stmts, path: str) {
 // `bar.fn()` resolves to the same `__mod_foo__fn` definition. For the common
 // case (one import per file), every alias maps to itself, and this table
 // becomes a no-op identity.
-canonical_for <- [];
+var canonical_for <- [];
 
 fn canonical_of(name: str): str {
-    i <- 0;
+    var i <- 0;
     while (i < len(canonical_for)) {
         if (canonical_for[i].name = name) { return canonical_for[i].canonical; }
         i <- i + 1;
@@ -318,7 +323,7 @@ fn canonical_of(name: str): str {
 // parameter / local-variable names that should NOT be rewritten because
 // they shadow the top-level binding.
 fn mod_rewrite_stmts(stmts, top_names, scope, mod_name) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         mod_rewrite_stmt(stmts[i], top_names, scope, mod_name);
         i <- i + 1;
@@ -353,8 +358,8 @@ fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
     if (s.node = "ForInStmt") {
         mod_rewrite_expr(s.iterable, top_names, scope, mod_name);
         // Loop variable shadows top-level name within the body
-        sub <- [];
-        i <- 0;
+        var sub <- [];
+        var i <- 0;
         while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
         push(sub, s.var_name);
         mod_rewrite_stmts(s.body, top_names, sub, mod_name);
@@ -381,7 +386,7 @@ fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
 }
 
 fn name_in(names, n: str): int {
-    i <- 0;
+    var i <- 0;
     while (i < len(names)) {
         if (names[i] = n) { return true; }
         i <- i + 1;
@@ -407,7 +412,7 @@ fn mod_rewrite_expr(e, top_names, scope, mod_name) {
     }
     if (e.node = "CallExpr") {
         mod_rewrite_expr(e.callee, top_names, scope, mod_name);
-        j <- 0;
+        var j <- 0;
         while (j < len(e.args)) {
             mod_rewrite_expr(e.args[j], top_names, scope, mod_name);
             j <- j + 1;
@@ -424,7 +429,7 @@ fn mod_rewrite_expr(e, top_names, scope, mod_name) {
         return 0;
     }
     if (e.node = "ArrayLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.elements)) {
             mod_rewrite_expr(e.elements[j], top_names, scope, mod_name);
             j <- j + 1;
@@ -432,7 +437,7 @@ fn mod_rewrite_expr(e, top_names, scope, mod_name) {
         return 0;
     }
     if (e.node = "StructLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.fields)) {
             mod_rewrite_expr(e.fields[j].val, top_names, scope, mod_name);
             j <- j + 1;
@@ -441,8 +446,8 @@ fn mod_rewrite_expr(e, top_names, scope, mod_name) {
     }
     if (e.node = "ArrowFn") {
         // Params shadow top-level names within the arrow body
-        sub <- [];
-        i <- 0;
+        var sub <- [];
+        var i <- 0;
         while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
         i <- 0;
         while (i < len(e.params)) { push(sub, e.params[i]); i <- i + 1; }
@@ -462,10 +467,10 @@ fn mod_rewrite_expr(e, top_names, scope, mod_name) {
 fn rename_module(stmts, mod_name: str) {
     // First pass: collect every top-level name (these are the names that
     // get mangled AND that internal references should be rewritten to).
-    top_names <- [];
-    i <- 0;
+    var top_names <- [];
+    var i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "FnDecl") { push(top_names, s.name); }
         if (s.node = "Assignment") { push(top_names, s.name); }
         i <- i + 1;
@@ -473,11 +478,11 @@ fn rename_module(stmts, mod_name: str) {
     // Second pass: mangle names + rewrite bodies/expressions.
     i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "FnDecl") {
             s.name <- "__mod_" + mod_name + "__" + s.name;
-            scope <- [];
-            j <- 0;
+            var scope <- [];
+            var j <- 0;
             while (j < len(s.params)) { push(scope, s.params[j]); j <- j + 1; }
             mod_rewrite_stmts(s.body, top_names, scope, mod_name);
         }
@@ -500,12 +505,12 @@ fn rename_module(stmts, mod_name: str) {
 // work-loop body retries against a search-path fallback (the directory
 // containing the arrow executable — useful for std lib lookups).
 fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
-    out <- [];
-    i <- 0;
+    var out <- [];
+    var i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "ImportStmt") {
-            target_path <- dir + s.path + ".arrow";
+            var target_path <- dir + s.path + ".arrow";
             push(work_paths, {path: target_path, raw_path: s.path, name: s.name, line: s.line, col: s.col});
             push(work_dirs, dir);
             if (!name_in(mod_names, s.name)) { push(mod_names, s.name); }
@@ -522,7 +527,7 @@ fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
 // references with the mangled name, so the rest of the compiler (typeof,
 // scan_fns, IR emit) finds them via the usual lookup paths.
 fn main_rewrite_stmts(stmts, mod_names) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         stmts[i] <- main_rewrite_stmt(stmts[i], mod_names);
         i <- i + 1;
@@ -603,7 +608,7 @@ fn main_rewrite_value(e, mod_names) {
     }
     if (e.node = "CallExpr") {
         e.callee <- main_rewrite_value(e.callee, mod_names);
-        j <- 0;
+        var j <- 0;
         while (j < len(e.args)) {
             e.args[j] <- main_rewrite_value(e.args[j], mod_names);
             j <- j + 1;
@@ -616,7 +621,7 @@ fn main_rewrite_value(e, mod_names) {
         return e;
     }
     if (e.node = "ArrayLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.elements)) {
             e.elements[j] <- main_rewrite_value(e.elements[j], mod_names);
             j <- j + 1;
@@ -624,7 +629,7 @@ fn main_rewrite_value(e, mod_names) {
         return e;
     }
     if (e.node = "StructLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.fields)) {
             e.fields[j].val <- main_rewrite_value(e.fields[j].val, mod_names);
             j <- j + 1;
@@ -652,15 +657,15 @@ fn main_rewrite_value(e, mod_names) {
 // ═══════════════════════════════════════════
 
 // Output buffer: array of lines
-ir_lines <- [""];  // init with "" so global type tracking knows it holds strings
-deferred_ir <- [""];  // buffer for arrow function definitions
-emit_target <- [0];  // 0 = ir_lines, 1 = deferred_ir
+var ir_lines <- [""];  // init with "" so global type tracking knows it holds strings
+var deferred_ir <- [""];  // buffer for arrow function definitions
+var emit_target <- [0];  // 0 = ir_lines, 1 = deferred_ir
 
 // Platform detection. is_win = 1 on Windows; is_mac = 1 on macOS; both 0 on Linux.
 // is_mac matters because macOS doesn't expose `stdin` as a real symbol — the
 // underlying name is __stdinp.
-is_win <- [1]; // default Windows, overridden at startup
-is_mac <- [0];
+var is_win <- [1]; // default Windows, overridden at startup
+var is_mac <- [0];
 
 fn emit(s: str) {
     if (emit_target[0] = 0) {
@@ -673,10 +678,10 @@ fn emit(s: str) {
 fn write_ir_lines(path: str) {
     // Write IR directly to file in chunks without building one huge string
     // First write truncates (wb), subsequent writes append (ab)
-    chunk <- "";
-    count <- 0;
-    first <- 1;
-    i <- 0;
+    var chunk <- "";
+    var count <- 0;
+    var first <- 1;
+    var i <- 0;
     while (i < len(ir_lines)) {
         if (str_len(ir_lines[i]) > 0) {
             chunk <- chunk + ir_lines[i] + from_char_code(10);
@@ -704,35 +709,35 @@ fn write_ir_lines(path: str) {
 }
 
 // Counter for unique names
-tmp_counter <- [0];
+var tmp_counter <- [0];
 fn fresh(prefix: str): str {
     tmp_counter[0] <- tmp_counter[0] + 1;
     return prefix + tmp_counter[0];
 }
 
 // Label counter
-lbl_counter <- [0];
+var lbl_counter <- [0];
 fn fresh_lbl(prefix: str): str {
     lbl_counter[0] <- lbl_counter[0] + 1;
     return prefix + lbl_counter[0];
 }
 
 // Track which variables have been allocated in current function
-fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
-current_fn <- [""]; // name of function being compiled
+var fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
+var current_fn <- [""]; // name of function being compiled
 
 // Arrow function counter
-arrow_fn_counter <- [0];
+var arrow_fn_counter <- [0];
 
 // Map variable names to arrow function names for return type lookup
-arrow_fn_map <- []; // [{var_name, fn_name}]
+var arrow_fn_map <- []; // [{var_name, fn_name}]
 
 fn set_arrow_fn_var(var_name: str, fn_name: str) {
     push(arrow_fn_map, {var_name: var_name, fn_name: fn_name});
 }
 
 fn get_arrow_fn_name(var_name: str): str {
-    i <- len(arrow_fn_map) - 1;
+    var i <- len(arrow_fn_map) - 1;
     while (i >= 0) {
         if (arrow_fn_map[i].var_name = var_name) { return arrow_fn_map[i].fn_name; }
         i <- i - 1;
@@ -741,23 +746,23 @@ fn get_arrow_fn_name(var_name: str): str {
 }
 
 // String constants
-str_constants <- []; // [{id, text}]
-str_counter <- [0];
+var str_constants <- []; // [{id, text}]
+var str_counter <- [0];
 
 fn add_string(text: str): str {
     str_counter[0] <- str_counter[0] + 1;
-    id <- "str" + str_counter[0];
+    var id <- "str" + str_counter[0];
     push(str_constants, {id: id, text: text});
     return id;
 }
 
 // Escape string for LLVM IR constant
 fn ir_escape(s: str): str {
-    result <- "";
-    i <- 0;
-    total_len <- 0;
+    var result <- "";
+    var i <- 0;
+    var total_len <- 0;
     while (i < str_len(s)) {
-        ch <- char_code(char_at(s, i));
+        var ch <- char_code(char_at(s, i));
         if (ch = 10) { result <- result + "\\0A"; }
         else if (ch = 9) { result <- result + "\\09"; }
         else if (ch = 34) { result <- result + "\\22"; }
@@ -774,10 +779,10 @@ fn ir_str_len(s: str): int {
     // Count actual bytes in the escaped string
     // Each \XX escape = 1 byte, each regular char = check byte length
     // Simple approach: iterate and count char_code > 127 as multi-byte
-    count <- 0;
-    i <- 0;
+    var count <- 0;
+    var i <- 0;
     while (i < str_len(s)) {
-        ch <- char_code(char_at(s, i));
+        var ch <- char_code(char_at(s, i));
         if (ch >= 128) {
             // Multi-byte UTF-8: determine byte count from leading byte
             if (ch >= 240) { count <- count + 4; }
@@ -793,16 +798,16 @@ fn ir_str_len(s: str): int {
 }
 
 // Track allocated variables per function — boxed in array
-alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
+var alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
 
 // Track variable types: var_name -> "int" or "str"
-var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
+var var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 
 // Track global variables (top-level)
-global_vars <- []; // list of variable name strings
+var global_vars <- []; // list of variable name strings
 
 fn is_global(name: str): int {
-    i <- 0;
+    var i <- 0;
     while (i < len(global_vars)) {
         if (global_vars[i] = name) { return true; }
         i <- i + 1;
@@ -811,8 +816,8 @@ fn is_global(name: str): int {
 }
 
 fn find_var(name: str): str {
-    vars <- alloc_vars[0];
-    i <- len(vars) - 1;
+    var vars <- alloc_vars[0];
+    var i <- len(vars) - 1;
     while (i >= 0) {
         if (vars[i].name = name) { return vars[i].reg; }
         i <- i - 1;
@@ -823,15 +828,15 @@ fn find_var(name: str): str {
 }
 
 fn add_var(name: str): str {
-    reg <- "%" + name;
+    var reg <- "%" + name;
     if (find_var(name) != "") { return find_var(name); }
     push(alloc_vars[0], {name: name, reg: reg});
     return reg;
 }
 
 fn set_var_type(name: str, vtype) {
-    types <- var_types[0];
-    i <- 0;
+    var types <- var_types[0];
+    var i <- 0;
     while (i < len(types)) {
         if (types[i].name = name) {
             types[i] <- {name: name, vtype: vtype};
@@ -844,8 +849,8 @@ fn set_var_type(name: str, vtype) {
 }
 
 fn get_var_type(name: str) {
-    types <- var_types[0];
-    i <- len(types) - 1;
+    var types <- var_types[0];
+    var i <- len(types) - 1;
     while (i >= 0) {
         if (types[i].name = name) { return types[i].vtype; }
         i <- i - 1;
@@ -854,11 +859,11 @@ fn get_var_type(name: str) {
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
-struct_layouts <- [[]]; // struct_layouts[0] is list of [{var_name, fields}]
+var struct_layouts <- [[]]; // struct_layouts[0] is list of [{var_name, fields}]
 
 fn set_struct_layout(var_name: str, fields) {
-    layouts <- struct_layouts[0];
-    i <- 0;
+    var layouts <- struct_layouts[0];
+    var i <- 0;
     while (i < len(layouts)) {
         if (layouts[i].var_name = var_name) {
             layouts[i] <- {var_name: var_name, fields: fields};
@@ -871,8 +876,8 @@ fn set_struct_layout(var_name: str, fields) {
 }
 
 fn get_struct_layout(var_name: str) {
-    layouts <- struct_layouts[0];
-    i <- len(layouts) - 1;
+    var layouts <- struct_layouts[0];
+    var i <- len(layouts) - 1;
     while (i >= 0) {
         if (layouts[i].var_name = var_name) { return layouts[i].fields; }
         i <- i - 1;
@@ -881,10 +886,10 @@ fn get_struct_layout(var_name: str) {
 }
 
 fn get_field_type(fields, fname: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(fields)) {
         if (fields[i].fname = fname) {
-            ft <- fields[i].ftype;
+            var ft <- fields[i].ftype;
             if (ft = "int") { return T.mk_int(); }
             if (ft = "str") { return T.mk_str(); }
             if (ft = "struct") { return T.mk_struct(); }
@@ -897,12 +902,12 @@ fn get_field_type(fields, fname: str) {
 }
 
 // Track array element types: var_name -> elem_type ("int" or "str")
-array_elem_types <- [[]]; // array_elem_types[0] is list of [{var_name, elem_type}]
-global_array_types <- []; // persistent list for globals [{var_name, elem_type}]
+var array_elem_types <- [[]]; // array_elem_types[0] is list of [{var_name, elem_type}]
+var global_array_types <- []; // persistent list for globals [{var_name, elem_type}]
 
 fn set_array_elem_type(var_name: str, etype: str) {
-    types <- array_elem_types[0];
-    i <- 0;
+    var types <- array_elem_types[0];
+    var i <- 0;
     while (i < len(types)) {
         if (types[i].var_name = var_name) {
             if (etype = "str") {
@@ -917,7 +922,7 @@ fn set_array_elem_type(var_name: str, etype: str) {
 }
 
 fn set_global_array_type(var_name: str, etype: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(global_array_types)) {
         if (global_array_types[i].var_name = var_name) {
             if (etype = "str") {
@@ -933,8 +938,8 @@ fn set_global_array_type(var_name: str, etype: str) {
 
 fn get_array_elem_type(var_name: str) {
     // Check local scope first
-    types <- array_elem_types[0];
-    i <- len(types) - 1;
+    var types <- array_elem_types[0];
+    var i <- len(types) - 1;
     while (i >= 0) {
         if (types[i].var_name = var_name) {
             if (types[i].elem_type = "str") { return T.mk_str(); }
@@ -955,7 +960,7 @@ fn get_array_elem_type(var_name: str) {
 }
 
 // Function declarations we need to track
-declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
+var declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
 
 // Side-table: functions whose body always returns one specific parameter
 // unchanged (like `fn sort(arr) { ...mutations... return arr; }`). For these,
@@ -963,10 +968,10 @@ declared_fns <- []; // [{name, param_count, ret_type, ret_fields, param_types}]
 // the corresponding argument — `sort([int])` returns `[int]`, `sort([str])`
 // returns `[str]`, even though the function's param/return annotation is
 // missing. Set by scan_fn_param_returns during compile_via_ir's pre-pass.
-fn_returns_param <- [];
+var fn_returns_param <- [];
 
 fn set_fn_returns_param(name: str, idx: int) {
-    i <- 0;
+    var i <- 0;
     while (i < len(fn_returns_param)) {
         if (fn_returns_param[i].name = name) {
             fn_returns_param[i] <- {name: name, idx: idx};
@@ -979,7 +984,7 @@ fn set_fn_returns_param(name: str, idx: int) {
 }
 
 fn get_fn_returns_param(name: str): int {
-    i <- 0;
+    var i <- 0;
     while (i < len(fn_returns_param)) {
         if (fn_returns_param[i].name = name) { return fn_returns_param[i].idx; }
         i <- i + 1;
@@ -988,7 +993,7 @@ fn get_fn_returns_param(name: str): int {
 }
 
 fn find_fn(name: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) { return declared_fns[i]; }
         i <- i + 1;
@@ -997,7 +1002,7 @@ fn find_fn(name: str) {
 }
 
 fn set_fn_ret_type(name: str, rtype, rfields) {
-    i <- 0;
+    var i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
             // Don't override explicit user annotations — let the checker complain instead
@@ -1014,7 +1019,7 @@ fn set_fn_ret_type(name: str, rtype, rfields) {
 
 // Set a parameter type for a function (from call-site analysis)
 fn set_fn_param_type(fn_name: str, param_idx: int, ptype) {
-    fi <- find_fn(fn_name);
+    var fi <- find_fn(fn_name);
     if (fi = false) { return false; }
     if (param_idx < len(fi.param_types)) {
         // Don't override explicit user annotations — let the checker complain instead
@@ -1032,15 +1037,15 @@ fn set_fn_param_type(fn_name: str, param_idx: int, ptype) {
 }
 
 // Scan all statements for call sites to infer parameter types
-fn scan_call_sites(stmts) {    work <- [];
-    i <- 0;
+fn scan_call_sites(stmts) {    var work <- [];
+    var i <- 0;
     while (i < len(stmts)) {
         push(work, stmts[i]);
         i <- i + 1;
     }
-    wi <- 0;
+    var wi <- 0;
     while (wi < len(work)) {
-        nd <- work[wi];
+        var nd <- work[wi];
         wi <- wi + 1;
         work <- scs_handle(nd, work);
     }
@@ -1058,19 +1063,19 @@ fn scs_stmt(nd, work) {
     if (nd.node = "ReturnStmt") { if (nd.expr != false) { push(work, nd.expr); } }
     if (nd.node = "IfStmt") {
         push(work, nd.cond);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
         i <- 0;
         while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
     }
     if (nd.node = "WhileStmt") {
         push(work, nd.cond);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
     if (nd.node = "ForInStmt") {
         push(work, nd.iterable);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
     if (nd.node = "IndexAssign") {
@@ -1083,11 +1088,11 @@ fn scs_stmt(nd, work) {
         push(work, nd.value);
     }
     if (nd.node = "Block") {
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
     }
     if (nd.node = "FnDecl") {
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
     return work;
@@ -1096,9 +1101,9 @@ fn scs_stmt(nd, work) {
 fn scs_expr(nd, work) {
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
-            fi <- find_fn(nd.callee.name);
+            var fi <- find_fn(nd.callee.name);
             if (fi != false) {
-                j <- 0;
+                var j <- 0;
                 while (j < len(nd.args)) {
                     if (j < fi.param_count) {
                         if (is_str_expr(nd.args[j])) {
@@ -1109,25 +1114,25 @@ fn scs_expr(nd, work) {
                 }
             }
         }
-        j <- 0;
+        var j <- 0;
         while (j < len(nd.args)) { push(work, nd.args[j]); j <- j + 1; }
     }
     if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
     if (nd.node = "UnaryOp") { push(work, nd.operand); }
     if (nd.node = "ArrayLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(nd.elements)) { push(work, nd.elements[j]); j <- j + 1; }
     }
     if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
     if (nd.node = "DotExpr") { push(work, nd.obj); }
     if (nd.node = "StructLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(nd.fields)) { push(work, nd.fields[j].val); j <- j + 1; }
     }
     if (nd.node = "ArrowFn") {
         // Scan arrow function body for call sites
         if (nd.is_expr = false) {
-            j <- 0;
+            var j <- 0;
             while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
         } else {
             push(work, nd.body);
@@ -1165,8 +1170,8 @@ fn to_i64(t): str { return t.reg; }
 // Convert an i64 value to a string (for string concat with non-strings)
 // Calls our own arrow_itoa helper (no sprintf dependency)
 fn int_to_str(reg: str): str {
-    r <- fresh("%i2s");
-    rp <- fresh("%i2sp");
+    var r <- fresh("%i2s");
+    var rp <- fresh("%i2sp");
     emit("  " + r + " = call ptr @arrow_itoa(i64 " + reg + ")");
     emit("  " + rp + " = ptrtoint ptr " + r + " to i64");
     return rp;
@@ -1187,15 +1192,15 @@ fn as_str_ptr(t): str {
 
 // ── Pre-scan: collect all fn declarations ──
 fn scan_fns(stmts) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
             // param_types_ann from AST is already a list of Type values (T.mk_none() if absent)
             // param_types is the working type used for inference (starts at any, widens via call sites)
-            pt <- [];
-            j <- 0;
+            var pt <- [];
+            var j <- 0;
             while (j < len(stmts[i].params)) {
-                ann <- T.mk_none();
+                var ann <- T.mk_none();
                 if (j < len(stmts[i].param_types_ann)) {
                     ann <- stmts[i].param_types_ann[j];
                 }
@@ -1207,7 +1212,7 @@ fn scan_fns(stmts) {
                 j <- j + 1;
             }
             // Use return type annotation if present (a Type value)
-            rt <- T.mk_any();
+            var rt <- T.mk_any();
             if (stmts[i].ret_type_ann.kind != "none") {
                 rt <- stmts[i].ret_type_ann;
             }
@@ -1219,12 +1224,12 @@ fn scan_fns(stmts) {
         // name chosen later at emit time) because the checker runs before emit.
         if (stmts[i].node = "Assignment") {
             if (stmts[i].expr.node = "ArrowFn") {
-                afn <- stmts[i].expr;
-                apt <- [];
-                apt_ann <- [];
-                k <- 0;
+                var afn <- stmts[i].expr;
+                var apt <- [];
+                var apt_ann <- [];
+                var k <- 0;
                 while (k < len(afn.params)) {
-                    ann <- T.mk_none();
+                    var ann <- T.mk_none();
                     if (k < len(afn.param_types_ann)) {
                         ann <- afn.param_types_ann[k];
                     }
@@ -1236,7 +1241,7 @@ fn scan_fns(stmts) {
                     }
                     k <- k + 1;
                 }
-                art <- T.mk_any();
+                var art <- T.mk_any();
                 if (afn.ret_type_ann.kind != "none") { art <- afn.ret_type_ann; }
                 push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
             }
@@ -1248,30 +1253,30 @@ fn scan_fns(stmts) {
 // Walk a function body and collect every ReturnStmt. Uses a flat work list
 // so it descends into if/while/for-in/block bodies uniformly.
 fn collect_returns(body, acc) {
-    work <- [];
-    i <- 0;
+    var work <- [];
+    var i <- 0;
     while (i < len(body)) { push(work, body[i]); i <- i + 1; }
-    wi <- 0;
+    var wi <- 0;
     while (wi < len(work)) {
-        nd <- work[wi];
+        var nd <- work[wi];
         wi <- wi + 1;
         if (nd.node = "ReturnStmt") { push(acc, nd); }
         if (nd.node = "IfStmt") {
-            j <- 0;
+            var j <- 0;
             while (j < len(nd.then_body)) { push(work, nd.then_body[j]); j <- j + 1; }
             j <- 0;
             while (j < len(nd.else_body)) { push(work, nd.else_body[j]); j <- j + 1; }
         }
         if (nd.node = "WhileStmt") {
-            j <- 0;
+            var j <- 0;
             while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
         }
         if (nd.node = "ForInStmt") {
-            j <- 0;
+            var j <- 0;
             while (j < len(nd.body)) { push(work, nd.body[j]); j <- j + 1; }
         }
         if (nd.node = "Block") {
-            j <- 0;
+            var j <- 0;
             while (j < len(nd.stmts)) { push(work, nd.stmts[j]); j <- j + 1; }
         }
     }
@@ -1287,23 +1292,23 @@ fn collect_returns(body, acc) {
 // and there must be at least one. A function with both `return arr` and
 // `return []` won't qualify; nor will a function with no returns at all.
 fn scan_fn_param_returns(stmts) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            params <- stmts[i].params;
-            rets <- [];
+            var params <- stmts[i].params;
+            var rets <- [];
             collect_returns(stmts[i].body, rets);
             if (len(rets) > 0) {
-                first_idx <- -1;
-                all_match <- true;
-                j <- 0;
+                var first_idx <- -1;
+                var all_match <- true;
+                var j <- 0;
                 while (j < len(rets)) {
-                    r <- rets[j];
+                    var r <- rets[j];
                     if (r.expr = false) { all_match <- false; }
                     else if (r.expr.node != "Identifier") { all_match <- false; }
                     else {
-                        k <- 0;
-                        idx <- -1;
+                        var k <- 0;
+                        var idx <- -1;
                         while (k < len(params)) {
                             if (params[k] = r.expr.name) { idx <- k; }
                             k <- k + 1;
@@ -1331,7 +1336,7 @@ fn scan_globals(nd) {
         }
         // Detect string arrays: x <- ["..."]
         if (nd.expr.node = "ArrayLit") {
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.expr.elements)) {
                 if (is_str_expr(nd.expr.elements[i])) {
                     set_global_array_type(nd.name, "str");
@@ -1359,7 +1364,7 @@ fn scan_globals(nd) {
 }
 
 fn scan_globals_list(stmts) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         scan_globals(stmts[i]);
         i <- i + 1;
@@ -1367,7 +1372,7 @@ fn scan_globals_list(stmts) {
 }
 
 fn var_exists(vars, name: str): int {
-    i <- 0;
+    var i <- 0;
     while (i < len(vars)) {
         if (vars[i] = name) { return true; }
         i <- i + 1;
@@ -1378,15 +1383,15 @@ fn var_exists(vars, name: str): int {
 // ── Collect all variables used in a function body ──
 // Split into small handler functions to avoid large-function crashes
 fn collect_vars(stmts, vars) {
-    work <- [];
-    i <- 0;
+    var work <- [];
+    var i <- 0;
     while (i < len(stmts)) {
         push(work, stmts[i]);
         i <- i + 1;
     }
-    wi <- 0;
+    var wi <- 0;
     while (wi < len(work)) {
-        nd <- work[wi];
+        var nd <- work[wi];
         wi <- wi + 1;
         cv_handle(nd, work, vars);
     }
@@ -1399,7 +1404,14 @@ fn cv_handle(nd, work, vars) {
 
 fn cv_stmt(nd, work, vars) {
     if (nd.node = "Assignment") {
-        if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
+        // Only declarations (`var x <- ...`) introduce a local slot. Bare
+        // reassignments to a global should NOT be pre-allocated as locals
+        // here — that would shadow the global and break Item 1 (a function
+        // writing through a bare `<-` is supposed to mutate the global,
+        // not silently create a local with the same name).
+        if (nd.is_decl) {
+            if (!var_exists(vars, nd.name)) { push(vars, nd.name); }
+        }
         push(work, nd.expr);
     }
     if (nd.node = "PrintStmt") { push(work, nd.expr); }
@@ -1408,24 +1420,24 @@ fn cv_stmt(nd, work, vars) {
     }
     if (nd.node = "IfStmt") {
         push(work, nd.cond);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
         i <- 0;
         while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
     }
     if (nd.node = "WhileStmt") {
         push(work, nd.cond);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
     if (nd.node = "ForInStmt") {
         if (!var_exists(vars, nd.var_name)) { push(vars, nd.var_name); }
         push(work, nd.iterable);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
     }
     if (nd.node = "Block") {
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
     }
     if (nd.node = "IndexAssign") {
@@ -1444,17 +1456,17 @@ fn cv_expr(nd, work, vars) {
     if (nd.node = "UnaryOp") { push(work, nd.operand); }
     if (nd.node = "CallExpr") {
         push(work, nd.callee);
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
     }
     if (nd.node = "ArrayLit") {
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
     }
     if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
     if (nd.node = "DotExpr") { push(work, nd.obj); }
     if (nd.node = "StructLit") {
-        i <- 0;
+        var i <- 0;
         while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
     }
 }
@@ -1479,7 +1491,7 @@ fn is_str_expr(nd): int {
     }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
-            nm <- nd.callee.name;
+            var nm <- nd.callee.name;
             if (nm = "char_at") { return true; }
             if (nm = "from_char_code") { return true; }
             if (nm = "substring") { return true; }
@@ -1636,11 +1648,11 @@ fn typeof_expr(nd) {
         return get_var_type(nd.name);
     }
     if (nd.node = "BinOp") {
-        op <- nd.op;
+        var op <- nd.op;
         if (op = "&&" || op = "||") { return T.mk_bool(); }
         if (op = "=" || op = "!=" || op = "<" || op = ">" || op = "<=" || op = ">=") { return T.mk_bool(); }
-        lt <- typeof_expr(nd.left);
-        rt <- typeof_expr(nd.right);
+        var lt <- typeof_expr(nd.left);
+        var rt <- typeof_expr(nd.right);
         if (op = "+") {
             if (lt.kind = "str" || rt.kind = "str") { return T.mk_str(); }
             // Array concatenation. types_join handles mismatched element types
@@ -1661,7 +1673,7 @@ fn typeof_expr(nd) {
         if (nd.op = "!") { return T.mk_bool(); }
         // Unary `-` preserves the operand's numeric type (int or float).
         if (nd.op = "-") {
-            ot <- typeof_expr(nd.operand);
+            var ot <- typeof_expr(nd.operand);
             if (ot.kind = "float") { return T.mk_float(); }
             return T.mk_int();
         }
@@ -1669,7 +1681,7 @@ fn typeof_expr(nd) {
     }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
-            nm <- nd.callee.name;
+            var nm <- nd.callee.name;
             if (nm = "len") { return T.mk_int(); }
             if (nm = "str_len") { return T.mk_int(); }
             if (nm = "char_code") { return T.mk_int(); }
@@ -1685,7 +1697,7 @@ fn typeof_expr(nd) {
             if (nm = "pop") {
                 // Element type if known, else any
                 if (len(nd.args) > 0) {
-                    at <- typeof_expr(nd.args[0]);
+                    var at <- typeof_expr(nd.args[0]);
                     if (at.kind = "array") { return at.elem; }
                 }
                 return T.mk_any();
@@ -1696,7 +1708,7 @@ fn typeof_expr(nd) {
                 if (len(nd.args) = 0) { return T.mk_int(); }
                 return T.mk_str();
             }
-            fi <- find_fn(nm);
+            var fi <- find_fn(nm);
             if (fi != false) {
                 // Param-passthrough specialization: if this fn always returns
                 // a specific parameter unchanged (set by scan_fn_param_returns),
@@ -1704,9 +1716,9 @@ fn typeof_expr(nd) {
                 // type. This recovers element types for patterns like
                 //   fn sort(arr) { ... return arr; }
                 //   sorted <- sort([1,2,3]);   // sorted typed as [int], not any
-                ridx <- get_fn_returns_param(nm);
+                var ridx <- get_fn_returns_param(nm);
                 if (ridx != -1 && ridx < len(nd.args)) {
-                    arg_t <- typeof_expr(nd.args[ridx]);
+                    var arg_t <- typeof_expr(nd.args[ridx]);
                     // Only specialize when the arg has a more specific type
                     // than the declared return — never widen.
                     if (arg_t.kind != "any" && arg_t.kind != "none") {
@@ -1727,8 +1739,8 @@ fn typeof_expr(nd) {
         // composite shapes recurse field/elem-wise. So
         //   [{value: 1}, {value: "a"}, {value: 2}]
         // types as `[{value: any}]` instead of `[{value: int}]`.
-        et <- typeof_expr(nd.elements[0]);
-        i <- 1;
+        var et <- typeof_expr(nd.elements[0]);
+        var i <- 1;
         while (i < len(nd.elements)) {
             et <- T.types_join(et, typeof_expr(nd.elements[i]));
             i <- i + 1;
@@ -1739,14 +1751,14 @@ fn typeof_expr(nd) {
         // Indexing a string yields a single-char string (char_at semantics).
         // Indexing an array yields the element type. Anything else is unknown.
         if (nd.obj.node = "Identifier") {
-            ot <- get_var_type(nd.obj.name);
+            var ot <- get_var_type(nd.obj.name);
             if (ot.kind = "str") { return T.mk_str(); }
             if (ot.kind = "array") { return ot.elem; }
             // Fall back to the side table for arrays we set up before var_types existed
             return get_array_elem_type(nd.obj.name);
         }
         // Index into a non-Identifier (e.g. nested [[int]] subscript)
-        ot <- typeof_expr(nd.obj);
+        var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") { return T.mk_str(); }
         if (ot.kind = "array") { return ot.elem; }
         return T.mk_any();
@@ -1754,31 +1766,31 @@ fn typeof_expr(nd) {
     if (nd.node = "DotExpr") {
         if (nd.obj.node = "Identifier") {
             // Prefer the struct_lit Type from var_types if present
-            ot <- get_var_type(nd.obj.name);
+            var ot <- get_var_type(nd.obj.name);
             if (ot.kind = "struct_lit") {
-                ft <- T.struct_field_type(ot.fields, nd.field);
+                var ft <- T.struct_field_type(ot.fields, nd.field);
                 if (ft.kind != "none") { return ft; }
             }
             // Fall back to legacy struct_layouts side table
-            layout <- get_struct_layout(nd.obj.name);
+            var layout <- get_struct_layout(nd.obj.name);
             if (layout != false) {
                 return get_field_type(layout, nd.field);
             }
         }
         // Index into a non-Identifier (e.g. arr[0].field where arr is [{...}])
-        ot <- typeof_expr(nd.obj);
+        var ot <- typeof_expr(nd.obj);
         if (ot.kind = "struct_lit") {
-            ft <- T.struct_field_type(ot.fields, nd.field);
+            var ft <- T.struct_field_type(ot.fields, nd.field);
             if (ft.kind != "none") { return ft; }
         }
         return T.mk_any();
     }
     if (nd.node = "StructLit") {
         // Build a struct_lit type from the literal's fields
-        fs <- [];
-        i <- 0;
+        var fs <- [];
+        var i <- 0;
         while (i < len(nd.fields)) {
-            f <- nd.fields[i];
+            var f <- nd.fields[i];
             push(fs, {name: f.key, type: typeof_expr(f.val)});
             i <- i + 1;
         }
@@ -1790,24 +1802,24 @@ fn typeof_expr(nd) {
 
 // Walk a body of statements, updating var_types for each assignment
 fn infer_body(stmts) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "Assignment") {
             // Use explicit type annotation if present (already a Type), otherwise infer
             if (s.type_ann.kind != "none") {
                 set_var_type(s.name, s.type_ann);
             } else {
-                ty <- typeof_expr(s.expr);
+                var ty <- typeof_expr(s.expr);
                 set_var_type(s.name, ty);
             }
             // Track struct layouts from struct literals — store ftype as kind string
             if (s.expr.node = "StructLit") {
-                layout <- [];
-                j <- 0;
+                var layout <- [];
+                var j <- 0;
                 while (j < len(s.expr.fields)) {
-                    f <- s.expr.fields[j];
-                    fty <- typeof_expr(f.val);
+                    var f <- s.expr.fields[j];
+                    var fty <- typeof_expr(f.val);
                     push(layout, {fname: f.key, ftype: fty.kind});
                     j <- j + 1;
                 }
@@ -1815,9 +1827,9 @@ fn infer_body(stmts) {
             }
             // Track array element types from array literals
             if (s.expr.node = "ArrayLit") {
-                j <- 0;
+                var j <- 0;
                 while (j < len(s.expr.elements)) {
-                    ety <- typeof_expr(s.expr.elements[j]);
+                    var ety <- typeof_expr(s.expr.elements[j]);
                     if (ety.kind = "str") {
                         set_array_elem_type(s.name, "str");
                     }
@@ -1832,12 +1844,12 @@ fn infer_body(stmts) {
         if (s.node = "WhileStmt") { infer_body(s.body); }
         if (s.node = "ForInStmt") {
             // Loop variable: if iterable is a string, element is str char (a string)
-            it_ty <- typeof_expr(s.iterable);
+            var it_ty <- typeof_expr(s.iterable);
             if (it_ty.kind = "str") {
                 set_var_type(s.var_name, T.mk_str());
             } else {
                 // Array iteration: elem type from array
-                et <- T.mk_any();
+                var et <- T.mk_any();
                 if (s.iterable.node = "Identifier") {
                     et <- get_array_elem_type(s.iterable.name);
                 }
@@ -1847,7 +1859,7 @@ fn infer_body(stmts) {
         }
         if (s.node = "ReturnStmt") {
             if (s.expr != false) {
-                rt <- typeof_expr(s.expr);
+                var rt <- typeof_expr(s.expr);
                 if (current_fn[0] != "") {
                     set_fn_ret_type(current_fn[0], rt, false);
                 }
@@ -1863,18 +1875,18 @@ fn infer_body(stmts) {
         // to `any`, which is the correct fallback.
         if (s.node = "CallExpr" && s.callee.node = "Identifier"
                 && s.callee.name = "push" && len(s.args) >= 2) {
-            arr_arg <- s.args[0];
-            val_arg <- s.args[1];
+            var arr_arg <- s.args[0];
+            var val_arg <- s.args[1];
             if (arr_arg.node = "Identifier") {
-                cur_t <- get_var_type(arr_arg.name);
+                var cur_t <- get_var_type(arr_arg.name);
                 if (cur_t.kind = "array") {
-                    val_t <- typeof_expr(val_arg);
+                    var val_t <- typeof_expr(val_arg);
                     // Treat current `any` as "unknown" (bottom) rather than
                     // "could be anything" (top): narrow toward the pushed
                     // type. Once we have a concrete element type, future
                     // pushes use types_join which correctly collapses to any
                     // if they conflict.
-                    new_elem <- T.mk_any();
+                    var new_elem <- T.mk_any();
                     if (cur_t.elem.kind = "any") {
                         new_elem <- val_t;
                     } else {
@@ -1897,8 +1909,8 @@ fn infer_body(stmts) {
 //  printed at the end; compilation aborts if any.
 // ═══════════════════════════════════════════
 
-type_errors <- [];
-src_filename <- ["<unknown>"];
+var type_errors <- [];
+var src_filename <- ["<unknown>"];
 
 fn report_error(line: int, col: int, msg: str) {
     push(type_errors, {line: line, col: col, msg: msg});
@@ -1915,7 +1927,7 @@ fn report_error(line: int, col: int, msg: str) {
 //  top-level function name, or a builtin. Otherwise: scope error.
 // ═══════════════════════════════════════════
 
-scope_errors <- [];
+var scope_errors <- [];
 
 fn report_scope_error(line: int, col: int, msg: str) {
     push(scope_errors, {line: line, col: col, msg: msg});
@@ -1938,10 +1950,10 @@ fn is_builtin_name(n: str): int {
 // Check if `name` is declared in any scope in the given stack. Each scope
 // is a flat list of declared name strings. We walk inner-to-outer.
 fn scope_stack_has(scopes, name: str): int {
-    i <- len(scopes) - 1;
+    var i <- len(scopes) - 1;
     while (i >= 0) {
-        names <- scopes[i];
-        j <- 0;
+        var names <- scopes[i];
+        var j <- 0;
         while (j < len(names)) {
             if (names[j] = name) { return true; }
             j <- j + 1;
@@ -1968,6 +1980,33 @@ fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
     return false;
 }
 
+// Resolution check for the LHS of a bare `<-` reassignment. Differs from
+// scope_resolves in two ways: (1) builtins are NOT writable — shadowing a
+// builtin requires `var`, since builtins are intrinsics, not bindings; and
+// (2) captured non-globals are NOT writable from inside a closure — that
+// would break Arrow's by-snapshot closure semantics. So we accept a name
+// only if it's in the current function's scope stack, the globals set,
+// or the top-level fn-name table.
+fn scope_resolves_for_assign(name: str, fn_scopes, globals_set, fn_names): int {
+    if (scope_stack_has(fn_scopes, name)) { return true; }
+    if (name_in(globals_set, name)) { return true; }
+    if (name_in(fn_names, name)) { return true; }
+    return false;
+}
+
+// Check whether `name` is already bound in the *innermost* scope of
+// fn_scopes — used to flag same-scope redeclarations (`var x; ... var x;`).
+// Shadowing across nested scopes is allowed and not flagged here.
+fn scope_innermost_has(fn_scopes, name: str): int {
+    var inner <- fn_scopes[len(fn_scopes) - 1];
+    var j <- 0;
+    while (j < len(inner)) {
+        if (inner[j] = name) { return true; }
+        j <- j + 1;
+    }
+    return false;
+}
+
 // Declare `name` in the innermost scope of `fn_scopes` if not already
 // resolvable within the current function. (Doesn't cross closure boundary
 // — that's the function-root rule from the interpreter.)
@@ -1983,8 +2022,8 @@ fn scope_declare(fn_scopes, name: str) {
 fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
     if (e.node = "Identifier") {
         if (!scope_resolves(e.name, fn_scopes, captured, globals_set, fn_names)) {
-            ln <- 0;
-            cl <- 0;
+            var ln <- 0;
+            var cl <- 0;
             if (e.line != false) { ln <- e.line; }
             if (e.col != false) { cl <- e.col; }
             report_scope_error(ln, cl, "undefined variable '" + e.name + "'");
@@ -2002,7 +2041,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
     }
     if (e.node = "CallExpr") {
         scope_check_expr(e.callee, fn_scopes, captured, globals_set, fn_names);
-        j <- 0;
+        var j <- 0;
         while (j < len(e.args)) {
             scope_check_expr(e.args[j], fn_scopes, captured, globals_set, fn_names);
             j <- j + 1;
@@ -2020,7 +2059,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
         return false;
     }
     if (e.node = "ArrayLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.elements)) {
             scope_check_expr(e.elements[j], fn_scopes, captured, globals_set, fn_names);
             j <- j + 1;
@@ -2028,7 +2067,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
         return false;
     }
     if (e.node = "StructLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.fields)) {
             scope_check_expr(e.fields[j].val, fn_scopes, captured, globals_set, fn_names);
             j <- j + 1;
@@ -2040,12 +2079,12 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
         // outer fn's scopes (push current fn_scopes onto captured), but
         // writes don't reach across — give the closure its own fn_scopes
         // initialized with just its parameters.
-        new_captured <- [];
+        var new_captured <- [];
         ci <- 0;
         while (ci < len(captured)) { push(new_captured, captured[ci]); ci <- ci + 1; }
         push(new_captured, fn_scopes);
-        new_fn_scopes <- [[]];
-        j <- 0;
+        var new_fn_scopes <- [[]];
+        var j <- 0;
         while (j < len(e.params)) {
             scope_declare(new_fn_scopes, e.params[j]);
             j <- j + 1;
@@ -2064,7 +2103,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
 }
 
 fn scope_check_stmts(stmts, fn_scopes, captured, globals_set, fn_names) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         scope_check_stmt(stmts[i], fn_scopes, captured, globals_set, fn_names);
         i <- i + 1;
@@ -2076,7 +2115,26 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
     if (s.node = "Assignment") {
         // RHS evaluated before LHS is bound, so check expression first.
         scope_check_expr(s.expr, fn_scopes, captured, globals_set, fn_names);
-        scope_declare(fn_scopes, s.name);
+        if (s.is_decl) {
+            // `var x <- expr;` — declaration. Same-scope redeclaration is
+            // a hard error; shadowing across nested scopes is fine and
+            // not flagged here. Top-level declarations land in the
+            // outermost scope of fn_scopes (which doubles as globals for
+            // the synthetic top-level frame).
+            if (scope_innermost_has(fn_scopes, s.name)) {
+                report_scope_error(s.line, s.col, "redeclaration of '" + s.name + "' in the same scope");
+            } else {
+                push(fn_scopes[len(fn_scopes) - 1], s.name);
+            }
+        } else {
+            // Bare `x <- expr;` — reassignment. The name must resolve to
+            // a binding inside the current function or to a global. If it
+            // doesn't, this is the common typo-creates-new-binding bug;
+            // we want a hard error so the user reaches for `var`.
+            if (!scope_resolves_for_assign(s.name, fn_scopes, globals_set, fn_names)) {
+                report_scope_error(s.line, s.col, "cannot reassign undeclared variable '" + s.name + "' (did you mean: var " + s.name + " <- ...?)");
+            }
+        }
         return false;
     }
     if (s.node = "IndexAssign") {
@@ -2144,7 +2202,7 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
 
 // Check a single function declaration with its own fresh fn_scopes.
 fn scope_check_fn(fn_decl, outer_captured, globals_set, fn_names, outer_fn_scopes) {
-    new_captured <- [];
+    var new_captured <- [];
     if (outer_captured != false) {
         ci <- 0;
         while (ci < len(outer_captured)) { push(new_captured, outer_captured[ci]); ci <- ci + 1; }
@@ -2152,8 +2210,8 @@ fn scope_check_fn(fn_decl, outer_captured, globals_set, fn_names, outer_fn_scope
     // Nested function declarations see their enclosing function's locals
     // as captured (read-only across the fn boundary, just like closures).
     if (outer_fn_scopes != false) { push(new_captured, outer_fn_scopes); }
-    fn_scopes <- [[]];
-    i <- 0;
+    var fn_scopes <- [[]];
+    var i <- 0;
     while (i < len(fn_decl.params)) {
         scope_declare(fn_scopes, fn_decl.params[i]);
         i <- i + 1;
@@ -2167,26 +2225,34 @@ fn scope_check_fn(fn_decl, outer_captured, globals_set, fn_names, outer_fn_scope
 // program that does `print(undeclared)` at top level fails cleanly.
 fn scope_check_program(stmts) {
     // First pass: collect every top-level FnDecl name and every top-level
-    // Assignment target. Both are visible from any function body.
-    globals_set <- [];
-    fn_names <- [];
-    i <- 0;
+    // *declared* (is_decl=true) Assignment target. Both are visible from
+    // any function body — order-of-appearance doesn't matter for reads, so
+    // we collect them all up front. A bare top-level `x <- ...` (is_decl
+    // false) is NOT added here; in strict mode that's a reassignment and
+    // must resolve to an existing global, otherwise it's a typo and we
+    // want to flag it.
+    var globals_set <- [];
+    var fn_names <- [];
+    var i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "FnDecl") {
             if (!name_in(fn_names, s.name)) { push(fn_names, s.name); }
         }
-        if (s.node = "Assignment") {
+        if (s.node = "Assignment" && s.is_decl) {
             if (!name_in(globals_set, s.name)) { push(globals_set, s.name); }
         }
         i <- i + 1;
     }
     // Second pass: check every FnDecl body, and check top-level non-FnDecl
-    // statements as a synthetic "main" with globals_set as its scope.
-    top_scopes <- [globals_set];   // top-level decls share one big scope
+    // statements as a synthetic top frame. The top_scopes here is its own
+    // fresh list — kept distinct from globals_set so the same-scope
+    // redeclaration check on `var` only catches actual within-pass
+    // duplicates, not the globals already pre-collected above.
+    var top_scopes <- [[]];
     i <- 0;
     while (i < len(stmts)) {
-        s <- stmts[i];
+        var s <- stmts[i];
         if (s.node = "FnDecl") {
             scope_check_fn(s, false, globals_set, fn_names, false);
         } else {
@@ -2198,7 +2264,7 @@ fn scope_check_program(stmts) {
 }
 
 fn check_body(stmts) {
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         check_stmt(stmts[i]);
         i <- i + 1;
@@ -2208,7 +2274,7 @@ fn check_body(stmts) {
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
-            actual <- typeof_expr(s.expr);
+            var actual <- typeof_expr(s.expr);
             if (!T.types_compat(s.type_ann, actual)) {
                 report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
             }
@@ -2220,10 +2286,10 @@ fn check_stmt(s) {
         if (s.expr != false) {
             check_expr(s.expr);
             if (current_fn[0] != "") {
-                fi <- find_fn(current_fn[0]);
+                var fi <- find_fn(current_fn[0]);
                 if (fi != false) {
                     if (fi.ret_type_ann.kind != "none") {
-                        actual <- typeof_expr(s.expr);
+                        var actual <- typeof_expr(s.expr);
                         if (!T.types_compat(fi.ret_type_ann, actual)) {
                             report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
                         }
@@ -2262,21 +2328,21 @@ fn check_expr(e) {
     if (e.node = "UnaryOp") { check_expr(e.operand); }
     if (e.node = "CallExpr") {
         if (e.callee.node = "Identifier") {
-            fi <- find_fn(e.callee.name);
+            var fi <- find_fn(e.callee.name);
             // If the direct lookup failed, the callee may be a variable holding
             // an arrow function — look up via the var-name → fn-name mapping.
             if (fi = false) {
-                afn_name <- get_arrow_fn_name(e.callee.name);
+                var afn_name <- get_arrow_fn_name(e.callee.name);
                 if (afn_name != "") { fi <- find_fn(afn_name); }
             }
             if (fi != false) {
-                j <- 0;
+                var j <- 0;
                 while (j < len(e.args)) {
                     if (j < fi.param_count) {
-                        ann <- fi.param_types_ann[j];
+                        var ann <- fi.param_types_ann[j];
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "none") {
-                            actual <- typeof_expr(e.args[j]);
+                            var actual <- typeof_expr(e.args[j]);
                             if (!T.types_compat(ann, actual)) {
                                 report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
                             }
@@ -2286,17 +2352,17 @@ fn check_expr(e) {
                 }
             }
         }
-        j <- 0;
+        var j <- 0;
         while (j < len(e.args)) { check_expr(e.args[j]); j <- j + 1; }
     }
     if (e.node = "ArrayLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.elements)) { check_expr(e.elements[j]); j <- j + 1; }
     }
     if (e.node = "IndexExpr") { check_expr(e.obj); check_expr(e.index); }
     if (e.node = "DotExpr") { check_expr(e.obj); }
     if (e.node = "StructLit") {
-        j <- 0;
+        var j <- 0;
         while (j < len(e.fields)) { check_expr(e.fields[j].val); j <- j + 1; }
     }
 }
@@ -2305,15 +2371,15 @@ fn print_type_errors() {
     // Insertion sort by line for stable, source-order output.
     // Note: type_errors[j].line returns "any" via DotExpr, which would make
     // ">" emit strcmp. Pulling each side into a typed int local forces icmp.
-    i <- 1;
+    var i <- 1;
     while (i < len(type_errors)) {
-        j <- i;
-        keep_going <- 1;
+        var j <- i;
+        var keep_going <- 1;
         while (j > 0 && keep_going = 1) {
-            a: int <- type_errors[j - 1].line;
-            b: int <- type_errors[j].line;
+            var a: int <- type_errors[j - 1].line;
+            var b: int <- type_errors[j].line;
             if (a > b) {
-                tmp <- type_errors[j - 1];
+                var tmp <- type_errors[j - 1];
                 type_errors[j - 1] <- type_errors[j];
                 type_errors[j] <- tmp;
                 j <- j - 1;
@@ -2325,7 +2391,7 @@ fn print_type_errors() {
     }
     i <- 0;
     while (i < len(type_errors)) {
-        e <- type_errors[i];
+        var e <- type_errors[i];
         // file:line:col: msg (col omitted when 0 — old AST nodes without col
         // info still produce file:line: msg). Mirrors GCC/Clang convention so
         // editors that parse compiler output land at the right column.
@@ -2344,18 +2410,18 @@ fn print_type_errors() {
 
 
 fn find_captures(body, params, is_expr: int) {
-    refs <- [];
+    var refs <- [];
     // Collect all Identifier references via worklist
-    work <- [];
+    var work <- [];
     if (is_expr = false) {
-        i <- 0;
+        var i <- 0;
         while (i < len(body)) { push(work, body[i]); i <- i + 1; }
     } else {
         push(work, body);
     }
-    wi <- 0;
+    var wi <- 0;
     while (wi < len(work)) {
-        nd <- work[wi];
+        var nd <- work[wi];
         wi <- wi + 1;
         if (nd.node = "Identifier") {
             if (!var_exists(refs, nd.name)) { push(refs, nd.name); }
@@ -2366,30 +2432,30 @@ fn find_captures(body, params, is_expr: int) {
         if (nd.node = "ReturnStmt") { if (nd.expr != false) { push(work, nd.expr); } }
         if (nd.node = "IfStmt") {
             push(work, nd.cond);
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
             i <- 0;
             while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
         }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
         }
         if (nd.node = "ForInStmt") {
             push(work, nd.iterable);
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
         }
         if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
         if (nd.node = "UnaryOp") { push(work, nd.operand); }
         if (nd.node = "CallExpr") {
             push(work, nd.callee);
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
         }
         if (nd.node = "ArrayLit") {
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
         }
         if (nd.node = "IndexExpr") { push(work, nd.obj); push(work, nd.index); }
@@ -2397,13 +2463,13 @@ fn find_captures(body, params, is_expr: int) {
         if (nd.node = "DotExpr") { push(work, nd.obj); }
         if (nd.node = "DotAssign") { push(work, nd.obj); push(work, nd.value); }
         if (nd.node = "StructLit") {
-            i <- 0;
+            var i <- 0;
             while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
         }
     }
     // Filter: keep refs that are NOT params and ARE in current enclosing scope
-    caps <- [];
-    i <- 0;
+    var caps <- [];
+    var i <- 0;
     while (i < len(refs)) {
         if (!var_exists(params, refs[i])) {
             if (find_var(refs[i]) != "") {
@@ -2430,17 +2496,17 @@ fn find_captures(body, params, is_expr: int) {
 // flat — outer-scope names that this body, or any nested ArrowFn body,
 // references (after subtracting inner params).
 fn ir_collect_refs(body, params_in, is_expr: int) {
-    refs <- [];
-    work <- [];
+    var refs <- [];
+    var work <- [];
     if (is_expr = false) {
-        i <- 0;
+        var i <- 0;
         while (i < len(body)) { push(work, body[i]); i <- i + 1; }
     } else {
         push(work, body);
     }
-    wi <- 0;
+    var wi <- 0;
     while (wi < len(work)) {
-        nd <- work[wi];
+        var nd <- work[wi];
         wi <- wi + 1;
         if (nd.node = "Identifier") {
             if (!var_exists(params_in, nd.name) && !var_exists(refs, nd.name)) {
@@ -2451,10 +2517,10 @@ fn ir_collect_refs(body, params_in, is_expr: int) {
             // Inner's params shadow only inside the inner. Recurse with a
             // params list = current params ∪ inner.params, so refs the inner
             // makes to outer-scope names still bubble up.
-            combined <- [];
-            i <- 0; while (i < len(params_in)) { push(combined, params_in[i]); i <- i + 1; }
+            var combined <- [];
+            var i <- 0; while (i < len(params_in)) { push(combined, params_in[i]); i <- i + 1; }
             i <- 0; while (i < len(nd.params)) { push(combined, nd.params[i]); i <- i + 1; }
-            inner_refs <- ir_collect_refs(nd.body, combined, nd.is_expr);
+            var inner_refs <- ir_collect_refs(nd.body, combined, nd.is_expr);
             i <- 0;
             while (i < len(inner_refs)) {
                 if (!var_exists(refs, inner_refs[i])) { push(refs, inner_refs[i]); }
@@ -2471,33 +2537,33 @@ fn ir_collect_refs(body, params_in, is_expr: int) {
         if (nd.node = "PrintStmt") { push(work, nd.expr); }
         if (nd.node = "IfStmt")    {
             push(work, nd.cond);
-            i <- 0; while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
             i <- 0; while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
         }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
-            i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
         }
         if (nd.node = "ForInStmt") {
             push(work, nd.iterable);
-            i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
         }
         if (nd.node = "Block") {
-            i <- 0; while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.stmts)) { push(work, nd.stmts[i]); i <- i + 1; }
         }
         if (nd.node = "CallExpr") {
             push(work, nd.callee);
-            i <- 0; while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.args)) { push(work, nd.args[i]); i <- i + 1; }
         }
         if (nd.node = "ArrayLit") {
-            i <- 0; while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
+            var i <- 0; while (i < len(nd.elements)) { push(work, nd.elements[i]); i <- i + 1; }
         }
         if (nd.node = "IndexExpr")    { push(work, nd.obj); push(work, nd.index); }
         if (nd.node = "IndexAssign")  { push(work, nd.obj); push(work, nd.index); push(work, nd.value); }
         if (nd.node = "DotExpr")      { push(work, nd.obj); }
         if (nd.node = "DotAssign")    { push(work, nd.obj); push(work, nd.value); }
         if (nd.node = "StructLit")    {
-            i <- 0; while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
+            var i <- 0; while (i < len(nd.fields)) { push(work, nd.fields[i].val); i <- i + 1; }
         }
     }
     return refs;
@@ -2507,12 +2573,12 @@ fn ir_find_captures(b, body, params, is_expr: int) {
     // Collect refs (recursing into nested ArrowFn) then filter to those that
     // resolve in the outer builder's locals — those are the ones we need to
     // copy into the env for this closure.
-    refs <- ir_collect_refs(body, params, is_expr);
-    caps <- [];
-    i <- 0;
+    var refs <- ir_collect_refs(body, params, is_expr);
+    var caps <- [];
+    var i <- 0;
     while (i < len(refs)) {
-        j <- 0;
-        found <- false;
+        var j <- 0;
+        var found <- false;
         while (j < len(b.locals)) {
             if (b.locals[j].name = refs[i]) { found <- true; }
             j <- j + 1;
@@ -3209,7 +3275,7 @@ fn emit_input_helper() {
 // stdio symbol naming — __stdinp instead of stdin).
 is_win[0] <- 0;
 is_mac[0] <- 0;
-rc_detect <- exec_cmd("cmd /c exit 0 2>nul");
+var rc_detect <- exec_cmd("cmd /c exit 0 2>nul");
 if (rc_detect = 0) {
     is_win[0] <- 1;
 } else {
@@ -3218,7 +3284,7 @@ if (rc_detect = 0) {
     // Probe for macOS via uname; redirect output to a temp file so we don't
     // pollute stdout, then read it back.
     exec_cmd("uname -s > /tmp/.arrow_uname 2>/dev/null");
-    uname_out <- read_file("/tmp/.arrow_uname");
+    var uname_out <- read_file("/tmp/.arrow_uname");
     if (str_len(uname_out) >= 6) {
         if (substring(uname_out, 0, 6) = "Darwin") {
             is_mac[0] <- 1;
@@ -3418,8 +3484,8 @@ fn ir_mod_add_str(m, text: str): str {
     // Return the id used to refer to this string via ir_const_str. We use
     // a separate next_str_id counter rather than len(m.str_table) for the
     // id generation — the latter was historically fragile under realloc.
-    next_id <- m.next_str_id[0];
-    id <- "str" + next_id;
+    var next_id <- m.next_str_id[0];
+    var id <- "str" + next_id;
     m.next_str_id[0] <- next_id + 1;
     push(m.str_table, {id: id, text: text});
     return id;
@@ -3570,8 +3636,8 @@ fn ii_call(dst: str, ret_type, callee: str, args) {
     return ir_inst("call", dst, ret_type, args, callee);
 }
 fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
-    ops <- [fn_ptr];
-    i <- 0;
+    var ops <- [fn_ptr];
+    var i <- 0;
     while (i < len(args)) { push(ops, args[i]); i <- i + 1; }
     return ir_inst("indirect_call", dst, ret_type, ops, false);
 }
@@ -3585,8 +3651,8 @@ fn ii_closure_make(dst: str, fn_name: str, captures) {
     return ir_inst("closure_make", dst, T.mk_int(), captures, fn_name);
 }
 fn ii_closure_call(dst: str, ret_type, pair_val, args) {
-    ops <- [pair_val];
-    i <- 0;
+    var ops <- [pair_val];
+    var i <- 0;
     while (i < len(args)) { push(ops, args[i]); i <- i + 1; }
     return ir_inst("closure_call", dst, ret_type, ops, false);
 }
@@ -3679,7 +3745,7 @@ fn ir_render_typed_operand(v): str {
 // Render one instruction as a single LLVM IR line (no leading indent; caller
 // handles that). Terminators are rendered separately by ir_render_block.
 fn ir_render_inst(inst): str {
-    op <- inst.op;
+    var op <- inst.op;
     // Arithmetic: dst = <op> i64 %a, %b
     if (op = "add" || op = "sub" || op = "mul" || op = "sdiv" || op = "srem") {
         return inst.dst + " = " + op + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
@@ -3698,7 +3764,7 @@ fn ir_render_inst(inst): str {
     }
     if (op = "fcmp") {
         // extra is the predicate: oeq, one, olt, ole, ogt, oge.
-        tmp <- inst.dst + ".cmp";
+        var tmp <- inst.dst + ".cmp";
         return inst.dst + ".cmp = fcmp " + inst.extra + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
     }
     if (op = "bc_i_to_d") {
@@ -3717,7 +3783,7 @@ fn ir_render_inst(inst): str {
         return inst.dst + " = zext i1 " + ir_render_operand(inst.operands[0]) + " to i64";
     }
     if (op = "icmp") {
-        tmp <- inst.dst + ".cmp";
+        var tmp <- inst.dst + ".cmp";
         return inst.dst + ".cmp = icmp " + inst.extra + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
     }
     if (op = "strcmp") {
@@ -3725,11 +3791,11 @@ fn ir_render_inst(inst): str {
         // result against 0 with the requested cmp op (eq/ne/slt/sle/sgt/sge).
         // Renders multiple lines in one go — same trick the icmp branch uses.
         // operands[0] and operands[1] are both i64 pointer values (str-typed).
-        s1 <- inst.dst + ".lp";
-        s2 <- inst.dst + ".rp";
-        sc <- inst.dst + ".sc";
-        sc64 <- inst.dst + ".sc64";
-        cmp <- inst.dst + ".cmp";
+        var s1 <- inst.dst + ".lp";
+        var s2 <- inst.dst + ".rp";
+        var sc <- inst.dst + ".sc";
+        var sc64 <- inst.dst + ".sc64";
+        var cmp <- inst.dst + ".cmp";
         return s1 + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + s2 + " = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  " + sc + " = call i32 @arrow_safe_strcmp(ptr " + s1 + ", ptr " + s2 + ")\n  " + sc64 + " = sext i32 " + sc + " to i64\n  " + cmp + " = icmp " + inst.extra + " i64 " + sc64 + ", 0\n  " + inst.dst + " = zext i1 " + cmp + " to i64";
     }
     if (op = "alloca") {
@@ -3742,8 +3808,8 @@ fn ir_render_inst(inst): str {
         return "store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + ir_render_operand(inst.operands[1]);
     }
     if (op = "call") {
-        args <- "";
-        i <- 0;
+        var args <- "";
+        var i <- 0;
         while (i < len(inst.operands)) {
             if (i > 0) { args <- args + ", "; }
             args <- args + ir_render_typed_operand(inst.operands[i]);
@@ -3758,7 +3824,7 @@ fn ir_render_inst(inst): str {
         return inst.dst + " = call i64 @arrow_strcat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
     }
     if (op = "strlen") {
-        tmp <- inst.dst + ".p";
+        var tmp <- inst.dst + ".p";
         return tmp + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = call i64 @strlen(ptr " + tmp + ")";
     }
     if (op = "int_to_str") {
@@ -3840,7 +3906,7 @@ fn ir_render_inst(inst): str {
     if (op = "gep_i64") {
         // operands = [base_i64, index]; computes base+index*8 as i64.
         // Used by closure capture loading where we need GEP into an env array.
-        s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
         s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".ep to i64";
         return s;
@@ -3848,7 +3914,7 @@ fn ir_render_inst(inst): str {
     if (op = "closure_load_cap") {
         // operands = [env_i64, index]; loads the i64 at env_ptr + index*8.
         // Single op so we don't have to chain gep+inttoptr+load.
-        s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
         s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
         return s;
@@ -3864,19 +3930,19 @@ fn ir_render_inst(inst): str {
         // operands = [elem0, elem1, ...]
         // Layout: [len (i64), cap (i64), e0 (i64), e1 (i64), ...]
         // Allocate cap = max(n, 4096) slots; only fill the first n.
-        n <- len(inst.operands);
-        cap <- n;
+        var n <- len(inst.operands);
+        var cap <- n;
         if (cap < 4096) { cap <- 4096; }
-        total <- 2 + cap;
-        bytes <- total * 8;
-        s <- inst.dst + ".sz = mul i64 " + bytes + ", 1\n";
+        var total <- 2 + cap;
+        var bytes <- total * 8;
+        var s <- inst.dst + ".sz = mul i64 " + bytes + ", 1\n";
         s <- s + "  " + inst.dst + ".p = call ptr @malloc(i64 " + bytes + ")\n";
         s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
         s <- s + "  " + inst.dst + ".cp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
         s <- s + "  store i64 " + cap + ", ptr " + inst.dst + ".cp\n";
-        i <- 0;
+        var i <- 0;
         while (i < n) {
-            slot <- i + 2;
+            var slot <- i + 2;
             s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
             s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
             i <- i + 1;
@@ -3886,13 +3952,13 @@ fn ir_render_inst(inst): str {
     }
     if (op = "array_len") {
         // The array's len is the first slot. Cast i64→ptr, load i64.
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
         return s;
     }
     if (op = "array_get") {
         // operands = [arr, idx]; element at slot idx+2.
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
         s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
@@ -3901,7 +3967,7 @@ fn ir_render_inst(inst): str {
     if (op = "array_set") {
         // operands = [arr, idx, val]; void.
         // dst is the synth-name prefix (caller picks something like "%aset1").
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
         s <- s + "  store i64 " + ir_render_operand(inst.operands[2]) + ", ptr " + inst.dst + ".ep";
@@ -3920,15 +3986,15 @@ fn ir_render_inst(inst): str {
     }
     if (op = "struct_new") {
         // extra = [{key: str, val: Value}, ...]; layout = [count, v0..v_{n-1}, name0..name_{n-1}]
-        fields <- inst.extra;
-        n <- len(fields);
-        total <- 1 + n * 2;
-        bytes <- total * 8;
-        s <- inst.dst + ".p = call ptr @arena_alloc(i64 " + bytes + ")\n";
+        var fields <- inst.extra;
+        var n <- len(fields);
+        var total <- 1 + n * 2;
+        var bytes <- total * 8;
+        var s <- inst.dst + ".p = call ptr @arena_alloc(i64 " + bytes + ")\n";
         s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
-        i <- 0;
+        var i <- 0;
         while (i < n) {
-            slot <- i + 1;
+            var slot <- i + 1;
             s <- s + "  " + inst.dst + ".vp" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
             s <- s + "  store i64 " + ir_render_operand(fields[i].val) + ", ptr " + inst.dst + ".vp" + i + "\n";
             i <- i + 1;
@@ -3938,7 +4004,7 @@ fn ir_render_inst(inst): str {
         // generated id which gets stored in fields[i].key_id (a const_str-like id reference).
         i <- 0;
         while (i < n) {
-            slot <- 1 + n + i;
+            var slot <- 1 + n + i;
             s <- s + "  " + inst.dst + ".ni" + i + " = ptrtoint ptr @" + fields[i].key_id + " to i64\n";
             s <- s + "  " + inst.dst + ".np" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
             s <- s + "  store i64 " + inst.dst + ".ni" + i + ", ptr " + inst.dst + ".np" + i + "\n";
@@ -3951,7 +4017,7 @@ fn ir_render_inst(inst): str {
         // operands = [s_ptr, name_id_value]; extra = field_name_id (string-table id)
         // Lower: cast obj to ptr, find field via @arrow_struct_find, GEP at slot count+1+idx, load.
         // We need the count too (slot 0). Simpler: lower exactly like emit_dot_expr.
-        s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
         s <- s + "  " + inst.dst + ".cn = load i64, ptr " + inst.dst + ".op\n";
         s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
@@ -3961,7 +4027,7 @@ fn ir_render_inst(inst): str {
     }
     if (op = "struct_set") {
         // operands = [s_ptr, val]; extra = field_name_id
-        s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
         s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
         s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
@@ -3976,14 +4042,14 @@ fn ir_render_inst(inst): str {
 
     if (op = "char_code") {
         // operand = string ptr (i64); load first byte and zext to i64.
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".v = load i8, ptr " + inst.dst + ".p\n";
         s <- s + "  " + inst.dst + " = zext i8 " + inst.dst + ".v to i64";
         return s;
     }
     if (op = "char_at") {
         // operands = [s_ptr, idx]; allocate 2-byte arena buffer with [byte, 0].
-        s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr i8, ptr " + inst.dst + ".sp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
         s <- s + "  " + inst.dst + ".ch = load i8, ptr " + inst.dst + ".ep\n";
         s <- s + "  " + inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
@@ -3995,7 +4061,7 @@ fn ir_render_inst(inst): str {
     }
     if (op = "from_char_code") {
         // operand = code (i64); allocate a 2-byte buffer with [low_byte, 0].
-        s <- inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
+        var s <- inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
         s <- s + "  " + inst.dst + ".ch = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i8\n";
         s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
         s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
@@ -4009,25 +4075,25 @@ fn ir_render_inst(inst): str {
     }
     if (op = "read_file") {
         // operand = path (i64 holding ptr); helper returns a ptr.
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".r = call ptr @arrow_read_file(ptr " + inst.dst + ".p)\n";
         s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
         return s;
     }
     if (op = "write_file") {
-        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
         s <- s + "  " + inst.dst + " = call i64 @arrow_write_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
         return s;
     }
     if (op = "append_file") {
-        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
         s <- s + "  " + inst.dst + " = call i64 @arrow_append_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
         return s;
     }
     if (op = "exec_cmd") {
-        s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".r32 = call i32 @system(ptr " + inst.dst + ".p)\n";
         s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".r32 to i64";
         return s;
@@ -4036,25 +4102,25 @@ fn ir_render_inst(inst): str {
         // No-prompt form: just call the helper. With-prompt: emit a printf
         // first using the operand as the format string.
         if (len(inst.operands) > 0) {
-            s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+            var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
             s <- s + "  call i32 (ptr, ...) @printf(ptr " + inst.dst + ".pp)\n";
             s <- s + "  " + inst.dst + ".r = call ptr @arrow_input()\n";
             s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
             return s;
         }
-        s <- inst.dst + ".r = call ptr @arrow_input()\n";
+        var s <- inst.dst + ".r = call ptr @arrow_input()\n";
         s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
         return s;
     }
     if (op = "args_count") {
         // Mirror the existing emit_call args() with no-args path: argc - 1.
-        s <- inst.dst + ".ac = load i64, ptr @g_argc\n";
+        var s <- inst.dst + ".ac = load i64, ptr @g_argc\n";
         s <- s + "  " + inst.dst + " = sub i64 " + inst.dst + ".ac, 1";
         return s;
     }
     if (op = "args_get") {
         // operand = N (i64); return argv[N+1] as string ptr (i64).
-        s <- inst.dst + ".ai = add i64 " + ir_render_operand(inst.operands[0]) + ", 1\n";
+        var s <- inst.dst + ".ai = add i64 " + ir_render_operand(inst.operands[0]) + ", 1\n";
         s <- s + "  " + inst.dst + ".av = load i64, ptr @g_argv\n";
         s <- s + "  " + inst.dst + ".avp = inttoptr i64 " + inst.dst + ".av to ptr\n";
         s <- s + "  " + inst.dst + ".ep = getelementptr ptr, ptr " + inst.dst + ".avp, i64 " + inst.dst + ".ai\n";
@@ -4071,12 +4137,12 @@ fn ir_render_inst(inst): str {
         // extra    = fn_name (the top-level IR Function for this closure).
         // Allocate env (8 bytes per capture, or 0-len env_ptr=null if no captures)
         // and pair (16 bytes), store [fn_ptr, env_ptr], return pair pointer i64.
-        n <- len(inst.operands);
-        s <- "";
+        var n <- len(inst.operands);
+        var s <- "";
         if (n > 0) {
-            ebytes <- n * 8;
+            var ebytes <- n * 8;
             s <- inst.dst + ".env = call ptr @arena_alloc(i64 " + ebytes + ")\n";
-            i <- 0;
+            var i <- 0;
             while (i < n) {
                 s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".env, i64 " + i + "\n";
                 s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
@@ -4100,14 +4166,14 @@ fn ir_render_inst(inst): str {
         // operands = [pair_val, arg0, arg1, ...]
         // Load fn_ptr and env_ptr from the pair, then indirect-call
         // (i64, ...args) returning i64.
-        s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".fni = load i64, ptr " + inst.dst + ".pp\n";
         s <- s + "  " + inst.dst + ".fnp = inttoptr i64 " + inst.dst + ".fni to ptr\n";
         s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pp, i64 1\n";
         s <- s + "  " + inst.dst + ".envi = load i64, ptr " + inst.dst + ".envslot\n";
         // Build arg list: env first, then user args.
-        args_str <- "i64 " + inst.dst + ".envi";
-        i <- 1;
+        var args_str <- "i64 " + inst.dst + ".envi";
+        var i <- 1;
         while (i < len(inst.operands)) {
             args_str <- args_str + ", i64 " + ir_render_operand(inst.operands[i]);
             i <- i + 1;
@@ -4120,8 +4186,8 @@ fn ir_render_inst(inst): str {
 }
 
 fn ir_render_block(bb): str {
-    s <- bb.label + ":\n";
-    i <- 0;
+    var s <- bb.label + ":\n";
+    var i <- 0;
     while (i < len(bb.insts)) {
         s <- s + "  " + ir_render_inst(bb.insts[i]) + "\n";
         i <- i + 1;
@@ -4134,14 +4200,14 @@ fn ir_render_block(bb): str {
 
 fn ir_render_function(f): str {
     // Signature
-    params_s <- "";
-    i <- 0;
+    var params_s <- "";
+    var i <- 0;
     while (i < len(f.params)) {
         if (i > 0) { params_s <- params_s + ", "; }
         params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
         i <- i + 1;
     }
-    s <- "define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {\n";
+    var s <- "define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {\n";
     i <- 0;
     while (i < len(f.blocks)) {
         s <- s + ir_render_block(f.blocks[i]);
@@ -4152,13 +4218,13 @@ fn ir_render_function(f): str {
 }
 
 fn ir_render_module(m): str {
-    s <- "";
+    var s <- "";
     // Externs
-    i <- 0;
+    var i <- 0;
     while (i < len(m.externs)) {
-        ex <- m.externs[i];
+        var ex <- m.externs[i];
         ps <- "";
-        j <- 0;
+        var j <- 0;
         while (j < len(ex.params)) {
             if (j > 0) { ps <- ps + ", "; }
             ps <- ps + ir_llvm_type(ex.params[j]);
@@ -4174,8 +4240,8 @@ fn ir_render_module(m): str {
     // String table
     i <- 0;
     while (i < len(m.str_table)) {
-        ste <- m.str_table[i];
-        bytelen <- ir_str_len(ste.text);  // already includes the null terminator
+        var ste <- m.str_table[i];
+        var bytelen <- ir_str_len(ste.text);  // already includes the null terminator
         s <- s + "@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"\n";
         i <- i + 1;
     }
@@ -4201,11 +4267,11 @@ fn ir_render_module(m): str {
 // through ir_lines instead of returned as one big string.
 fn ir_render_module_to_lines(m) {
     // Externs
-    i <- 0;
+    var i <- 0;
     while (i < len(m.externs)) {
-        ex <- m.externs[i];
+        var ex <- m.externs[i];
         ps <- "";
-        j <- 0;
+        var j <- 0;
         while (j < len(ex.params)) {
             if (j > 0) { ps <- ps + ", "; }
             ps <- ps + ir_llvm_type(ex.params[j]);
@@ -4221,8 +4287,8 @@ fn ir_render_module_to_lines(m) {
     // String table
     i <- 0;
     while (i < len(m.str_table)) {
-        ste <- m.str_table[i];
-        bytelen <- ir_str_len(ste.text);
+        var ste <- m.str_table[i];
+        var bytelen <- ir_str_len(ste.text);
         emit("@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"");
         i <- i + 1;
     }
@@ -4243,8 +4309,8 @@ fn ir_render_module_to_lines(m) {
 }
 
 fn ir_render_function_to_lines(f) {
-    params_s <- "";
-    i <- 0;
+    var params_s <- "";
+    var i <- 0;
     while (i < len(f.params)) {
         if (i > 0) { params_s <- params_s + ", "; }
         params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
@@ -4261,7 +4327,7 @@ fn ir_render_function_to_lines(f) {
 
 fn ir_render_block_to_lines(bb) {
     emit(bb.label + ":");
-    i <- 0;
+    var i <- 0;
     while (i < len(bb.insts)) {
         emit("  " + ir_render_inst(bb.insts[i]));
         i <- i + 1;
@@ -4307,7 +4373,7 @@ fn ir_builder_new(f, entry_bb, mod) {
 // Look up whether a variable holds a closure (was assigned an ArrowFn).
 // Returns the {fn_name, param_count} record, or false if not a closure.
 fn ir_get_closure(b, name: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(b.closure_vars)) {
         if (b.closure_vars[i].name = name) { return b.closure_vars[i]; }
         i <- i + 1;
@@ -4333,17 +4399,31 @@ fn ir_fresh_block_lbl(b, prefix: str): str {
 // Look up a local by name, allocating it (with an alloca in the entry block)
 // if this is the first reference. Returns the slot register name (e.g. "%c").
 fn ir_get_local_slot(b, name: str): str {
-    i <- 0;
+    var i <- 0;
     while (i < len(b.locals)) {
         if (b.locals[i].name = name) { return b.locals[i].reg; }
         i <- i + 1;
     }
-    reg <- "%" + name;
+    var reg <- "%" + name;
     push(b.locals, {name: name, reg: reg});
     // Always emit allocas in the entry block (first block of the function).
     // LLVM convention; also keeps alloca out of loops where it would reset each iter.
     ir_push_inst(b.func.blocks[0], ii_alloca(reg, T.mk_int()));
     return reg;
+}
+
+// Non-vivifying lookup: returns true iff the current function already has
+// an alloca for `name`. Distinguishes "first write reaches a global" from
+// "write to an existing local" without accidentally creating a fresh local
+// slot just to ask the question — important for Item 1 routing in the
+// Assignment codegen below.
+fn ir_has_local_slot(b, name: str): int {
+    var i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) { return true; }
+        i <- i + 1;
+    }
+    return false;
 }
 
 // Map an Arrow BinOp comparison op to the LLVM icmp predicate suffix.
@@ -4383,11 +4463,11 @@ fn ir_is_cmp_op(op: str): int {
 //                     gets a numeric promotion which is the most useful default
 fn ir_to_double_reg(b, val, t): str {
     if (t.kind = "float") {
-        d <- ir_fresh_tmp(b, "fbc");
+        var d <- ir_fresh_tmp(b, "fbc");
         ir_push_inst(b.cur_block, ii_bc_i_to_d(d, val));
         return d;
     }
-    d <- ir_fresh_tmp(b, "fsi");
+    var d <- ir_fresh_tmp(b, "fsi");
     ir_push_inst(b.cur_block, ii_sitofp(d, val));
     return d;
 }
@@ -4402,9 +4482,9 @@ fn ir_to_double_reg(b, val, t): str {
 //                         ret i64 %r
 //                       }
 fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
-    shim_name <- fn_name + "_shim";
+    var shim_name <- fn_name + "_shim";
     // Skip if already emitted.
-    i <- 0;
+    var i <- 0;
     while (i < len(m.shimmed_fns)) {
         if (m.shimmed_fns[i] = fn_name) { return shim_name; }
         i <- i + 1;
@@ -4412,25 +4492,25 @@ fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
     push(m.shimmed_fns, fn_name);
 
     // Build the shim function: env param + user params, all i64.
-    shim_params <- [];
+    var shim_params <- [];
     push(shim_params, {name: "env", type: T.mk_int()});
     i <- 0;
     while (i < param_count) {
         push(shim_params, {name: "p" + i, type: T.mk_int()});
         i <- i + 1;
     }
-    shim <- ir_function(shim_name, shim_params, T.mk_int());
-    bb <- ir_block("entry");
+    var shim <- ir_function(shim_name, shim_params, T.mk_int());
+    var bb <- ir_block("entry");
     ir_fn_add_block(shim, bb);
 
     // Forward call: load each user param and call the real fn.
-    fwd_args <- [];
+    var fwd_args <- [];
     i <- 0;
     while (i < param_count) {
         push(fwd_args, ir_reg("%p" + i + ".arg", T.mk_int()));
         i <- i + 1;
     }
-    rtmp <- "%shim_r";
+    var rtmp <- "%shim_r";
     ir_push_inst(bb, ii_call(rtmp, T.mk_int(), fn_name, fwd_args));
     ir_set_terminator(bb, ii_ret(ir_reg(rtmp, T.mk_int())));
 
@@ -4447,7 +4527,7 @@ fn ir_emit_expr(b, nd) {
         // i64-everywhere storage. The literal text is passed through to LLVM
         // verbatim — LLVM rounds decimal floats to nearest double using IEEE
         // round-to-nearest, matching the interpreter's Python conversion.
-        d_tmp <- ir_fresh_tmp(b, "fconst");
+        var d_tmp <- ir_fresh_tmp(b, "fconst");
         ir_push_inst(b.cur_block, ii_bc_d_to_i(d_tmp, ir_const_float(nd.value)));
         return ir_reg(d_tmp, T.mk_float());
     }
@@ -4455,11 +4535,11 @@ fn ir_emit_expr(b, nd) {
         // Pool the string in the module table. Return a const_str value
         // whose id refers to the pooled entry; render sites inttoptr or use
         // ptr directly depending on context.
-        sid <- ir_mod_add_str(b.mod, nd.value);
+        var sid <- ir_mod_add_str(b.mod, nd.value);
         // The const_str renders as `@<id>` — for use inside expression positions
         // we need it as an i64 (the IR's universal integer for pointers). Emit
         // a ptrtoint into a fresh register.
-        tmp <- ir_fresh_tmp(b, "s");
+        var tmp <- ir_fresh_tmp(b, "s");
         ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
         return ir_reg(tmp, T.mk_str());
     }
@@ -4470,14 +4550,14 @@ fn ir_emit_expr(b, nd) {
     if (nd.node = "Identifier") {
         // Locals shadow globals: scan the builder's locals first; only fall
         // back to a global @g_<n> load if the name isn't found locally.
-        is_loc <- false;
-        j <- 0;
+        var is_loc <- false;
+        var j <- 0;
         while (j < len(b.locals)) {
             if (b.locals[j].name = nd.name) { is_loc <- true; }
             j <- j + 1;
         }
         if (!is_loc && is_global(nd.name)) {
-            tmp <- ir_fresh_tmp(b, "ld");
+            var tmp <- ir_fresh_tmp(b, "ld");
             ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg("@g_" + nd.name, T.mk_int())));
             return ir_reg(tmp, T.mk_int());
         }
@@ -4486,16 +4566,16 @@ fn ir_emit_expr(b, nd) {
         // works. Skip arrow vars — those are already closure pairs assigned
         // to globals/locals and handled by the cases above.
         if (!is_loc) {
-            fi_ref <- find_fn(nd.name);
+            var fi_ref <- find_fn(nd.name);
             if (fi_ref != false && !fi_ref.is_arrow_var) {
-                shim_name <- ir_ensure_fn_shim(b.mod, nd.name, fi_ref.param_count);
-                cm_tmp <- ir_fresh_tmp(b, "fnref");
+                var shim_name <- ir_ensure_fn_shim(b.mod, nd.name, fi_ref.param_count);
+                var cm_tmp <- ir_fresh_tmp(b, "fnref");
                 ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, shim_name, []));
                 return ir_reg(cm_tmp, T.mk_int());
             }
         }
-        slot <- ir_get_local_slot(b, nd.name);
-        tmp <- ir_fresh_tmp(b, "ld");
+        var slot <- ir_get_local_slot(b, nd.name);
+        var tmp <- ir_fresh_tmp(b, "ld");
         ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
         return ir_reg(tmp, T.mk_int());
     }
@@ -4503,25 +4583,25 @@ fn ir_emit_expr(b, nd) {
         return ir_emit_binop(b, nd);
     }
     if (nd.node = "UnaryOp") {
-        operand <- ir_emit_expr(b, nd.operand);
+        var operand <- ir_emit_expr(b, nd.operand);
         if (nd.op = "-") {
             // Float-aware: if the operand is float, bitcast to double, fneg,
             // bitcast back. Otherwise integer `sub i64 0, x`.
-            ot <- typeof_expr(nd.operand);
+            var ot <- typeof_expr(nd.operand);
             if (ot.kind = "float") {
-                dd <- ir_to_double_reg(b, operand, ot);
-                fr <- ir_fresh_tmp(b, "fr");
+                var dd <- ir_to_double_reg(b, operand, ot);
+                var fr <- ir_fresh_tmp(b, "fr");
                 ir_push_inst(b.cur_block, ii_fneg(fr, ir_reg(dd, T.mk_float())));
-                i64r <- ir_fresh_tmp(b, "fi");
+                var i64r <- ir_fresh_tmp(b, "fi");
                 ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, T.mk_float())));
                 return ir_reg(i64r, T.mk_float());
             }
-            tmp <- ir_fresh_tmp(b, "neg");
+            var tmp <- ir_fresh_tmp(b, "neg");
             ir_push_inst(b.cur_block, ii_neg(tmp, operand));
             return ir_reg(tmp, T.mk_int());
         }
         if (nd.op = "!") {
-            tmp <- ir_fresh_tmp(b, "not");
+            var tmp <- ir_fresh_tmp(b, "not");
             ir_push_inst(b.cur_block, ii_lnot(tmp, operand));
             return ir_reg(tmp, T.mk_int());
         }
@@ -4535,26 +4615,26 @@ fn ir_emit_expr(b, nd) {
         // pointer and route through closure_call, which already handles
         // unpacking [fn_ptr, env_ptr] and prepending env to the args.
         if (nd.callee.node != "Identifier") {
-            callee_val <- ir_emit_expr(b, nd.callee);
-            args <- [];
-            i <- 0;
+            var callee_val <- ir_emit_expr(b, nd.callee);
+            var args <- [];
+            var i <- 0;
             while (i < len(nd.args)) {
                 push(args, ir_emit_expr(b, nd.args[i]));
                 i <- i + 1;
             }
-            tmp <- ir_fresh_tmp(b, "icc");
+            var tmp <- ir_fresh_tmp(b, "icc");
             ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), callee_val, args));
             return ir_reg(tmp, T.mk_int());
         }
-        nm <- nd.callee.name;
+        var nm <- nd.callee.name;
 
         // Built-ins that map to dedicated IR ops.
         if (nm = "len") {
-            arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_expr(b, nd.args[0]);
             // Strings: strlen via existing helper (renderer handles strlen op).
             // Arrays: array_len op (loads slot 0 of the array layout).
-            argt <- typeof_expr(nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "len");
+            var argt <- typeof_expr(nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "len");
             if (argt.kind = "str") {
                 ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
             } else {
@@ -4563,9 +4643,9 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "push") {
-            arr <- ir_emit_expr(b, nd.args[0]);
-            val <- ir_emit_expr(b, nd.args[1]);
-            tmp <- ir_fresh_tmp(b, "push");
+            var arr <- ir_emit_expr(b, nd.args[0]);
+            var val <- ir_emit_expr(b, nd.args[1]);
+            var tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;
             // store it back into wherever the source array lives. Without
@@ -4575,101 +4655,101 @@ fn ir_emit_expr(b, nd) {
                 if (is_global(nd.args[0].name)) {
                     ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, T.mk_int()), ir_reg("@g_" + nd.args[0].name, T.mk_int())));
                 } else {
-                    slot <- ir_get_local_slot(b, nd.args[0].name);
+                    var slot <- ir_get_local_slot(b, nd.args[0].name);
                     ir_push_inst(b.cur_block, ii_store(ir_reg(tmp, T.mk_int()), ir_reg(slot, T.mk_int())));
                 }
             } else if (nd.args[0].node = "DotExpr") {
                 // Re-evaluate the obj. Reusing the earlier-evaluated `arr`
                 // would point at the *old* pointer; we need the obj struct.
-                obj_v <- ir_emit_expr(b, nd.args[0].obj);
-                fid <- ir_mod_add_str(b.mod, nd.args[0].field);
-                prefix <- ir_fresh_tmp(b, "pset");
+                var obj_v <- ir_emit_expr(b, nd.args[0].obj);
+                var fid <- ir_mod_add_str(b.mod, nd.args[0].field);
+                var prefix <- ir_fresh_tmp(b, "pset");
                 ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, ir_reg(tmp, T.mk_int())));
             } else if (nd.args[0].node = "IndexExpr") {
-                obj_v <- ir_emit_expr(b, nd.args[0].obj);
-                idx_v <- ir_emit_expr(b, nd.args[0].index);
-                prefix <- ir_fresh_tmp(b, "paset");
+                var obj_v <- ir_emit_expr(b, nd.args[0].obj);
+                var idx_v <- ir_emit_expr(b, nd.args[0].index);
+                var prefix <- ir_fresh_tmp(b, "paset");
                 ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, T.mk_int())));
             }
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "pop") {
-            arr <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "pop");
+            var arr <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "pop");
             ir_push_inst(b.cur_block, ii_array_pop(tmp, T.mk_int(), arr));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "keys") {
-            s <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "keys");
+            var s <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "keys");
             ir_push_inst(b.cur_block, ii_struct_keys(tmp, s));
             return ir_reg(tmp, T.mk_array(T.mk_str()));
         }
 
         // Cluster-3 string + IO builtins.
         if (nm = "str_len") {
-            arg <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "sl");
+            var arg <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "sl");
             ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_code") {
-            arg <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "cc");
+            var arg <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_at") {
-            sarg <- ir_emit_expr(b, nd.args[0]);
-            iarg <- ir_emit_expr(b, nd.args[1]);
-            tmp <- ir_fresh_tmp(b, "ca");
+            var sarg <- ir_emit_expr(b, nd.args[0]);
+            var iarg <- ir_emit_expr(b, nd.args[1]);
+            var tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, sarg, iarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "from_char_code") {
-            arg <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "fcc");
+            var arg <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "fcc");
             ir_push_inst(b.cur_block, ii_from_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "substring") {
-            sarg <- ir_emit_expr(b, nd.args[0]);
-            stargv <- ir_emit_expr(b, nd.args[1]);
-            edarg <- ir_emit_expr(b, nd.args[2]);
-            tmp <- ir_fresh_tmp(b, "sub");
+            var sarg <- ir_emit_expr(b, nd.args[0]);
+            var stargv <- ir_emit_expr(b, nd.args[1]);
+            var edarg <- ir_emit_expr(b, nd.args[2]);
+            var tmp <- ir_fresh_tmp(b, "sub");
             ir_push_inst(b.cur_block, ii_substring(tmp, sarg, stargv, edarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "read_file") {
-            arg <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "rf");
+            var arg <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "rf");
             ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "write_file") {
-            parg <- ir_emit_expr(b, nd.args[0]);
-            carg <- ir_emit_expr(b, nd.args[1]);
-            tmp <- ir_fresh_tmp(b, "wf");
+            var parg <- ir_emit_expr(b, nd.args[0]);
+            var carg <- ir_emit_expr(b, nd.args[1]);
+            var tmp <- ir_fresh_tmp(b, "wf");
             ir_push_inst(b.cur_block, ii_write_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "append_file") {
-            parg <- ir_emit_expr(b, nd.args[0]);
-            carg <- ir_emit_expr(b, nd.args[1]);
-            tmp <- ir_fresh_tmp(b, "af");
+            var parg <- ir_emit_expr(b, nd.args[0]);
+            var carg <- ir_emit_expr(b, nd.args[1]);
+            var tmp <- ir_fresh_tmp(b, "af");
             ir_push_inst(b.cur_block, ii_append_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "exec_cmd") {
-            arg <- ir_emit_expr(b, nd.args[0]);
-            tmp <- ir_fresh_tmp(b, "ec");
+            var arg <- ir_emit_expr(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "ec");
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "input") {
-            tmp <- ir_fresh_tmp(b, "in");
+            var tmp <- ir_fresh_tmp(b, "in");
             if (len(nd.args) >= 1) {
-                parg <- ir_emit_expr(b, nd.args[0]);
+                var parg <- ir_emit_expr(b, nd.args[0]);
                 ir_push_inst(b.cur_block, ii_input_with_prompt(tmp, parg));
             } else {
                 ir_push_inst(b.cur_block, ii_input(tmp));
@@ -4680,12 +4760,12 @@ fn ir_emit_expr(b, nd) {
             // Two forms: args() returns argc-1 (script arg count, excluding
             // program name); args(N) returns argv[N+1] as a string. Both use
             // the @g_argc / @g_argv globals populated by main.
-            tmp <- ir_fresh_tmp(b, "args");
+            var tmp <- ir_fresh_tmp(b, "args");
             if (len(nd.args) = 0) {
                 ir_push_inst(b.cur_block, ir_inst("args_count", tmp, T.mk_int(), [], false));
                 return ir_reg(tmp, T.mk_int());
             }
-            iarg <- ir_emit_expr(b, nd.args[0]);
+            var iarg <- ir_emit_expr(b, nd.args[0]);
             ir_push_inst(b.cur_block, ir_inst("args_get", tmp, T.mk_str(), [iarg], false));
             return ir_reg(tmp, T.mk_str());
         }
@@ -4693,32 +4773,32 @@ fn ir_emit_expr(b, nd) {
         // Closure invocation: if `nm` was assigned an ArrowFn earlier in this
         // function, it holds a closure pair. Load the pair, unpack [fn_ptr,
         // env_ptr], and indirect-call with env prepended to args.
-        cinfo <- ir_get_closure(b, nm);
+        var cinfo <- ir_get_closure(b, nm);
         if (cinfo != false) {
             // Load the closure pair pointer from wherever the variable lives.
             // Locals shadow globals: if the name is in this builder's locals,
             // use the local slot even when a global of the same name exists.
-            is_loc <- false;
-            j <- 0;
+            var is_loc <- false;
+            var j <- 0;
             while (j < len(b.locals)) {
                 if (b.locals[j].name = nm) { is_loc <- true; }
                 j <- j + 1;
             }
-            pair_tmp <- ir_fresh_tmp(b, "pair");
+            var pair_tmp <- ir_fresh_tmp(b, "pair");
             if (is_loc) {
-                slot <- ir_get_local_slot(b, nm);
+                var slot <- ir_get_local_slot(b, nm);
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
             } else {
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
             // Evaluate user args.
-            args <- [];
-            i <- 0;
+            var args <- [];
+            var i <- 0;
             while (i < len(nd.args)) {
                 push(args, ir_emit_expr(b, nd.args[i]));
                 i <- i + 1;
             }
-            tmp <- ir_fresh_tmp(b, "cc");
+            var tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
             return ir_reg(tmp, T.mk_int());
         }
@@ -4726,8 +4806,8 @@ fn ir_emit_expr(b, nd) {
         // Indirect call via variable: if `nm` isn't a known top-level fn but
         // matches a local var or a global, treat it as holding a closure pair
         // value (e.g. assigned from another fn that returns a closure).
-        fi_lookup <- find_fn(nm);
-        is_known_fn <- false;
+        var fi_lookup <- find_fn(nm);
+        var is_known_fn <- false;
         if (fi_lookup != false) {
             // is_arrow_var entries are top-level arrow-fn assignments; they
             // ARE callable via closure_call too, so still go through the
@@ -4740,51 +4820,51 @@ fn ir_emit_expr(b, nd) {
             // happens to share a name with a top-level var (like `g` being
             // captured in compose's body while another `g` exists at top
             // level) would silently load the wrong value.
-            is_loc <- false;
-            j <- 0;
+            var is_loc <- false;
+            var j <- 0;
             while (j < len(b.locals)) {
                 if (b.locals[j].name = nm) { is_loc <- true; }
                 j <- j + 1;
             }
             if (is_loc || is_global(nm)) {
-                pair_tmp <- ir_fresh_tmp(b, "pair");
+                var pair_tmp <- ir_fresh_tmp(b, "pair");
                 if (is_loc) {
-                    slot <- ir_get_local_slot(b, nm);
+                    var slot <- ir_get_local_slot(b, nm);
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
                 } else {
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
                 }
-                args <- [];
-                i <- 0;
+                var args <- [];
+                var i <- 0;
                 while (i < len(nd.args)) {
                     push(args, ir_emit_expr(b, nd.args[i]));
                     i <- i + 1;
                 }
-                tmp <- ir_fresh_tmp(b, "cc");
+                var tmp <- ir_fresh_tmp(b, "cc");
                 ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
                 return ir_reg(tmp, T.mk_int());
             }
         }
 
         // Generic user-function call. Arguments are evaluated left-to-right.
-        args <- [];
-        i <- 0;
+        var args <- [];
+        var i <- 0;
         while (i < len(nd.args)) {
             push(args, ir_emit_expr(b, nd.args[i]));
             i <- i + 1;
         }
-        tmp <- ir_fresh_tmp(b, "call");
+        var tmp <- ir_fresh_tmp(b, "call");
         ir_push_inst(b.cur_block, ii_call(tmp, T.mk_int(), nm, args));
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "ArrayLit") {
-        elems <- [];
-        i <- 0;
+        var elems <- [];
+        var i <- 0;
         while (i < len(nd.elements)) {
             push(elems, ir_emit_expr(b, nd.elements[i]));
             i <- i + 1;
         }
-        tmp <- ir_fresh_tmp(b, "arr");
+        var tmp <- ir_fresh_tmp(b, "arr");
         ir_push_inst(b.cur_block, ii_array_new(tmp, T.mk_int(), elems));
         return ir_reg(tmp, T.mk_array(T.mk_int()));
     }
@@ -4793,41 +4873,41 @@ fn ir_emit_expr(b, nd) {
         // by infer_body and friends in the prep dance). Strings get char_at
         // semantics, arrays get array_get. Anything else falls back to array
         // since `any`-typed values are most commonly arrays in practice.
-        obj <- ir_emit_expr(b, nd.obj);
-        idx <- ir_emit_expr(b, nd.index);
-        ot <- typeof_expr(nd.obj);
+        var obj <- ir_emit_expr(b, nd.obj);
+        var idx <- ir_emit_expr(b, nd.index);
+        var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") {
-            tmp <- ir_fresh_tmp(b, "ca");
+            var tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, obj, idx));
             return ir_reg(tmp, T.mk_str());
         }
-        tmp <- ir_fresh_tmp(b, "idx");
+        var tmp <- ir_fresh_tmp(b, "idx");
         ir_push_inst(b.cur_block, ii_array_get(tmp, T.mk_int(), obj, idx));
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "DotExpr") {
-        obj <- ir_emit_expr(b, nd.obj);
+        var obj <- ir_emit_expr(b, nd.obj);
         // Pool the field name in the module's string table.
-        fid <- ir_mod_add_str(b.mod, nd.field);
-        tmp <- ir_fresh_tmp(b, "dot");
+        var fid <- ir_mod_add_str(b.mod, nd.field);
+        var tmp <- ir_fresh_tmp(b, "dot");
         ir_push_inst(b.cur_block, ii_struct_get(tmp, T.mk_int(), obj, fid));
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "StructLit") {
         // Pool field names; build the struct_new instruction with {key_id, val} entries.
-        fields <- [];
-        i <- 0;
+        var fields <- [];
+        var i <- 0;
         while (i < len(nd.fields)) {
             // Each AST field is {key: <str>, val: <expr>}; pool the name and
             // emit the value expression.
-            key_id <- ir_mod_add_str(b.mod, nd.fields[i].key);
-            val <- ir_emit_expr(b, nd.fields[i].val);
+            var key_id <- ir_mod_add_str(b.mod, nd.fields[i].key);
+            var val <- ir_emit_expr(b, nd.fields[i].val);
             push(fields, {key_id: key_id, val: val});
             i <- i + 1;
         }
-        tmp <- ir_fresh_tmp(b, "sl");
+        var tmp <- ir_fresh_tmp(b, "sl");
         // Replace the operands list with [] since the renderer reads from extra.
-        inst <- ir_inst("struct_new", tmp, T.mk_struct(), [], fields);
+        var inst <- ir_inst("struct_new", tmp, T.mk_struct(), [], fields);
         ir_push_inst(b.cur_block, inst);
         return ir_reg(tmp, T.mk_struct());
     }
@@ -4839,36 +4919,36 @@ fn ir_emit_expr(b, nd) {
         // 3) In the current block, emit a closure_make instruction that
         //    allocates the env array (storing the captures' current values)
         //    and the [fn_ptr, env_ptr] pair. Returns the pair pointer.
-        captures <- ir_find_captures(b, nd.body, nd.params, nd.is_expr);
+        var captures <- ir_find_captures(b, nd.body, nd.params, nd.is_expr);
 
         // Mint a unique name for the closure's IR function.
         arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
-        afn_name <- "__arrow_" + arrow_fn_counter[0];
+        var afn_name <- "__arrow_" + arrow_fn_counter[0];
 
         // Build the IR Function. Param list = [env, user params...].
-        ir_params <- [{name: "env", type: T.mk_int()}];
-        i <- 0;
+        var ir_params <- [{name: "env", type: T.mk_int()}];
+        var i <- 0;
         while (i < len(nd.params)) {
             push(ir_params, {name: nd.params[i], type: T.mk_int()});
             i <- i + 1;
         }
-        afn <- ir_function(afn_name, ir_params, T.mk_int());
-        afn_entry <- ir_block("entry");
+        var afn <- ir_function(afn_name, ir_params, T.mk_int());
+        var afn_entry <- ir_block("entry");
         ir_fn_add_block(afn, afn_entry);
 
         // Sub-builder for the closure body. Reuses the outer module so
         // string constants pool together.
-        sub <- ir_builder_new(afn, afn_entry, b.mod);
+        var sub <- ir_builder_new(afn, afn_entry, b.mod);
 
         // Save the outer var-types so we can restore later. We need fresh
         // var_types for the closure scope (params + captures + locals).
         // Captures keep their outer types so subsequent typeof_expr in body
         // sees them correctly.
-        old_vars <- alloc_vars[0];
-        old_types <- var_types[0];
-        old_layouts <- struct_layouts[0];
-        old_arr_types <- array_elem_types[0];
-        cap_outer_types <- [];
+        var old_vars <- alloc_vars[0];
+        var old_types <- var_types[0];
+        var old_layouts <- struct_layouts[0];
+        var old_arr_types <- array_elem_types[0];
+        var cap_outer_types <- [];
         i <- 0;
         while (i < len(captures)) {
             push(cap_outer_types, get_var_type(captures[i]));
@@ -4884,7 +4964,7 @@ fn ir_emit_expr(b, nd) {
         // loads; typeof_expr needs to see their types so that e.g. `prefix +
         // msg` (string global + any param) typechecks as str-concat instead of
         // int-add.
-        gi <- 0;
+        var gi <- 0;
         while (gi < len(old_types)) {
             if (is_global(old_types[gi].name)) {
                 push(var_types[0], old_types[gi]);
@@ -4895,8 +4975,8 @@ fn ir_emit_expr(b, nd) {
         // Param prologue: allocate a slot for each user param and copy the arg in.
         i <- 0;
         while (i < len(nd.params)) {
-            pname <- nd.params[i];
-            pslot <- ir_get_local_slot(sub, pname);
+            var pname <- nd.params[i];
+            var pslot <- ir_get_local_slot(sub, pname);
             ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(pslot, T.mk_int())));
             // Default param type = any. (We could plumb param_types_ann later.)
             set_var_type(pname, T.mk_any());
@@ -4907,9 +4987,9 @@ fn ir_emit_expr(b, nd) {
         if (len(captures) > 0) {
             i <- 0;
             while (i < len(captures)) {
-                cname <- captures[i];
-                cslot <- ir_get_local_slot(sub, cname);
-                load_reg <- ir_fresh_tmp(sub, "cval");
+                var cname <- captures[i];
+                var cslot <- ir_get_local_slot(sub, cname);
+                var load_reg <- ir_fresh_tmp(sub, "cval");
                 ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, T.mk_int(), [ir_reg("%env.arg", T.mk_int()), ir_const_int(i)], false));
                 ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, T.mk_int()), ir_reg(cslot, T.mk_int())));
                 set_var_type(cname, cap_outer_types[i]);
@@ -4919,9 +4999,9 @@ fn ir_emit_expr(b, nd) {
 
         // Body. ArrowFn bodies can be either a list of statements (block form)
         // or a single expression (expression form).
-        ret_type_inferred <- T.mk_any();
+        var ret_type_inferred <- T.mk_any();
         if (nd.is_expr) {
-            v <- ir_emit_expr(sub, nd.body);
+            var v <- ir_emit_expr(sub, nd.body);
             ir_set_terminator(sub.cur_block, ii_ret(v));
             // Observe the expression's static type for the body's return type.
             // typeof_expr consults var_types populated during emission.
@@ -4930,7 +5010,7 @@ fn ir_emit_expr(b, nd) {
             // Block form: temporarily set current_fn[0] so set_fn_ret_type
             // calls (triggered by infer_body's ReturnStmt branch) record
             // against this arrow fn's mangled name.
-            old_cur <- current_fn[0];
+            var old_cur <- current_fn[0];
             current_fn[0] <- afn_name;
             infer_body(nd.body);
             current_fn[0] <- old_cur;
@@ -4939,7 +5019,7 @@ fn ir_emit_expr(b, nd) {
             // Mirrors the same fix applied to regular FnDecls — ensures that
             // names which happen to also be globals resolve as locals when
             // referenced inside the closure body.
-            body_vars <- [];
+            var body_vars <- [];
             collect_vars(nd.body, body_vars);
             i <- 0;
             while (i < len(body_vars)) {
@@ -4958,7 +5038,7 @@ fn ir_emit_expr(b, nd) {
             }
             // After infer_body, declared_fns[afn_name].ret_type holds the
             // inferred return type (or any if inference couldn't decide).
-            fi_after <- find_fn(afn_name);
+            var fi_after <- find_fn(afn_name);
             if (fi_after != false) { ret_type_inferred <- fi_after.ret_type; }
         }
 
@@ -4973,16 +5053,16 @@ fn ir_emit_expr(b, nd) {
 
         // Now emit closure_make in the OUTER (current) block. Captures' values
         // are loaded from outer locals.
-        cap_vals <- [];
+        var cap_vals <- [];
         i <- 0;
         while (i < len(captures)) {
-            cap_slot <- ir_get_local_slot(b, captures[i]);
-            cap_tmp <- ir_fresh_tmp(b, "cap");
+            var cap_slot <- ir_get_local_slot(b, captures[i]);
+            var cap_tmp <- ir_fresh_tmp(b, "cap");
             ir_push_inst(b.cur_block, ii_load(cap_tmp, T.mk_int(), ir_reg(cap_slot, T.mk_int())));
             push(cap_vals, ir_reg(cap_tmp, T.mk_int()));
             i <- i + 1;
         }
-        cm_tmp <- ir_fresh_tmp(b, "cm");
+        var cm_tmp <- ir_fresh_tmp(b, "cm");
         ir_push_inst(b.cur_block, ii_closure_make(cm_tmp, afn_name, cap_vals));
 
         // Register the arrow fn's mangled name in declared_fns with the
@@ -5028,82 +5108,82 @@ fn ir_emit_expr(b, nd) {
 }
 
 fn ir_emit_binop(b, nd) {
-    op <- nd.op;
+    var op <- nd.op;
 
     if (op = "&&") {
         // Short-circuit: allocate a result slot (entry-block alloca), store 0,
         // eval LHS, branch on truthiness; true path evaluates RHS and stores;
         // join block loads the result.
-        res_slot_name <- ir_fresh_tmp(b, "and_res");
+        var res_slot_name <- ir_fresh_tmp(b, "and_res");
         ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, T.mk_int()));
         ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, T.mk_int())));
 
-        lhs <- ir_emit_expr(b, nd.left);
+        var lhs <- ir_emit_expr(b, nd.left);
 
-        rhs_lbl <- ir_fresh_block_lbl(b, "and_r");
-        end_lbl <- ir_fresh_block_lbl(b, "and_e");
-        br_tmp  <- ir_fresh_tmp(b, "br");
+        var rhs_lbl <- ir_fresh_block_lbl(b, "and_r");
+        var end_lbl <- ir_fresh_block_lbl(b, "and_e");
+        var br_tmp  <- ir_fresh_tmp(b, "br");
         ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, lhs, rhs_lbl, end_lbl));
 
-        rhs_bb <- ir_block(rhs_lbl);
+        var rhs_bb <- ir_block(rhs_lbl);
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
-        rhs <- ir_emit_expr(b, nd.right);
+        var rhs <- ir_emit_expr(b, nd.right);
         ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
-        end_bb <- ir_block(end_lbl);
+        var end_bb <- ir_block(end_lbl);
         ir_fn_add_block(b.func, end_bb);
         b.cur_block <- end_bb;
 
-        result_tmp <- ir_fresh_tmp(b, "andres");
+        var result_tmp <- ir_fresh_tmp(b, "andres");
         ir_push_inst(b.cur_block, ii_load(result_tmp, T.mk_int(), ir_reg(res_slot_name, T.mk_int())));
         return ir_reg(result_tmp, T.mk_int());
     }
 
     if (op = "||") {
         // Mirror of && with the default set to 1; LHS true short-circuits to end.
-        res_slot_name <- ir_fresh_tmp(b, "or_res");
+        var res_slot_name <- ir_fresh_tmp(b, "or_res");
         ir_push_inst(b.func.blocks[0], ii_alloca(res_slot_name, T.mk_int()));
         ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, T.mk_int())));
 
-        lhs <- ir_emit_expr(b, nd.left);
+        var lhs <- ir_emit_expr(b, nd.left);
 
-        rhs_lbl <- ir_fresh_block_lbl(b, "or_r");
-        end_lbl <- ir_fresh_block_lbl(b, "or_e");
-        br_tmp  <- ir_fresh_tmp(b, "br");
+        var rhs_lbl <- ir_fresh_block_lbl(b, "or_r");
+        var end_lbl <- ir_fresh_block_lbl(b, "or_e");
+        var br_tmp  <- ir_fresh_tmp(b, "br");
         // LHS true → skip to end; LHS false → compute RHS.
         ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, lhs, end_lbl, rhs_lbl));
 
-        rhs_bb <- ir_block(rhs_lbl);
+        var rhs_bb <- ir_block(rhs_lbl);
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
-        rhs <- ir_emit_expr(b, nd.right);
+        var rhs <- ir_emit_expr(b, nd.right);
         ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
-        end_bb <- ir_block(end_lbl);
+        var end_bb <- ir_block(end_lbl);
         ir_fn_add_block(b.func, end_bb);
         b.cur_block <- end_bb;
 
-        result_tmp <- ir_fresh_tmp(b, "orres");
+        var result_tmp <- ir_fresh_tmp(b, "orres");
         ir_push_inst(b.cur_block, ii_load(result_tmp, T.mk_int(), ir_reg(res_slot_name, T.mk_int())));
         return ir_reg(result_tmp, T.mk_int());
     }
 
     // Arithmetic and comparison — both operands are eagerly evaluated.
-    lhs <- ir_emit_expr(b, nd.left);
-    rhs <- ir_emit_expr(b, nd.right);
+    var lhs <- ir_emit_expr(b, nd.left);
+    var rhs <- ir_emit_expr(b, nd.right);
 
     if (ir_is_cmp_op(op)) {
         // Use @arrow_safe_strcmp when either side is statically a str —
         // otherwise integer icmp. For "any vs any" we also route through
         // strcmp because the safe variant tolerates either pointer or int
         // operands.
-        lt <- typeof_expr(nd.left);
-        rt <- typeof_expr(nd.right);
+        var lt <- typeof_expr(nd.left);
+        var rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str" || (lt.kind = "any" && rt.kind = "any")) {
-            tmp <- ir_fresh_tmp(b, "scmp");
+            var tmp <- ir_fresh_tmp(b, "scmp");
             ir_push_inst(b.cur_block, ii_strcmp(tmp, ir_cmp_op(op), lhs, rhs));
             return ir_reg(tmp, T.mk_int());
         }
@@ -5111,13 +5191,13 @@ fn ir_emit_binop(b, nd) {
         // to double and use fcmp. The other-side promotion handles mixed
         // int/float comparisons like `2 < 1.5`.
         if (lt.kind = "float" || rt.kind = "float") {
-            ld <- ir_to_double_reg(b, lhs, lt);
-            rd <- ir_to_double_reg(b, rhs, rt);
-            tmp <- ir_fresh_tmp(b, "fc");
+            var ld <- ir_to_double_reg(b, lhs, lt);
+            var rd <- ir_to_double_reg(b, rhs, rt);
+            var tmp <- ir_fresh_tmp(b, "fc");
             ir_push_inst(b.cur_block, ii_fcmp(tmp, ir_fcmp_op(op), ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float())));
             return ir_reg(tmp, T.mk_bool());
         }
-        tmp <- ir_fresh_tmp(b, "cmp");
+        var tmp <- ir_fresh_tmp(b, "cmp");
         ir_push_inst(b.cur_block, ii_icmp(tmp, ir_cmp_op(op), lhs, rhs));
         return ir_reg(tmp, T.mk_int());
     }
@@ -5127,22 +5207,22 @@ fn ir_emit_binop(b, nd) {
         // this means emitting a strcat (call to @arrow_strcat) rather than
         // an integer add. Mixed str+int is supported by converting the int
         // operand to a string via int_to_str.
-        lt <- typeof_expr(nd.left);
-        rt <- typeof_expr(nd.right);
+        var lt <- typeof_expr(nd.left);
+        var rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str") {
-            lhs_s <- lhs;
-            rhs_s <- rhs;
+            var lhs_s <- lhs;
+            var rhs_s <- rhs;
             if (lt.kind = "int") {
-                t <- ir_fresh_tmp(b, "i2s");
+                var t <- ir_fresh_tmp(b, "i2s");
                 ir_push_inst(b.cur_block, ii_int_to_str(t, lhs));
                 lhs_s <- ir_reg(t, T.mk_str());
             }
             if (rt.kind = "int") {
-                t <- ir_fresh_tmp(b, "i2s");
+                var t <- ir_fresh_tmp(b, "i2s");
                 ir_push_inst(b.cur_block, ii_int_to_str(t, rhs));
                 rhs_s <- ir_reg(t, T.mk_str());
             }
-            tmp <- ir_fresh_tmp(b, "scat");
+            var tmp <- ir_fresh_tmp(b, "scat");
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, T.mk_str());
         }
@@ -5151,40 +5231,40 @@ fn ir_emit_binop(b, nd) {
         // carries the joined element type from typeof_expr so prints format
         // correctly.
         if (lt.kind = "array" && rt.kind = "array") {
-            tmp <- ir_fresh_tmp(b, "acat");
+            var tmp <- ir_fresh_tmp(b, "acat");
             ir_push_inst(b.cur_block, ii_array_concat(tmp, lhs, rhs));
             return ir_reg(tmp, T.mk_array(T.types_join(lt.elem, rt.elem)));
         }
         if (lt.kind = "float" || rt.kind = "float") {
             return ir_emit_fbinop(b, "fadd", lhs, lt, rhs, rt);
         }
-        tmp <- ir_fresh_tmp(b, "add");
+        var tmp <- ir_fresh_tmp(b, "add");
         ir_push_inst(b.cur_block, ii_add(tmp, lhs, rhs));
         return ir_reg(tmp, T.mk_int());
     }
 
     // Numeric arithmetic — route through float if either side is float.
-    lt <- typeof_expr(nd.left);
-    rt <- typeof_expr(nd.right);
-    use_float <- (lt.kind = "float" || rt.kind = "float");
+    var lt <- typeof_expr(nd.left);
+    var rt <- typeof_expr(nd.right);
+    var use_float <- (lt.kind = "float" || rt.kind = "float");
 
     if (op = "-") {
         if (use_float) { return ir_emit_fbinop(b, "fsub", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
+        var tmp <- ir_fresh_tmp(b, "sub"); ir_push_inst(b.cur_block, ii_sub(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "*") {
         if (use_float) { return ir_emit_fbinop(b, "fmul", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
+        var tmp <- ir_fresh_tmp(b, "mul"); ir_push_inst(b.cur_block, ii_mul(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "/") {
         if (use_float) { return ir_emit_fbinop(b, "fdiv", lhs, lt, rhs, rt); }
-        tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
+        var tmp <- ir_fresh_tmp(b, "div"); ir_push_inst(b.cur_block, ii_sdiv(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
     if (op = "%") {
         // `%` on floats is unusual but defined (frem) — kept as int-only here
         // to match Python semantics where `1.5 % 1.0` doesn't usually appear
         // in Arrow programs. If we want it later, add fmod via libc.
-        tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
+        var tmp <- ir_fresh_tmp(b, "rem"); ir_push_inst(b.cur_block, ii_srem(tmp, lhs, rhs)); return ir_reg(tmp, T.mk_int());
     }
 
     print("ir_emit_binop: unsupported op " + op);
@@ -5195,14 +5275,14 @@ fn ir_emit_binop(b, nd) {
 // to double, emits the named float op, then bitcasts the result back to i64
 // for storage. Returns an ir_reg holding the i64-storage form of the result.
 fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
-    ld <- ir_to_double_reg(b, lhs, lt);
-    rd <- ir_to_double_reg(b, rhs, rt);
-    fr <- ir_fresh_tmp(b, "fr");
+    var ld <- ir_to_double_reg(b, lhs, lt);
+    var rd <- ir_to_double_reg(b, rhs, rt);
+    var fr <- ir_fresh_tmp(b, "fr");
     if (fop = "fadd") { ir_push_inst(b.cur_block, ii_fadd(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
     else if (fop = "fsub") { ir_push_inst(b.cur_block, ii_fsub(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
     else if (fop = "fmul") { ir_push_inst(b.cur_block, ii_fmul(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
     else if (fop = "fdiv") { ir_push_inst(b.cur_block, ii_fdiv(fr, ir_reg(ld, T.mk_float()), ir_reg(rd, T.mk_float()))); }
-    i64r <- ir_fresh_tmp(b, "fi");
+    var i64r <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(fr, T.mk_float())));
     return ir_reg(i64r, T.mk_float());
 }
@@ -5223,8 +5303,8 @@ fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
 // arrow_print_lit on it. Used for all the static glue between formatted parts:
 // "[", "]", ", ", "{", "}", and field-name labels like "name: ".
 fn ir_emit_lit(b, text: str) {
-    sid <- ir_mod_add_str(b.mod, text);
-    tmp <- ir_fresh_tmp(b, "lit");
+    var sid <- ir_mod_add_str(b.mod, text);
+    var tmp <- ir_fresh_tmp(b, "lit");
     ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
     ir_push_inst(b.cur_block, ii_print_lit(ir_reg(tmp, T.mk_int())));
     return 0;
@@ -5238,7 +5318,7 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
     }
     if (t.kind = "str") {
         if (top_level) {
-            cast_reg <- ir_fresh_tmp(b, "pp");
+            var cast_reg <- ir_fresh_tmp(b, "pp");
             ir_push_inst(b.cur_block, ii_print_str(cast_reg, val));
         } else {
             ir_push_inst(b.cur_block, ii_format_str_q(val));
@@ -5289,71 +5369,71 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
     ir_emit_lit(b, "[");
 
     // len_reg = array_len(arr_val)
-    len_reg <- ir_fresh_tmp(b, "alen");
+    var len_reg <- ir_fresh_tmp(b, "alen");
     ir_push_inst(b.cur_block, ii_array_len(len_reg, arr_val));
 
     // Index counter slot — allocated in the entry block (LLVM convention,
     // and avoids re-allocating on each loop iteration).
-    idx_slot <- ir_fresh_tmp(b, "fidx");
+    var idx_slot <- ir_fresh_tmp(b, "fidx");
     ir_push_inst(b.func.blocks[0], ii_alloca(idx_slot, T.mk_int()));
     ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(idx_slot, T.mk_int())));
 
-    cond_lbl <- ir_fresh_block_lbl(b, "fac");
-    body_lbl <- ir_fresh_block_lbl(b, "fab");
-    sep_lbl  <- ir_fresh_block_lbl(b, "fas");
-    elem_lbl <- ir_fresh_block_lbl(b, "fae");
-    end_lbl  <- ir_fresh_block_lbl(b, "faE");
+    var cond_lbl <- ir_fresh_block_lbl(b, "fac");
+    var body_lbl <- ir_fresh_block_lbl(b, "fab");
+    var sep_lbl  <- ir_fresh_block_lbl(b, "fas");
+    var elem_lbl <- ir_fresh_block_lbl(b, "fae");
+    var end_lbl  <- ir_fresh_block_lbl(b, "faE");
 
     ir_set_terminator(b.cur_block, ii_br(cond_lbl));
 
     // cond: i < len → body, else end
-    cond_bb <- ir_block(cond_lbl);
+    var cond_bb <- ir_block(cond_lbl);
     ir_fn_add_block(b.func, cond_bb);
     b.cur_block <- cond_bb;
-    i_c <- ir_fresh_tmp(b, "fi");
+    var i_c <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_load(i_c, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
-    cmp <- ir_fresh_tmp(b, "fcmp");
+    var cmp <- ir_fresh_tmp(b, "fcmp");
     ir_push_inst(b.cur_block, ii_icmp(cmp, "slt", ir_reg(i_c, T.mk_int()), ir_reg(len_reg, T.mk_int())));
-    br_t1 <- ir_fresh_tmp(b, "br");
+    var br_t1 <- ir_fresh_tmp(b, "br");
     ir_set_terminator(b.cur_block, ii_cond_br(br_t1, ir_reg(cmp, T.mk_int()), body_lbl, end_lbl));
 
     // body: if i = 0 → elem (skip separator), else → sep block
-    body_bb <- ir_block(body_lbl);
+    var body_bb <- ir_block(body_lbl);
     ir_fn_add_block(b.func, body_bb);
     b.cur_block <- body_bb;
-    i_b <- ir_fresh_tmp(b, "fi");
+    var i_b <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_load(i_b, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
-    is_first <- ir_fresh_tmp(b, "ffirst");
+    var is_first <- ir_fresh_tmp(b, "ffirst");
     ir_push_inst(b.cur_block, ii_icmp(is_first, "eq", ir_reg(i_b, T.mk_int()), ir_const_int(0)));
-    br_t2 <- ir_fresh_tmp(b, "br");
+    var br_t2 <- ir_fresh_tmp(b, "br");
     ir_set_terminator(b.cur_block, ii_cond_br(br_t2, ir_reg(is_first, T.mk_int()), elem_lbl, sep_lbl));
 
     // sep: print ", " then fall through to elem
-    sep_bb <- ir_block(sep_lbl);
+    var sep_bb <- ir_block(sep_lbl);
     ir_fn_add_block(b.func, sep_bb);
     b.cur_block <- sep_bb;
     ir_emit_lit(b, ", ");
     ir_set_terminator(b.cur_block, ii_br(elem_lbl));
 
     // elem: load arr[i], format it, then i = i+1, jump to cond
-    elem_bb <- ir_block(elem_lbl);
+    var elem_bb <- ir_block(elem_lbl);
     ir_fn_add_block(b.func, elem_bb);
     b.cur_block <- elem_bb;
-    i_e <- ir_fresh_tmp(b, "fi");
+    var i_e <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_load(i_e, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
-    elem_reg <- ir_fresh_tmp(b, "felem");
+    var elem_reg <- ir_fresh_tmp(b, "felem");
     ir_push_inst(b.cur_block, ii_array_get(elem_reg, T.mk_int(), arr_val, ir_reg(i_e, T.mk_int())));
     ir_emit_format_value(b, ir_reg(elem_reg, T.mk_int()), elem_type, false);
     // increment counter
-    i_n <- ir_fresh_tmp(b, "fi");
+    var i_n <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_load(i_n, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
-    nx <- ir_fresh_tmp(b, "fnext");
+    var nx <- ir_fresh_tmp(b, "fnext");
     ir_push_inst(b.cur_block, ii_add(nx, ir_reg(i_n, T.mk_int()), ir_const_int(1)));
     ir_push_inst(b.cur_block, ii_store(ir_reg(nx, T.mk_int()), ir_reg(idx_slot, T.mk_int())));
     ir_set_terminator(b.cur_block, ii_br(cond_lbl));
 
     // end: print "]"
-    end_bb <- ir_block(end_lbl);
+    var end_bb <- ir_block(end_lbl);
     ir_fn_add_block(b.func, end_bb);
     b.cur_block <- end_bb;
     ir_emit_lit(b, "]");
@@ -5365,15 +5445,15 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
 // type — we know names and per-field types up front.
 fn ir_emit_format_struct(b, struct_val, fields) {
     ir_emit_lit(b, "{");
-    i <- 0;
+    var i <- 0;
     while (i < len(fields)) {
-        f <- fields[i];
+        var f <- fields[i];
         if (i > 0) { ir_emit_lit(b, ", "); }
         ir_emit_lit(b, f.name + ": ");
         // Fetch the field's value via struct_get. The runtime returns i64
         // regardless; format_value re-interprets it through f.type.
-        fid <- ir_mod_add_str(b.mod, f.name);
-        fld_reg <- ir_fresh_tmp(b, "fld");
+        var fid <- ir_mod_add_str(b.mod, f.name);
+        var fld_reg <- ir_fresh_tmp(b, "fld");
         ir_push_inst(b.cur_block, ii_struct_get(fld_reg, T.mk_int(), struct_val, fid));
         ir_emit_format_value(b, ir_reg(fld_reg, T.mk_int()), f.type, false);
         i <- i + 1;
@@ -5388,46 +5468,76 @@ fn ir_emit_stmt(b, stmt) {
             // bare `return;` — still require a terminator for well-formed IR.
             ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
         } else {
-            v <- ir_emit_expr(b, stmt.expr);
+            var v <- ir_emit_expr(b, stmt.expr);
             ir_set_terminator(b.cur_block, ii_ret(v));
         }
         return 0;
     }
     if (stmt.node = "Assignment") {
-        v <- ir_emit_expr(b, stmt.expr);
+        var v <- ir_emit_expr(b, stmt.expr);
         // If the slot is annotated `float` (or already known to be float from a
         // prior annotation) and the RHS is int-typed, we need to numerically
         // promote int→float at storage time. Without this, storing the raw
         // i64 bits of an int into a float slot would later be bitcast to
         // double, producing a tiny denormal instead of the intended value.
-        slot_t <- T.mk_none();
+        var slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
         } else {
             // Look up existing var type — same name may have been declared earlier.
             slot_t <- get_var_type(stmt.name);
         }
-        rhs_t <- typeof_expr(stmt.expr);
+        var rhs_t <- typeof_expr(stmt.expr);
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
-            dr <- ir_fresh_tmp(b, "fsi");
+            var dr <- ir_fresh_tmp(b, "fsi");
             ir_push_inst(b.cur_block, ii_sitofp(dr, v));
-            i64r <- ir_fresh_tmp(b, "fi");
+            var i64r <- ir_fresh_tmp(b, "fi");
             ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(dr, T.mk_float())));
             v <- ir_reg(i64r, T.mk_float());
         }
-        // A name resolves to its global @g_<n> only inside __main_logic (which
-        // wraps the program's top-level statements). Inside any other function,
-        // an assignment to that name shadows the global with a function-local
-        // alloca. This matches lexical scoping in every other Arrow construct
-        // and avoids cross-function aliasing on names like `i` that compiler
-        // code happens to use both at top level and inside function bodies.
-        is_top_level <- (b.func.name = "__main_logic");
-        if (is_global(stmt.name) && is_top_level) {
+        // Item 1: route the store based on declaration intent.
+        //
+        //   var x <- expr;   (is_decl=true)   always writes to a fresh
+        //                                     local alloca in this function
+        //                                     — even if a global of the
+        //                                     same name exists, this is a
+        //                                     deliberate shadow.
+        //
+        //   x <- expr;       (is_decl=false)  walks up: if there's already
+        //                                     a local in this function, use
+        //                                     it; otherwise, if `x` is a
+        //                                     global, store to @g_x; else
+        //                                     fall back to local. (The
+        //                                     scope checker rejects the
+        //                                     last case ahead of time, so
+        //                                     it shouldn't happen here.)
+        //
+        // At the top-level synthetic frame (__main_logic), top-level vars
+        // ARE the globals, so both forms route to @g_x.
+        var is_top_level <- (b.func.name = "__main_logic");
+        if (is_top_level && is_global(stmt.name)) {
             ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
         } else {
-            slot <- ir_get_local_slot(b, stmt.name);
-            ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, T.mk_int())));
+            if (stmt.is_decl) {
+                var slot <- ir_get_local_slot(b, stmt.name);
+                ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, T.mk_int())));
+            } else {
+                if (ir_has_local_slot(b, stmt.name)) {
+                    var slot2 <- ir_get_local_slot(b, stmt.name);
+                    ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot2, T.mk_int())));
+                } else {
+                    if (is_global(stmt.name)) {
+                        ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
+                    } else {
+                        // Defensive fall-through. The scope checker should
+                        // have rejected this; if we reach here, behave as
+                        // the old auto-declare did and emit a local.
+                        var slot3 <- ir_get_local_slot(b, stmt.name);
+                        ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot3, T.mk_int())));
+                    }
+                }
+            }
         }
         // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
         // record this var as holding a closure so future CallExpr on this name
@@ -5446,48 +5556,48 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "IndexAssign") {
-        obj <- ir_emit_expr(b, stmt.obj);
-        idx <- ir_emit_expr(b, stmt.index);
-        val <- ir_emit_expr(b, stmt.value);
-        prefix <- ir_fresh_tmp(b, "aset");
+        var obj <- ir_emit_expr(b, stmt.obj);
+        var idx <- ir_emit_expr(b, stmt.index);
+        var val <- ir_emit_expr(b, stmt.value);
+        var prefix <- ir_fresh_tmp(b, "aset");
         ir_push_inst(b.cur_block, ii_array_set(prefix, obj, idx, val));
         return 0;
     }
     if (stmt.node = "DotAssign") {
-        obj <- ir_emit_expr(b, stmt.obj);
-        val <- ir_emit_expr(b, stmt.value);
-        fid <- ir_mod_add_str(b.mod, stmt.field);
-        prefix <- ir_fresh_tmp(b, "sset");
+        var obj <- ir_emit_expr(b, stmt.obj);
+        var val <- ir_emit_expr(b, stmt.value);
+        var fid <- ir_mod_add_str(b.mod, stmt.field);
+        var prefix <- ir_fresh_tmp(b, "sset");
         ir_push_inst(b.cur_block, ii_struct_set(prefix, obj, fid, val));
         return 0;
     }
     if (stmt.node = "PrintStmt") {
-        v <- ir_emit_expr(b, stmt.expr);
+        var v <- ir_emit_expr(b, stmt.expr);
         // Decide formatting based on the expression's static type. typeof_expr
         // consults var_types (set by scan_call_sites + infer_body in our prep
         // pass) so identifiers / params / fields with inferred types are
         // recognized, not just surface literals. For composite types
         // (array, struct_lit) ir_emit_format_value emits an inline runtime
         // walk; for scalars it dispatches to print_int / print_str / print_bool.
-        et <- typeof_expr(stmt.expr);
+        var et <- typeof_expr(stmt.expr);
         ir_emit_format_value(b, v, et, true);
         return 0;
     }
     if (stmt.node = "IfStmt") {
-        cond <- ir_emit_expr(b, stmt.cond);
-        then_lbl <- ir_fresh_block_lbl(b, "then");
-        end_lbl  <- ir_fresh_block_lbl(b, "ifend");
-        has_else <- len(stmt.else_body) > 0;
-        else_lbl <- end_lbl;
+        var cond <- ir_emit_expr(b, stmt.cond);
+        var then_lbl <- ir_fresh_block_lbl(b, "then");
+        var end_lbl  <- ir_fresh_block_lbl(b, "ifend");
+        var has_else <- len(stmt.else_body) > 0;
+        var else_lbl <- end_lbl;
         if (has_else) { else_lbl <- ir_fresh_block_lbl(b, "else"); }
-        br_tmp <- ir_fresh_tmp(b, "br");
+        var br_tmp <- ir_fresh_tmp(b, "br");
         ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, cond, then_lbl, else_lbl));
 
         // then branch
-        then_bb <- ir_block(then_lbl);
+        var then_bb <- ir_block(then_lbl);
         ir_fn_add_block(b.func, then_bb);
         b.cur_block <- then_bb;
-        i <- 0;
+        var i <- 0;
         while (i < len(stmt.then_body)) {
             ir_emit_stmt(b, stmt.then_body[i]);
             i <- i + 1;
@@ -5501,7 +5611,7 @@ fn ir_emit_stmt(b, stmt) {
 
         // else branch (if any)
         if (has_else) {
-            else_bb <- ir_block(else_lbl);
+            var else_bb <- ir_block(else_lbl);
             ir_fn_add_block(b.func, else_bb);
             b.cur_block <- else_bb;
             i <- 0;
@@ -5515,32 +5625,32 @@ fn ir_emit_stmt(b, stmt) {
         }
 
         // join
-        end_bb <- ir_block(end_lbl);
+        var end_bb <- ir_block(end_lbl);
         ir_fn_add_block(b.func, end_bb);
         b.cur_block <- end_bb;
         return 0;
     }
     if (stmt.node = "WhileStmt") {
-        cond_lbl <- ir_fresh_block_lbl(b, "wc");
-        body_lbl <- ir_fresh_block_lbl(b, "wb");
-        end_lbl  <- ir_fresh_block_lbl(b, "we");
+        var cond_lbl <- ir_fresh_block_lbl(b, "wc");
+        var body_lbl <- ir_fresh_block_lbl(b, "wb");
+        var end_lbl  <- ir_fresh_block_lbl(b, "we");
 
         // jump from current block into the cond block
         ir_set_terminator(b.cur_block, ii_br(cond_lbl));
 
         // cond
-        cond_bb <- ir_block(cond_lbl);
+        var cond_bb <- ir_block(cond_lbl);
         ir_fn_add_block(b.func, cond_bb);
         b.cur_block <- cond_bb;
-        cond <- ir_emit_expr(b, stmt.cond);
-        br_tmp <- ir_fresh_tmp(b, "br");
+        var cond <- ir_emit_expr(b, stmt.cond);
+        var br_tmp <- ir_fresh_tmp(b, "br");
         ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, cond, body_lbl, end_lbl));
 
         // body
-        body_bb <- ir_block(body_lbl);
+        var body_bb <- ir_block(body_lbl);
         ir_fn_add_block(b.func, body_bb);
         b.cur_block <- body_bb;
-        i <- 0;
+        var i <- 0;
         while (i < len(stmt.body)) {
             ir_emit_stmt(b, stmt.body[i]);
             i <- i + 1;
@@ -5550,13 +5660,13 @@ fn ir_emit_stmt(b, stmt) {
         }
 
         // end
-        end_bb <- ir_block(end_lbl);
+        var end_bb <- ir_block(end_lbl);
         ir_fn_add_block(b.func, end_bb);
         b.cur_block <- end_bb;
         return 0;
     }
     if (stmt.node = "Block") {
-        i <- 0;
+        var i <- 0;
         while (i < len(stmt.stmts)) {
             ir_emit_stmt(b, stmt.stmts[i]);
             i <- i + 1;
@@ -5582,13 +5692,13 @@ fn ir_emit_stmt(b, stmt) {
         // counter value leaks into the outer loop's increment, breaking the
         // outer loop's continuation check after a single iteration.
         b.for_idx_counter[0] <- b.for_idx_counter[0] + 1;
-        idx_name <- "_for_idx_" + b.for_idx_counter[0];
+        var idx_name <- "_for_idx_" + b.for_idx_counter[0];
 
-        idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: T.mk_none()};
+        var idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: T.mk_none(), is_decl: true};
         ir_emit_stmt(b, idx_init);
 
         // condition: idx_name < len(coll)
-        cond <- {
+        var cond <- {
             node: "BinOp",
             op: "<",
             left: {node: "Identifier", name: idx_name},
@@ -5596,27 +5706,29 @@ fn ir_emit_stmt(b, stmt) {
         };
 
         // body: x <- coll[idx_name]; <user body>; idx_name <- idx_name + 1;
-        bind_x <- {
+        var bind_x <- {
             node: "Assignment",
             name: stmt.var_name,
             expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: idx_name}},
-            type_ann: T.mk_none()
+            type_ann: T.mk_none(),
+            is_decl: true
         };
-        inc_idx <- {
+        var inc_idx <- {
             node: "Assignment",
             name: idx_name,
             expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: idx_name}, right: {node: "NumberLit", value: 1}},
-            type_ann: T.mk_none()
+            type_ann: T.mk_none(),
+            is_decl: false
         };
-        new_body <- [bind_x];
-        i <- 0;
+        var new_body <- [bind_x];
+        var i <- 0;
         while (i < len(stmt.body)) {
             push(new_body, stmt.body[i]);
             i <- i + 1;
         }
         push(new_body, inc_idx);
 
-        while_stmt <- {node: "WhileStmt", cond: cond, body: new_body};
+        var while_stmt <- {node: "WhileStmt", cond: cond, body: new_body};
         ir_emit_stmt(b, while_stmt);
         return 0;
     }
@@ -5652,28 +5764,28 @@ fn ir_emit_stmt(b, stmt) {
 // call-site-analysis info, run infer_body to populate var_types for this
 // function's locals, then emit. State is restored on the way out.
 fn emit_function_via_ir(nd, mod) {
-    params <- [];
-    i <- 0;
+    var params <- [];
+    var i <- 0;
     while (i < len(nd.params)) {
         push(params, {name: nd.params[i], type: T.mk_int()});
         i <- i + 1;
     }
-    f <- ir_function(nd.name, params, T.mk_int());
+    var f <- ir_function(nd.name, params, T.mk_int());
 
-    ent_bb <- ir_block("entry");
+    var ent_bb <- ir_block("entry");
     ir_fn_add_block(f, ent_bb);
-    b <- ir_builder_new(f, ent_bb, mod);
+    var b <- ir_builder_new(f, ent_bb, mod);
 
     // Save type-tracking state and start fresh for this function's body.
-    old_vars <- alloc_vars[0];
-    old_types <- var_types[0];
-    old_layouts <- struct_layouts[0];
-    old_arr_types <- array_elem_types[0];
+    var old_vars <- alloc_vars[0];
+    var old_types <- var_types[0];
+    var old_layouts <- struct_layouts[0];
+    var old_arr_types <- array_elem_types[0];
     alloc_vars[0] <- [];
     var_types[0] <- [];
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
-    old_fn <- current_fn[0];
+    var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
     // Preserve type info for top-level globals into this function's scope.
@@ -5681,7 +5793,7 @@ fn emit_function_via_ir(nd, mod) {
     // typeof_expr inside the body needs to see e.g. tmp_counter as an int
     // array global, not as `any`, so `prefix + tmp_counter[0]` correctly
     // routes to strcat-with-int-conversion rather than int-add.
-    gi <- 0;
+    var gi <- 0;
     while (gi < len(old_types)) {
         if (is_global(old_types[gi].name)) {
             push(var_types[0], old_types[gi]);
@@ -5705,7 +5817,7 @@ fn emit_function_via_ir(nd, mod) {
     }
 
     // Populate param types from call-site analysis (already run by caller).
-    fi_info <- find_fn(nd.name);
+    var fi_info <- find_fn(nd.name);
     i <- 0;
     while (i < len(nd.params)) {
         if (fi_info != false && i < len(fi_info.param_types)) {
@@ -5725,8 +5837,8 @@ fn emit_function_via_ir(nd, mod) {
     // Prologue: allocate each param's local slot and store the arg into it.
     i <- 0;
     while (i < len(nd.params)) {
-        pname <- nd.params[i];
-        slot <- ir_get_local_slot(b, pname);
+        var pname <- nd.params[i];
+        var slot <- ir_get_local_slot(b, pname);
         ir_push_inst(b.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(slot, T.mk_int())));
         i <- i + 1;
     }
@@ -5739,7 +5851,7 @@ fn emit_function_via_ir(nd, mod) {
     // __main_logic, top-level global names should resolve to globals, so we
     // skip this step there.)
     if (nd.name != "__main_logic") {
-        body_vars <- [];
+        var body_vars <- [];
         collect_vars(nd.body, body_vars);
         i <- 0;
         while (i < len(body_vars)) {
@@ -5889,7 +6001,7 @@ fn llvm_emit_preamble() {
 }
 
 fn llvm_emit_globals(global_names) {
-    i <- 0;
+    var i <- 0;
     while (i < len(global_names)) {
         emit("@g_" + global_names[i] + " = global i64 0");
         i <- i + 1;
@@ -5941,7 +6053,7 @@ fn llvm_emit_main_wrapper() {
 }
 
 fn llvm_link(ll_file: str, exe_file: str): int {
-    clang_cmd <- "";
+    var clang_cmd <- "";
     if (is_win[0] = 1) {
         clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
     } else {
@@ -5969,7 +6081,7 @@ fn compile_via_ir(stmts, backend) {
     scan_call_sites(stmts);
     scan_fn_param_returns(stmts);
 
-    i <- 0;
+    var i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node != "FnDecl") {
             scan_globals(stmts[i]);
@@ -5980,7 +6092,7 @@ fn compile_via_ir(stmts, backend) {
     backend_emit_globals(backend, global_vars);
 
     // Build an Arrow IR module and translate every user FnDecl into it.
-    m <- ir_module();
+    var m <- ir_module();
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
@@ -5992,7 +6104,7 @@ fn compile_via_ir(stmts, backend) {
     // Wrap top-level non-FnDecl stmts into a synthetic __main_logic fn so the
     // same IR translator handles them. The fn returns int; ret 0 is appended
     // by emit_function_via_ir if the body falls off the end without one.
-    top_stmts <- [];
+    var top_stmts <- [];
     i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node != "FnDecl") {
@@ -6000,7 +6112,7 @@ fn compile_via_ir(stmts, backend) {
         }
         i <- i + 1;
     }
-    main_logic_fn <- {
+    var main_logic_fn <- {
         node: "FnDecl",
         name: "__main_logic",
         params: [],
@@ -6037,10 +6149,10 @@ if (args() < 1) {
 }
 
 if (args() > 0) {
-    input_file <- args(0);
+    var input_file <- args(0);
 
     // Parse -o flag
-    out_name <- "";
+    var out_name <- "";
     if (args() > 2) {
         if (args(1) = "-o") {
             out_name <- args(2);
@@ -6049,12 +6161,12 @@ if (args() > 0) {
 
     // Construct the backend. Today there's only one; future flags would
     // pick a different one (e.g. --backend=cranelift).
-    backend <- make_llvm_backend();
+    var backend <- make_llvm_backend();
 
     // Derive base name from input: foo.arrow -> foo
-    base_name <- input_file;
+    var base_name <- input_file;
     if (str_len(input_file) > 6) {
-        suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
+        var suffix <- substring(input_file, str_len(input_file) - 6, str_len(input_file));
         if (suffix = ".arrow") {
             base_name <- substring(input_file, 0, str_len(input_file) - 6);
         }
@@ -6063,15 +6175,15 @@ if (args() > 0) {
     // Set output filenames (platform-dependent extension). All three names
     // are declared in the outer scope first so block-scope rules don't make
     // them die at the end of the branch.
-    exe_file <- "";
-    ll_base <- "";
-    ir_file <- "";
+    var exe_file <- "";
+    var ll_base <- "";
+    var ir_file <- "";
     if (out_name != "") {
         exe_file <- out_name;
         ll_base <- out_name;
         // Strip .exe if present
         if (str_len(out_name) > 4) {
-            ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
+            var ext <- substring(out_name, str_len(out_name) - 4, str_len(out_name));
             if (ext = ".exe") {
                 ll_base <- substring(out_name, 0, str_len(out_name) - 4);
             }
@@ -6086,12 +6198,12 @@ if (args() > 0) {
         }
     }
 
-    source <- read_file(input_file);
+    var source <- read_file(input_file);
 
     toks <- tokenize(source);
     pos[0] <- 0;
     parse_src_file[0] <- input_file;
-    main_ast <- pp();
+    var main_ast <- pp();
     src_filename[0] <- input_file;
 
     // Module resolution runs here in __main_logic where writes to the
@@ -6101,21 +6213,21 @@ if (args() > 0) {
     // imports onto the same work list, rename its decls, accumulate. Repeat
     // until the list drains.
     import_errors <- [];
-    all_paths <- [];                    // dedup of files already loaded
-    all_mod_names <- [];                // namespaces seen anywhere
-    path_canonical <- [];               // [{path, name}] — first name wins per path
+    var all_paths <- [];                    // dedup of files already loaded
+    var all_mod_names <- [];                // namespaces seen anywhere
+    var path_canonical <- [];               // [{path, name}] — first name wins per path
     canonical_for <- [];                // alias-name → canonical mapping
-    work_paths <- [];                   // pending {path, name, line, col}
-    work_dirs <- [];                    // parallel: dir to resolve from
-    all_imported_stmts <- [];           // accumulated, renamed
+    var work_paths <- [];                   // pending {path, name, line, col}
+    var work_dirs <- [];                    // parallel: dir to resolve from
+    var all_imported_stmts <- [];           // accumulated, renamed
 
     // Seed from the main file's own imports, then filter them out.
     main_ast <- extract_imports(main_ast, dirname(input_file), work_paths, work_dirs, all_mod_names);
 
     while (len(work_paths) > 0) {
         // Pop end of list (LIFO ordering — load order matters less than dedup).
-        item <- work_paths[len(work_paths) - 1];
-        item_dir <- work_dirs[len(work_dirs) - 1];
+        var item <- work_paths[len(work_paths) - 1];
+        var item_dir <- work_dirs[len(work_dirs) - 1];
         pop(work_paths);
         pop(work_dirs);
 
@@ -6123,12 +6235,12 @@ if (args() > 0) {
         // try the search-path fallback (the directory containing the arrow
         // executable, where std/ lives). Read the file content once, here,
         // so we can settle on a path before doing any dedup or bookkeeping.
-        resolved_path <- item.path;
-        sub_src <- read_file(resolved_path);
+        var resolved_path <- item.path;
+        var sub_src <- read_file(resolved_path);
         if (len(sub_src) = 0) {
-            exe_dir <- dirname(args(-1));
-            fb_path <- exe_dir + item.raw_path + ".arrow";
-            fb_src <- read_file(fb_path);
+            var exe_dir <- dirname(args(-1));
+            var fb_path <- exe_dir + item.raw_path + ".arrow";
+            var fb_src <- read_file(fb_path);
             if (len(fb_src) > 0) {
                 resolved_path <- fb_path;
                 sub_src <- fb_src;
@@ -6138,13 +6250,13 @@ if (args() > 0) {
         // Dedup: only load each file once. Uses the resolved path so a
         // fallback hit dedups against any future relative-path resolution
         // that lands on the same file.
-        already <- false;
-        existing_canonical <- "";
-        ii <- 0;
+        var already <- false;
+        var existing_canonical <- "";
+        var ii <- 0;
         while (ii < len(all_paths)) {
             if (all_paths[ii] = resolved_path) {
                 already <- true;
-                jj <- 0;
+                var jj <- 0;
                 while (jj < len(path_canonical)) {
                     if (path_canonical[jj].path = resolved_path) {
                         existing_canonical <- path_canonical[jj].name;
@@ -6171,13 +6283,13 @@ if (args() > 0) {
                 toks <- tokenize(sub_src);
                 pos[0] <- 0;
                 parse_src_file[0] <- resolved_path;
-                sub_stmts <- pp();
+                var sub_stmts <- pp();
                 validate_module(sub_stmts, resolved_path);
                 // Sub-imports resolve relative to THIS file's directory.
-                sub_dir <- dirname(resolved_path);
+                var sub_dir <- dirname(resolved_path);
                 sub_stmts <- extract_imports(sub_stmts, sub_dir, work_paths, work_dirs, all_mod_names);
-                renamed <- rename_module(sub_stmts, item.name);
-                kk <- 0;
+                var renamed <- rename_module(sub_stmts, item.name);
+                var kk <- 0;
                 while (kk < len(renamed)) {
                     push(all_imported_stmts, renamed[kk]);
                     kk <- kk + 1;
@@ -6188,8 +6300,8 @@ if (args() > 0) {
 
     // Imported decls go first so scan_fns / scan_globals see them when
     // processing the main module's bodies.
-    combined <- [];
-    ii <- 0;
+    var combined <- [];
+    var ii <- 0;
     while (ii < len(all_imported_stmts)) { push(combined, all_imported_stmts[ii]); ii <- ii + 1; }
     ii <- 0;
     while (ii < len(main_ast)) { push(combined, main_ast[ii]); ii <- ii + 1; }
@@ -6209,16 +6321,16 @@ if (args() > 0) {
         // Parse errors take priority — type errors and import errors are
         // unreliable when the AST is malformed, so report parse problems and
         // stop here.
-        jj <- 0;
+        var jj <- 0;
         while (jj < len(parse_errors)) {
-            e <- parse_errors[jj];
+            var e <- parse_errors[jj];
             print(e.file + ":" + e.line + ":" + e.col + ": parse error: " + e.msg);
             jj <- jj + 1;
         }
         print("--");
         print(len(parse_errors) + " parse error(s). Compilation aborted.");
     } else if (len(import_errors) > 0) {
-        jj <- 0;
+        var jj <- 0;
         while (jj < len(import_errors)) {
             print(import_errors[jj]);
             jj <- jj + 1;
@@ -6226,9 +6338,9 @@ if (args() > 0) {
         print("--");
         print(len(import_errors) + " import error(s). Compilation aborted.");
     } else if (len(scope_errors) > 0) {
-        jj <- 0;
+        var jj <- 0;
         while (jj < len(scope_errors)) {
-            e <- scope_errors[jj];
+            var e <- scope_errors[jj];
             print(input_file + ":" + e.line + ":" + e.col + ": scope error: " + e.msg);
             jj <- jj + 1;
         }
@@ -6243,7 +6355,7 @@ if (args() > 0) {
         } else {
             write_ir_lines(ir_file);
 
-            rc <- backend_link(backend, ir_file, exe_file);
+            var rc <- backend_link(backend, ir_file, exe_file);
             if (rc = 0) {
                 print("Compiled " + exe_file + " successfully!");
                 // Clean up intermediate file (platform-dependent delete command)

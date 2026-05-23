@@ -1,7 +1,7 @@
 // Arrow Lang — For-In Loop Test
 
 // ── Basic for-in over array ─────────────
-nums <- [10, 20, 30, 40, 50];
+var nums <- [10, 20, 30, 40, 50];
 for (n in nums) {
     print(n);
 }
@@ -12,7 +12,7 @@ for (ch in "hello") {
 }
 
 // ── Accumulate in for loop ──────────────
-total <- 0;
+var total <- 0;
 for (x in [1, 2, 3, 4, 5]) {
     total <- total + x;
 }
@@ -36,16 +36,16 @@ fn sum(arr) {
 print(sum([100, 200, 300]));
 
 // ── Count characters ────────────────────
-count <- 0;
+var count <- 0;
 for (c in "abcdefghij") {
     count <- count + 1;
 }
 print(count);
 
 // ── String building with for-in ─────────
-upper <- "";
+var upper <- "";
 for (ch in "abc") {
-    code <- char_code(ch);
+    var code <- char_code(ch);
     upper <- upper + from_char_code(code - 32);
 }
 print(upper);
@@ -57,7 +57,7 @@ for (x in []) {
 print("empty OK");
 
 // ── For-in with computed array ──────────
-squares <- [];
+var squares <- [];
 for (n in [1, 2, 3, 4, 5]) {
     push(squares, n * n);
 }

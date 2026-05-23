@@ -16,8 +16,8 @@ print(mathlib.sum_to(10));       // 55
 print(mathlib.pi);               // 3
 
 // Imported functions compose with local arithmetic.
-r <- 4;
-area <- mathlib.pi * mathlib.square(r);
+var r <- 4;
+var area <- mathlib.pi * mathlib.square(r);
 print(area);                     // 48
 
 // They work inside other expressions too.

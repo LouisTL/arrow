@@ -17,8 +17,8 @@ fn fact(n) {
 }
 
 fn sum_to(n) {
-    total <- 0;
-    i <- 1;
+    var total <- 0;
+    var i <- 1;
     while (i <= n) {
         total <- total + i;
         i <- i + 1;
@@ -27,4 +27,4 @@ fn sum_to(n) {
 }
 
 // A top-level global. Accessible at use sites as `mathlib.pi`.
-pi <- 3;
+var pi <- 3;

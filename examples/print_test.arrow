@@ -28,12 +28,12 @@ print({tags: ["x", "y"], n: 2});     // {tags: ["x", "y"], n: 2}
 print({inner: {a: 1, b: 2}});        // {inner: {a: 1, b: 2}}
 
 // ── Variables, not just literals ──────────
-nums <- [10, 20, 30];
+var nums <- [10, 20, 30];
 print(nums);
 nums[1] <- 99;
 print(nums);                         // [10, 99, 30]
 
-config <- {debug: true, level: 3};
+var config <- {debug: true, level: 3};
 print(config);                       // {debug: true, level: 3}
 
 print("Done!");

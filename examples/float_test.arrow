@@ -35,9 +35,9 @@ print(1.5 != 1.6);           // true
 print(0.1 + 0.2 = 0.3);      // false  ← IEEE: 0.1+0.2 is 0.30000000000000004
 
 // ── Variables ───────────────────────────
-x: float <- 1.5;
+var x: float <- 1.5;
 print(x);
-y <- x + 0.5;
+var y <- x + 0.5;
 print(y);                    // 2.0
 y <- y * 2.0;
 print(y);                    // 4.0
@@ -46,19 +46,19 @@ print(y);                    // 4.0
 // Storing an int into a float-annotated slot works (it's just int storage);
 // the next arithmetic site decides whether to do int or float math based on
 // the static type, so we use a float literal to force promotion.
-a: float <- 3;
-b: float <- a + 0.5;
+var a: float <- 3;
+var b: float <- a + 0.5;
 print(b);                    // 3.5
 
 // ── Arrays of floats ────────────────────
-xs: [float] <- [0.5, 1.5, 2.5];
+var xs: [float] <- [0.5, 1.5, 2.5];
 print(xs);                   // [0.5, 1.5, 2.5]
 print(xs[1]);                // 1.5
 xs[0] <- 10.0;
 print(xs);                   // [10.0, 1.5, 2.5]
 
 // ── Struct field of float ───────────────
-pt <- {x: 1.5, y: 2.5};
+var pt <- {x: 1.5, y: 2.5};
 print(pt);                   // {x: 1.5, y: 2.5}
 
 // ── Annotated function returning float ──

@@ -1,5 +1,5 @@
 // Three intentional type errors
-x: int <- "this is a string, not int";
+var x: int <- "this is a string, not int";
 
 fn add(a: int, b: int): int {
     return a + b;

@@ -64,6 +64,7 @@ class TokenType(Enum):
     FN        = auto()
     RETURN    = auto()
     IMPORT    = auto()
+    VAR       = auto()
 
     EOF       = auto()
 
@@ -88,6 +89,7 @@ KEYWORDS = {
     "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
     "true": TokenType.BOOL, "false": TokenType.BOOL,
     "import": TokenType.IMPORT,
+    "var": TokenType.VAR,
 }
 
 
@@ -300,6 +302,9 @@ class UnaryOp:
 class Assignment:
     name: str
     expr: Any
+    is_decl: bool = False  # True when introduced via `var`
+    line: int = 0
+    col: int = 0
 
 @dataclass
 class PrintStmt:
@@ -467,6 +472,8 @@ class Parser:
             return self._print_stmt()
         if tok.type == TokenType.IMPORT:
             return self._import_stmt()
+        if tok.type == TokenType.VAR:
+            return self._var_decl()
         if tok.type == TokenType.LBRACE:
             # Distinguish block from struct literal used as expression stmt
             if self._is_struct_literal():
@@ -558,7 +565,8 @@ class Parser:
             self._eat(TokenType.IDENT)
 
     def _assignment(self, typed: bool = False) -> Assignment:
-        name = self._eat(TokenType.IDENT).value
+        ident_tok = self._eat(TokenType.IDENT)
+        name = ident_tok.value
         if typed:
             # Skip ': type' — interpreter ignores type annotations
             self._eat(TokenType.COLON)
@@ -566,7 +574,21 @@ class Parser:
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
-        return Assignment(name, expr)
+        return Assignment(name, expr, is_decl=False, line=ident_tok.line, col=ident_tok.col)
+
+    def _var_decl(self) -> Assignment:
+        var_tok = self._eat(TokenType.VAR)
+        ident_tok = self._eat(TokenType.IDENT)
+        name = ident_tok.value
+        # Optional type annotation: var x: int <- expr;
+        if self._current().type == TokenType.COLON:
+            self._eat(TokenType.COLON)
+            self._skip_type_ann()
+        self._eat(TokenType.ARROW)
+        expr = self._expression()
+        self._eat(TokenType.SEMI)
+        # Track at the `var` keyword position so error messages point there.
+        return Assignment(name, expr, is_decl=True, line=var_tok.line, col=var_tok.col)
 
     def _print_stmt(self) -> PrintStmt:
         self._eat(TokenType.PRINT)
@@ -879,12 +901,12 @@ class Environment:
     def __init__(self, parent: 'Environment | None' = None, is_fn_root: bool = False):
         self.vars: dict[str, Any] = {}
         self.parent = parent
-        # Function-boundary marker: `set` walks up the chain to find an
-        # existing binding, but stops at a function root. So assignments
-        # never reach across into a captured closure's scope — assignment
-        # to a captured name creates a local instead, preserving the
-        # "captures are by-value snapshots" convention that the native
-        # compiler also uses. Reads (`get`) walk freely across the boundary.
+        # Function-boundary marker: assignment walks up looking for an
+        # existing binding to mutate, but stops at a function root so it
+        # cannot write into a closure's captured scope. Reads (`get`) walk
+        # freely across the boundary so closures can still see captured
+        # values; assignments create or error instead, preserving Arrow's
+        # by-snapshot closure convention.
         self.is_fn_root = is_fn_root
 
     def get(self, name: str):
@@ -894,28 +916,38 @@ class Environment:
             return self.parent.get(name)
         raise RuntimeError_(f"Undefined variable '{name}'")
 
-    def set(self, name: str, value: Any):
-        # Block-scoping semantics with a function boundary: walk up looking
-        # for an existing binding to mutate, but stop if we'd cross out of
-        # the current function. If no binding is found within the function,
-        # declare a fresh local in the current scope.
+    def declare(self, name: str, value: Any):
+        # Always create a fresh binding in the *current* scope. Error if a
+        # name with the same identifier already exists in this same scope
+        # (catches accidental redeclaration). Outer-scope bindings of the
+        # same name are shadowed, not errored — that's intentional.
+        if name in self.vars:
+            raise RuntimeError_(f"redeclaration of '{name}' in the same scope")
+        self.vars[name] = value
+
+    def assign(self, name: str, value: Any) -> bool:
+        # Walk up looking for an existing binding to mutate, stopping at
+        # the function boundary. Returns True if a binding was found and
+        # updated, False otherwise — the caller decides whether to fall
+        # back to globals or error.
         env = self
         while env is not None:
             if name in env.vars:
                 env.vars[name] = value
-                return
+                return True
             if env.is_fn_root:
-                break
+                return False
             env = env.parent
-        self.vars[name] = value
+        return False
 
-    def declare(self, name: str, value: Any):
-        # Always create a fresh binding in the *current* scope, even if a
-        # name with the same identifier exists in an outer scope. Used for
-        # function parameters and for-in loop variables — those should not
-        # accidentally mutate an enclosing variable that happens to share
-        # their name.
-        self.vars[name] = value
+    def set(self, name: str, value: Any):
+        # Legacy auto-declare path kept around for any remaining call sites
+        # during the var-keyword migration. New code goes through declare
+        # or assign explicitly. Behaviour mirrors the original set(): walk
+        # up within the function to find a binding, otherwise drop a fresh
+        # one in the current scope.
+        if not self.assign(name, value):
+            self.vars[name] = value
 
 
 class Function:
@@ -959,6 +991,11 @@ BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_fil
 class Interpreter:
     def __init__(self):
         self.env = Environment()
+        # The top-level scope is kept separately so that an assignment from
+        # inside a function body can fall through to a global binding when
+        # there's no matching local. Without this hook, the function-root
+        # boundary on assign() would block writes to globals — Item 1.
+        self.globals = self.env
         self.output: list[str] = []
 
     def run(self, program: Program):
@@ -978,12 +1015,33 @@ class Interpreter:
 
     def _exec(self, node):
         match node:
-            case Assignment(name, expr):
+            case Assignment(name, expr, is_decl, line, col):
                 val = self._eval(expr)
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
-                    val.closure.set(name, val)
-                self.env.set(name, val)
+                if is_decl:
+                    # `var x <- expr;` — fresh binding in current scope.
+                    # Redeclaration in the same scope is an error.
+                    try:
+                        self.env.declare(name, val)
+                    except RuntimeError_ as e:
+                        # Re-raise with position info for better diagnostics.
+                        raise RuntimeError_(f"{e} at line {line}, col {col}")
+                else:
+                    # `x <- expr;` — reassignment. Walks up within the
+                    # current function looking for an existing binding,
+                    # then falls through to globals (Item 1: functions can
+                    # write to top-level state). Errors if the name is
+                    # unknown — `<-` to an undeclared variable is no longer
+                    # silently treated as a declaration.
+                    if not self.env.assign(name, val):
+                        if name in self.globals.vars:
+                            self.globals.vars[name] = val
+                        else:
+                            raise RuntimeError_(
+                                f"cannot reassign undeclared variable '{name}' "
+                                f"at line {line}, col {col} — did you mean `var {name} <- ...`?"
+                            )
 
             case IndexAssign(obj, index, value):
                 target = self._eval(obj)

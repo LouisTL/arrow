@@ -27,8 +27,8 @@ fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
 fn type_str(t): str {
     if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
     if (t.kind = "struct_lit") {
-        s <- "{";
-        i <- 0;
+        var s <- "{";
+        var i <- 0;
         while (i < len(t.fields)) {
             if (i > 0) { s <- s + ", "; }
             s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
@@ -42,7 +42,7 @@ fn type_str(t): str {
 // Look up a field's type in a struct_lit fields list. Returns mk_none()
 // if no field with that name exists — callers treat none as "missing".
 fn struct_field_type(fields, name: str) {
-    i <- 0;
+    var i <- 0;
     while (i < len(fields)) {
         if (fields[i].name = name) { return fields[i].type; }
         i <- i + 1;
@@ -57,9 +57,9 @@ fn type_eq(a, b): int {
     if (a.kind = "array") { return type_eq(a.elem, b.elem); }
     if (a.kind = "struct_lit") {
         if (len(a.fields) != len(b.fields)) { return false; }
-        i <- 0;
+        var i <- 0;
         while (i < len(a.fields)) {
-            bt <- struct_field_type(b.fields, a.fields[i].name);
+            var bt <- struct_field_type(b.fields, a.fields[i].name);
             if (bt.kind = "none") { return false; }
             if (!type_eq(a.fields[i].type, bt)) { return false; }
             i <- i + 1;
@@ -86,11 +86,11 @@ fn types_join(a, b) {
     }
     if (a.kind = "struct_lit") {
         if (len(a.fields) != len(b.fields)) { return mk_any(); }
-        out_fields <- [];
-        i <- 0;
+        var out_fields <- [];
+        var i <- 0;
         while (i < len(a.fields)) {
-            af <- a.fields[i];
-            bf <- b.fields[i];
+            var af <- a.fields[i];
+            var bf <- b.fields[i];
             if (af.name != bf.name) { return mk_any(); }
             push(out_fields, {name: af.name, type: types_join(af.type, bf.type)});
             i <- i + 1;
@@ -126,10 +126,10 @@ fn types_compat(annot, actual): int {
     if (annot.kind = "struct_lit" && actual.kind = "struct_lit") {
         // Width subtyping: every field declared in annot must appear in
         // actual with a compatible type. Extra fields in actual are fine.
-        i <- 0;
+        var i <- 0;
         while (i < len(annot.fields)) {
-            af <- annot.fields[i];
-            bt <- struct_field_type(actual.fields, af.name);
+            var af <- annot.fields[i];
+            var bt <- struct_field_type(actual.fields, af.name);
             if (bt.kind = "none") { return false; }
             if (!types_compat(af.type, bt)) { return false; }
             i <- i + 1;

@@ -37,7 +37,7 @@ print((1 = 2) || (3 = 3));         // true
 print(!(1 = 2));                   // true
 
 // ── bool variable annotations ────────────
-done: bool <- false;
+var done: bool <- false;
 print(done);
 done <- true;
 print(done);
@@ -67,7 +67,7 @@ describe(0);
 //  this test just confirms the result, not the side-effect ordering.)
 fn even(n) { return n % 2 = 0; }
 fn pos(n)  { return n > 0; }
-e: bool <- even(4) && pos(4);
+var e: bool <- even(4) && pos(4);
 print(e);              // true
 e <- even(3) && pos(3);
 print(e);              // false

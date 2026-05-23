@@ -14,7 +14,7 @@ print(from_char_code(48));
 print(from_char_code(33));
 
 // ── substring ───────────────────────────
-s <- "Hello, World!";
+var s <- "Hello, World!";
 print(substring(s, 0, 5));
 print(substring(s, 7, 12));
 print(substring(s, 0, 13));
@@ -26,17 +26,17 @@ print(char_at("hello", 4));
 
 // ── Character classification ────────────
 fn is_digit(ch) {
-    c <- char_code(ch);
+    var c <- char_code(ch);
     return c >= 48 && c <= 57;
 }
 
 fn is_alpha(ch) {
-    c <- char_code(ch);
+    var c <- char_code(ch);
     return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
 fn is_whitespace(ch) {
-    c <- char_code(ch);
+    var c <- char_code(ch);
     return c = 32 || c = 9 || c = 10 || c = 13;
 }
 
@@ -48,8 +48,8 @@ print(is_whitespace(" "));
 print(is_whitespace("x"));
 
 // ── Build a string character by character ─
-result <- "";
-i <- 65;
+var result <- "";
+var i <- 65;
 while (i <= 70) {
     result <- result + from_char_code(i);
     i <- i + 1;
@@ -76,7 +76,7 @@ fn parse_int(s) {
     result <- 0;
     i <- 0;
     while (i < str_len(s)) {
-        c <- char_code(char_at(s, i));
+        var c <- char_code(char_at(s, i));
         if (c >= 48 && c <= 57) {
             result <- result * 10 + (c - 48);
         }

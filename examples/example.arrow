@@ -2,8 +2,8 @@
 // Exercises all features that the LLVM backend supports
 
 // ── Variables & arithmetic ──
-x <- 10;
-y <- 3;
+var x <- 10;
+var y <- 3;
 print(x + y);
 print(x - y);
 print(x * y);
@@ -11,12 +11,12 @@ print(x / y);
 print(x % y);
 
 // ── String concatenation ──
-name <- "Arrow";
+var name <- "Arrow";
 print("Hello from " + name + " Lang!");
 print("x = " + x);
 
 // ── Booleans & comparisons ──
-flag <- true;
+var flag <- true;
 print(flag);
 print(x > y);
 print(x = y);
@@ -29,7 +29,7 @@ if (x > 5) {
 }
 
 // ── Nested if / else-if ──
-val <- 42;
+var val <- 42;
 if (val < 0) {
     print("negative");
 } else if (val = 0) {
@@ -39,14 +39,14 @@ if (val < 0) {
 }
 
 // ── While loop — countdown ──
-i <- 5;
+var i <- 5;
 while (i > 0) {
     print("countdown: " + i);
     i <- i - 1;
 }
 
 // ── FizzBuzz 1-15 ──
-n <- 1;
+var n <- 1;
 while (n <= 15) {
     if (n % 15 = 0) {
         print("FizzBuzz");

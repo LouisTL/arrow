@@ -24,6 +24,6 @@ fn double(n: int) {
 // Use them all
 print(add(2, 3));
 print(greet("world"));
-r <- find("x");
+var r <- find("x");
 print(double(10));
 print("done");

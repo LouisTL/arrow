@@ -33,15 +33,15 @@ print(exclaim("wow"));
 // === Typed declarations ===
 
 // Test 6: Typed int declaration
-x: int <- 42;
+var x: int <- 42;
 print(x);
 
 // Test 7: Typed string declaration
-msg: str <- "typed";
+var msg: str <- "typed";
 print(msg);
 
 // Test 8: Untyped (old style, still works)
-count <- 10;
+var count <- 10;
 print(count);
 
 // Test 9: Reassignment after typed declaration
@@ -50,12 +50,12 @@ print(x);
 
 // Test 10: Typed declaration inside function
 fn make_greeting(who: str): str {
-    result: str <- "hi " + who;
+    var result: str <- "hi " + who;
     return result;
 }
 print(make_greeting("world"));
 
 // Test 11: Mix of typed and untyped
-old_style <- 99;
-new_style: int <- 100;
+var old_style <- 99;
+var new_style: int <- 100;
 print(old_style + new_style);

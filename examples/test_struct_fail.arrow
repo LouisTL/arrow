@@ -1,10 +1,10 @@
 // Should produce multiple struct-related type errors
 
 // 1. Wrong field type: x should be int, given str
-bad1: {x: int, y: int} <- {x: "hello", y: 4};
+var bad1: {x: int, y: int} <- {x: "hello", y: 4};
 
 // 2. Missing field: needs y but only has x
-bad2: {x: int, y: int} <- {x: 5};
+var bad2: {x: int, y: int} <- {x: 5};
 
 // 3. Function parameter type mismatch
 fn dist(p: {x: int, y: int}): int {

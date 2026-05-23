@@ -1,10 +1,10 @@
 // Array type annotations should parse and run (interpreter ignores types)
-nums: [int] <- [1, 2, 3];
-words: [str] <- ["hi", "there"];
-nested: [[int]] <- [[1, 2], [3, 4]];
+var nums: [int] <- [1, 2, 3];
+var words: [str] <- ["hi", "there"];
+var nested: [[int]] <- [[1, 2], [3, 4]];
 
 fn sum(xs: [int]): int {
-    total: int <- 0;
+    var total: int <- 0;
     for (n in xs) {
         total <- total + n;
     }

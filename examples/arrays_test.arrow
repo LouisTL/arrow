@@ -2,7 +2,7 @@
 // Tests array features that work with the LLVM backend.
 
 // Array literal and printing
-nums <- [10, 20, 30, 40, 50];
+var nums <- [10, 20, 30, 40, 50];
 print(nums);
 
 // Index access
@@ -14,7 +14,7 @@ nums[2] <- 99;
 print(nums);
 
 // Empty array + push
-items <- [];
+var items <- [];
 push(items, 100);
 push(items, 200);
 push(items, 300);
@@ -22,16 +22,16 @@ print(items);
 print(len(items));
 
 // Pop
-last <- pop(items);
+var last <- pop(items);
 print(last);
 print(items);
 
 // Dynamic index
-i <- 3;
+var i <- 3;
 print(nums[i]);
 
 // Loop over array
-j <- 0;
+var j <- 0;
 while (j < len(nums)) {
     print(nums[j]);
     j <- j + 1;
@@ -39,7 +39,7 @@ while (j < len(nums)) {
 
 // Sum function with array
 fn sum(arr) {
-    total <- 0;
+    var total <- 0;
     i <- 0;
     while (i < len(arr)) {
         total <- total + arr[i];
@@ -51,13 +51,13 @@ print(sum([1, 2, 3, 4, 5]));
 
 // Bubble sort
 fn sort(arr) {
-    n <- len(arr);
+    var n <- len(arr);
     i <- 0;
     while (i < n) {
         j <- 0;
         while (j < n - i - 1) {
             if (arr[j] > arr[j + 1]) {
-                tmp <- arr[j];
+                var tmp <- arr[j];
                 arr[j] <- arr[j + 1];
                 arr[j + 1] <- tmp;
             }
@@ -68,13 +68,13 @@ fn sort(arr) {
     return arr;
 }
 
-unsorted <- [5, 3, 8, 1, 9, 2, 7, 4, 6];
+var unsorted <- [5, 3, 8, 1, 9, 2, 7, 4, 6];
 sort(unsorted);
 print(unsorted);
 
 // Build array in a loop
-squares <- [];
-k <- 0;
+var squares <- [];
+var k <- 0;
 while (k < 6) {
     push(squares, k * k);
     k <- k + 1;
