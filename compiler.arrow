@@ -216,7 +216,7 @@ fn ppm(){
     if(ci("FLOAT")){v<-cv();adv();return{node:"FloatLit",value:v};}
     if(ci("STRING")){v<-cv();adv();return{node:"StringLit",value:v};}
     if(ci("BOOL")){v<-cv();adv();return{node:"BoolLit",value:v};}
-    if(ci("IDENT")){v<-cv();adv();return{node:"Identifier",name:v};}
+    if(ci("IDENT")){ln<-toks[pos[0]].line;cl<-toks[pos[0]].col;v<-cv();adv();return{node:"Identifier",name:v,line:ln,col:cl};}
     if(ci("LBRACKET")){eat("LBRACKET");el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
     if(ci("LBRACE")){eat("LBRACE");fs<-[];if(!ci("RBRACE")){k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
     if(ci("LPAREN")){eat("LPAREN");e<-pe();eat("RPAREN");return e;}
@@ -1874,6 +1874,7 @@ fn infer_body(stmts) {
                     // type. Once we have a concrete element type, future
                     // pushes use types_join which correctly collapses to any
                     // if they conflict.
+                    new_elem <- T.mk_any();
                     if (cur_t.elem.kind = "any") {
                         new_elem <- val_t;
                     } else {
@@ -1901,6 +1902,299 @@ src_filename <- ["<unknown>"];
 
 fn report_error(line: int, col: int, msg: str) {
     push(type_errors, {line: line, col: col, msg: msg});
+}
+
+// ═══════════════════════════════════════════
+//  SCOPE CHECKER
+//  Enforces block-scope semantics by rejecting identifier reads that
+//  refer to names not currently in scope. Mirrors the interpreter's
+//  Environment chain: `<-` walks up scopes to find an existing binding
+//  or declares in the current one; identifier reads must resolve to a
+//  binding in some enclosing scope (within the current function), an
+//  outer captured scope (across closure boundaries), a global, a
+//  top-level function name, or a builtin. Otherwise: scope error.
+// ═══════════════════════════════════════════
+
+scope_errors <- [];
+
+fn report_scope_error(line: int, col: int, msg: str) {
+    push(scope_errors, {line: line, col: col, msg: msg});
+}
+
+// Names that always resolve regardless of scope: builtins, arena/arrow
+// runtime helpers, etc. Hard-coded list — the alternative would be
+// threading a registry, but builtins don't change often enough to warrant
+// the extra machinery.
+fn is_builtin_name(n: str): int {
+    return n = "print" || n = "len" || n = "push" || n = "pop" || n = "keys"
+        || n = "read_file" || n = "write_file" || n = "append_file" || n = "input"
+        || n = "char_at" || n = "char_code" || n = "from_char_code"
+        || n = "substring" || n = "str_len"
+        || n = "is_digit" || n = "is_alpha" || n = "is_alnum"
+        || n = "exec_cmd" || n = "args"
+        || n = "true" || n = "false";
+}
+
+// Check if `name` is declared in any scope in the given stack. Each scope
+// is a flat list of declared name strings. We walk inner-to-outer.
+fn scope_stack_has(scopes, name: str): int {
+    i <- len(scopes) - 1;
+    while (i >= 0) {
+        names <- scopes[i];
+        j <- 0;
+        while (j < len(names)) {
+            if (names[j] = name) { return true; }
+            j <- j + 1;
+        }
+        i <- i - 1;
+    }
+    return false;
+}
+
+// Resolution lookup for an identifier read: search the local fn's scope
+// stack, then the captured outer scopes (one entry per enclosing fn), then
+// globals, then top-level function names, then builtins.
+fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
+    if (scope_stack_has(fn_scopes, name)) { return true; }
+    // captured is a list-of-scope-stacks for enclosing closures
+    ci <- 0;
+    while (ci < len(captured)) {
+        if (scope_stack_has(captured[ci], name)) { return true; }
+        ci <- ci + 1;
+    }
+    if (name_in(globals_set, name)) { return true; }
+    if (name_in(fn_names, name)) { return true; }
+    if (is_builtin_name(name)) { return true; }
+    return false;
+}
+
+// Declare `name` in the innermost scope of `fn_scopes` if not already
+// resolvable within the current function. (Doesn't cross closure boundary
+// — that's the function-root rule from the interpreter.)
+fn scope_declare(fn_scopes, name: str) {
+    if (scope_stack_has(fn_scopes, name)) { return false; }
+    push(fn_scopes[len(fn_scopes) - 1], name);
+    return false;
+}
+
+// Walk an expression checking that every Identifier resolves. Recurses
+// into nested expressions; for ArrowFn, walks into the closure body with
+// a fresh fn_scopes and the current fn_scopes appended to captured.
+fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
+    if (e.node = "Identifier") {
+        if (!scope_resolves(e.name, fn_scopes, captured, globals_set, fn_names)) {
+            ln <- 0;
+            cl <- 0;
+            if (e.line != false) { ln <- e.line; }
+            if (e.col != false) { cl <- e.col; }
+            report_scope_error(ln, cl, "undefined variable '" + e.name + "'");
+        }
+        return false;
+    }
+    if (e.node = "BinOp") {
+        scope_check_expr(e.left, fn_scopes, captured, globals_set, fn_names);
+        scope_check_expr(e.right, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (e.node = "UnaryOp") {
+        scope_check_expr(e.operand, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (e.node = "CallExpr") {
+        scope_check_expr(e.callee, fn_scopes, captured, globals_set, fn_names);
+        j <- 0;
+        while (j < len(e.args)) {
+            scope_check_expr(e.args[j], fn_scopes, captured, globals_set, fn_names);
+            j <- j + 1;
+        }
+        return false;
+    }
+    if (e.node = "IndexExpr") {
+        scope_check_expr(e.obj, fn_scopes, captured, globals_set, fn_names);
+        scope_check_expr(e.index, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (e.node = "DotExpr") {
+        // The base must resolve; .field is just a field name, no scope check.
+        scope_check_expr(e.obj, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (e.node = "ArrayLit") {
+        j <- 0;
+        while (j < len(e.elements)) {
+            scope_check_expr(e.elements[j], fn_scopes, captured, globals_set, fn_names);
+            j <- j + 1;
+        }
+        return false;
+    }
+    if (e.node = "StructLit") {
+        j <- 0;
+        while (j < len(e.fields)) {
+            scope_check_expr(e.fields[j].val, fn_scopes, captured, globals_set, fn_names);
+            j <- j + 1;
+        }
+        return false;
+    }
+    if (e.node = "ArrowFn") {
+        // Step into the closure body. Reads in there can still see the
+        // outer fn's scopes (push current fn_scopes onto captured), but
+        // writes don't reach across — give the closure its own fn_scopes
+        // initialized with just its parameters.
+        new_captured <- [];
+        ci <- 0;
+        while (ci < len(captured)) { push(new_captured, captured[ci]); ci <- ci + 1; }
+        push(new_captured, fn_scopes);
+        new_fn_scopes <- [[]];
+        j <- 0;
+        while (j < len(e.params)) {
+            scope_declare(new_fn_scopes, e.params[j]);
+            j <- j + 1;
+        }
+        if (e.is_expr) {
+            // Expression body — single expression.
+            scope_check_expr(e.body, new_fn_scopes, new_captured, globals_set, fn_names);
+        } else {
+            // Block body — list of statements.
+            scope_check_stmts(e.body, new_fn_scopes, new_captured, globals_set, fn_names);
+        }
+        return false;
+    }
+    // Literals (NumberLit, StringLit, BoolLit) have no identifier reads.
+    return false;
+}
+
+fn scope_check_stmts(stmts, fn_scopes, captured, globals_set, fn_names) {
+    i <- 0;
+    while (i < len(stmts)) {
+        scope_check_stmt(stmts[i], fn_scopes, captured, globals_set, fn_names);
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
+    if (s.node = "Assignment") {
+        // RHS evaluated before LHS is bound, so check expression first.
+        scope_check_expr(s.expr, fn_scopes, captured, globals_set, fn_names);
+        scope_declare(fn_scopes, s.name);
+        return false;
+    }
+    if (s.node = "IndexAssign") {
+        scope_check_expr(s.obj, fn_scopes, captured, globals_set, fn_names);
+        scope_check_expr(s.index, fn_scopes, captured, globals_set, fn_names);
+        scope_check_expr(s.value, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (s.node = "DotAssign") {
+        scope_check_expr(s.obj, fn_scopes, captured, globals_set, fn_names);
+        scope_check_expr(s.value, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (s.node = "PrintStmt") {
+        scope_check_expr(s.expr, fn_scopes, captured, globals_set, fn_names);
+        return false;
+    }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) {
+            scope_check_expr(s.expr, fn_scopes, captured, globals_set, fn_names);
+        }
+        return false;
+    }
+    if (s.node = "IfStmt") {
+        scope_check_expr(s.cond, fn_scopes, captured, globals_set, fn_names);
+        push(fn_scopes, []);
+        scope_check_stmts(s.then_body, fn_scopes, captured, globals_set, fn_names);
+        pop(fn_scopes);
+        push(fn_scopes, []);
+        scope_check_stmts(s.else_body, fn_scopes, captured, globals_set, fn_names);
+        pop(fn_scopes);
+        return false;
+    }
+    if (s.node = "WhileStmt") {
+        scope_check_expr(s.cond, fn_scopes, captured, globals_set, fn_names);
+        push(fn_scopes, []);
+        scope_check_stmts(s.body, fn_scopes, captured, globals_set, fn_names);
+        pop(fn_scopes);
+        return false;
+    }
+    if (s.node = "ForInStmt") {
+        scope_check_expr(s.iterable, fn_scopes, captured, globals_set, fn_names);
+        // Push body scope with loop variable already declared in it.
+        push(fn_scopes, [s.var_name]);
+        scope_check_stmts(s.body, fn_scopes, captured, globals_set, fn_names);
+        pop(fn_scopes);
+        return false;
+    }
+    if (s.node = "FnDecl") {
+        // Nested fn declaration. Treat its body as a fresh fn boundary.
+        scope_check_fn(s, captured, globals_set, fn_names, fn_scopes);
+        scope_declare(fn_scopes, s.name);
+        return false;
+    }
+    if (s.node = "Block") {
+        push(fn_scopes, []);
+        scope_check_stmts(s.stmts, fn_scopes, captured, globals_set, fn_names);
+        pop(fn_scopes);
+        return false;
+    }
+    // Bare expression statement.
+    scope_check_expr(s, fn_scopes, captured, globals_set, fn_names);
+    return false;
+}
+
+// Check a single function declaration with its own fresh fn_scopes.
+fn scope_check_fn(fn_decl, outer_captured, globals_set, fn_names, outer_fn_scopes) {
+    new_captured <- [];
+    if (outer_captured != false) {
+        ci <- 0;
+        while (ci < len(outer_captured)) { push(new_captured, outer_captured[ci]); ci <- ci + 1; }
+    }
+    // Nested function declarations see their enclosing function's locals
+    // as captured (read-only across the fn boundary, just like closures).
+    if (outer_fn_scopes != false) { push(new_captured, outer_fn_scopes); }
+    fn_scopes <- [[]];
+    i <- 0;
+    while (i < len(fn_decl.params)) {
+        scope_declare(fn_scopes, fn_decl.params[i]);
+        i <- i + 1;
+    }
+    scope_check_stmts(fn_decl.body, fn_scopes, new_captured, globals_set, fn_names);
+    return false;
+}
+
+// Entry point: collect globals + top-level fn names, then check every
+// FnDecl. Top-level assignments and references are checked too so a
+// program that does `print(undeclared)` at top level fails cleanly.
+fn scope_check_program(stmts) {
+    // First pass: collect every top-level FnDecl name and every top-level
+    // Assignment target. Both are visible from any function body.
+    globals_set <- [];
+    fn_names <- [];
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "FnDecl") {
+            if (!name_in(fn_names, s.name)) { push(fn_names, s.name); }
+        }
+        if (s.node = "Assignment") {
+            if (!name_in(globals_set, s.name)) { push(globals_set, s.name); }
+        }
+        i <- i + 1;
+    }
+    // Second pass: check every FnDecl body, and check top-level non-FnDecl
+    // statements as a synthetic "main" with globals_set as its scope.
+    top_scopes <- [globals_set];   // top-level decls share one big scope
+    i <- 0;
+    while (i < len(stmts)) {
+        s <- stmts[i];
+        if (s.node = "FnDecl") {
+            scope_check_fn(s, false, globals_set, fn_names, false);
+        } else {
+            scope_check_stmt(s, top_scopes, [], globals_set, fn_names);
+        }
+        i <- i + 1;
+    }
+    return false;
 }
 
 fn check_body(stmts) {
@@ -5647,6 +5941,7 @@ fn llvm_emit_main_wrapper() {
 }
 
 fn llvm_link(ll_file: str, exe_file: str): int {
+    clang_cmd <- "";
     if (is_win[0] = 1) {
         clang_cmd <- "clang " + ll_file + " -o " + exe_file + " -O2 -Wno-override-module -Xlinker /STACK:67108864";
     } else {
@@ -5765,7 +6060,12 @@ if (args() > 0) {
         }
     }
 
-    // Set output filenames (platform-dependent extension)
+    // Set output filenames (platform-dependent extension). All three names
+    // are declared in the outer scope first so block-scope rules don't make
+    // them die at the end of the branch.
+    exe_file <- "";
+    ll_base <- "";
+    ir_file <- "";
     if (out_name != "") {
         exe_file <- out_name;
         ll_base <- out_name;
@@ -5899,6 +6199,12 @@ if (args() > 0) {
     // module bodies (the latter may have nested calls to `mod.sym`).
     main_rewrite_stmts(combined, all_mod_names);
 
+    // Run the static scope check before type-checking and codegen. Scope
+    // errors are reported with their own priority — between import errors
+    // and type errors. They typically signal a leaked variable from a
+    // block (e.g. declared in an if branch, used outside).
+    scope_check_program(combined);
+
     if (len(parse_errors) > 0) {
         // Parse errors take priority — type errors and import errors are
         // unreliable when the AST is malformed, so report parse problems and
@@ -5919,6 +6225,15 @@ if (args() > 0) {
         }
         print("--");
         print(len(import_errors) + " import error(s). Compilation aborted.");
+    } else if (len(scope_errors) > 0) {
+        jj <- 0;
+        while (jj < len(scope_errors)) {
+            e <- scope_errors[jj];
+            print(input_file + ":" + e.line + ":" + e.col + ": scope error: " + e.msg);
+            jj <- jj + 1;
+        }
+        print("--");
+        print(len(scope_errors) + " scope error(s). Compilation aborted.");
     } else if (len(type_errors) > 0) {
         print_type_errors();
     } else {

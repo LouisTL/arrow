@@ -876,9 +876,16 @@ class RuntimeError_(Exception):
 
 
 class Environment:
-    def __init__(self, parent: 'Environment | None' = None):
+    def __init__(self, parent: 'Environment | None' = None, is_fn_root: bool = False):
         self.vars: dict[str, Any] = {}
         self.parent = parent
+        # Function-boundary marker: `set` walks up the chain to find an
+        # existing binding, but stops at a function root. So assignments
+        # never reach across into a captured closure's scope — assignment
+        # to a captured name creates a local instead, preserving the
+        # "captures are by-value snapshots" convention that the native
+        # compiler also uses. Reads (`get`) walk freely across the boundary.
+        self.is_fn_root = is_fn_root
 
     def get(self, name: str):
         if name in self.vars:
@@ -888,6 +895,26 @@ class Environment:
         raise RuntimeError_(f"Undefined variable '{name}'")
 
     def set(self, name: str, value: Any):
+        # Block-scoping semantics with a function boundary: walk up looking
+        # for an existing binding to mutate, but stop if we'd cross out of
+        # the current function. If no binding is found within the function,
+        # declare a fresh local in the current scope.
+        env = self
+        while env is not None:
+            if name in env.vars:
+                env.vars[name] = value
+                return
+            if env.is_fn_root:
+                break
+            env = env.parent
+        self.vars[name] = value
+
+    def declare(self, name: str, value: Any):
+        # Always create a fresh binding in the *current* scope, even if a
+        # name with the same identifier exists in an outer scope. Used for
+        # function parameters and for-in loop variables — those should not
+        # accidentally mutate an enclosing variable that happens to share
+        # their name.
         self.vars[name] = value
 
 
@@ -938,6 +965,17 @@ class Interpreter:
         for stmt in program.statements:
             self._exec(stmt)
 
+    def _exec_block(self, stmts):
+        """Run a sequence of statements in a fresh child scope. Bindings
+        introduced inside the block die when this returns, which is the
+        whole point of block scoping."""
+        outer = self.env
+        self.env = Environment(parent=outer)
+        try:
+            for s in stmts: self._exec(s)
+        finally:
+            self.env = outer
+
     def _exec(self, node):
         match node:
             case Assignment(name, expr):
@@ -973,34 +1011,48 @@ class Interpreter:
                 self.output.append(text)
 
             case IfStmt(cond, then_body, else_body):
+                # The condition is evaluated in the enclosing scope. Each
+                # branch body is its own block, so declarations inside it
+                # die at the closing brace.
                 if self._truthy(self._eval(cond)):
-                    for s in then_body: self._exec(s)
+                    self._exec_block(then_body)
                 elif else_body:
-                    for s in else_body: self._exec(s)
+                    self._exec_block(else_body)
 
             case WhileStmt(cond, body):
+                # Condition stays in the enclosing scope (it routinely
+                # references the loop counter). Each iteration's body is a
+                # fresh block — declarations inside die between iterations.
                 iterations = 0
                 while self._truthy(self._eval(cond)):
-                    for s in body: self._exec(s)
+                    self._exec_block(body)
                     iterations += 1
                     if iterations > 10_000_000:
                         raise RuntimeError_("Infinite loop detected")
 
             case ForInStmt(var_name, iterable, body):
+                # Iterable evaluated in enclosing scope. Each iteration gets
+                # a fresh body scope, with the loop variable declared into
+                # that scope (so it never accidentally mutates an outer
+                # variable with the same name).
                 collection = self._eval(iterable)
                 if isinstance(collection, list):
-                    for item in collection:
-                        self.env.set(var_name, item)
-                        for s in body: self._exec(s)
+                    items = list(collection)
                 elif isinstance(collection, str):
-                    for ch in collection:
-                        self.env.set(var_name, ch)
-                        for s in body: self._exec(s)
+                    items = list(collection)
                 else:
                     raise RuntimeError_("for-in requires an array or string")
+                outer = self.env
+                for item in items:
+                    self.env = Environment(parent=outer)
+                    self.env.declare(var_name, item)
+                    try:
+                        for s in body: self._exec(s)
+                    finally:
+                        self.env = outer
 
             case Block(stmts):
-                for s in stmts: self._exec(s)
+                self._exec_block(stmts)
 
             case FnDecl(name, params, body):
                 self.env.set(name, Function(name, params, body, self.env))
@@ -1076,9 +1128,11 @@ class Interpreter:
             raise RuntimeError_(
                 f"Function {fn.name} expects {len(fn.params)} args, got {len(arg_vals)}")
 
-        call_env = Environment(parent=fn.closure)
+        call_env = Environment(parent=fn.closure, is_fn_root=True)
         for param, val in zip(fn.params, arg_vals):
-            call_env.set(param, val)
+            # `declare`, not `set` — the param shouldn't accidentally mutate
+            # a same-named binding in the enclosing closure scope.
+            call_env.declare(param, val)
 
         prev_env = self.env
         self.env = call_env
