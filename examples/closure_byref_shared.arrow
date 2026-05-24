@@ -1,0 +1,20 @@
+// EXPECT: ok
+//OUT: 100
+//OUT: 101
+//OUT: 102
+//OUT: 102
+
+// Item 5: multiple closures created in the same scope share the same
+// captured cell. `inc` mutates `n`; `get` sees the mutation.
+fn make_pair() {
+    var n <- 100;
+    var inc <- () => { n <- n + 1; return n; };
+    var get <- () => { return n; };
+    return [inc, get];
+}
+
+var p <- make_pair();
+print(p[1]());               // 100 (get, before any mutation)
+print(p[0]());               // 101 (inc bumps shared n)
+print(p[0]());               // 102 (inc bumps again)
+print(p[1]());               // 102 (get sees the shared cell)

@@ -1993,14 +1993,18 @@ fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
 }
 
 // Resolution check for the LHS of a bare `<-` reassignment. Differs from
-// scope_resolves in two ways: (1) builtins are NOT writable — shadowing a
-// builtin requires `var`, since builtins are intrinsics, not bindings; and
-// (2) captured non-globals are NOT writable from inside a closure — that
-// would break Arrow's by-snapshot closure semantics. So we accept a name
-// only if it's in the current function's scope stack, the globals set,
-// or the top-level fn-name table.
-fn scope_resolves_for_assign(name: str, fn_scopes, globals_set, fn_names): int {
+// scope_resolves only by excluding builtins: shadowing a builtin requires
+// `var`, since builtins are intrinsics, not bindings. Everything else —
+// current-function scopes, captured outer-fn scopes (Item 5: closures can
+// write to captured locals by reference), globals, top-level fn-names —
+// is a valid mutation target.
+fn scope_resolves_for_assign(name: str, fn_scopes, captured, globals_set, fn_names): int {
     if (scope_stack_has(fn_scopes, name)) { return true; }
+    var ci <- 0;
+    while (ci < len(captured)) {
+        if (scope_stack_has(captured[ci], name)) { return true; }
+        ci <- ci + 1;
+    }
     if (name_in(globals_set, name)) { return true; }
     if (name_in(fn_names, name)) { return true; }
     return false;
@@ -2143,7 +2147,7 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
             // a binding inside the current function or to a global. If it
             // doesn't, this is the common typo-creates-new-binding bug;
             // we want a hard error so the user reaches for `var`.
-            if (!scope_resolves_for_assign(s.name, fn_scopes, globals_set, fn_names)) {
+            if (!scope_resolves_for_assign(s.name, fn_scopes, captured, globals_set, fn_names)) {
                 report_scope_error(s.line, s.col, "cannot reassign undeclared variable '" + s.name + "' (did you mean: var " + s.name + " <- ...?)");
             }
         }
@@ -2599,6 +2603,82 @@ fn ir_find_captures(b, body, params, is_expr: int) {
         i <- i + 1;
     }
     return caps;
+}
+
+// Item 5: walk the function body finding every nested ArrowFn, and union
+// the set of OUR locals that any of them captures. The returned names
+// are the ones we need to heap-box at function entry so closures can
+// share writable state with us. (For top-level globals captured by a
+// closure we don't box anything — globals are already by-reference via
+// @g_<n> direct access.)
+fn ir_find_my_captured_locals(b, body) {
+    var captured <- [];
+    // Walk body with the same shape ir_collect_refs uses, but only harvest
+    // refs from inside ArrowFn nodes. Anything OUR body references at the
+    // top level is just our own usage and doesn't need boxing.
+    var work <- [];
+    var i <- 0;
+    while (i < len(body)) { push(work, body[i]); i <- i + 1; }
+    var wi <- 0;
+    while (wi < len(work)) {
+        var nd <- work[wi];
+        wi <- wi + 1;
+        if (nd.node = "ArrowFn") {
+            // ir_collect_refs descends into nested closures too, so we
+            // get transitively-captured names in a single call.
+            var refs <- ir_collect_refs(nd.body, nd.params, nd.is_expr);
+            var ri <- 0;
+            while (ri < len(refs)) {
+                var nm <- refs[ri];
+                var is_ours <- false;
+                var li <- 0;
+                while (li < len(b.locals)) {
+                    if (b.locals[li].name = nm) { is_ours <- true; }
+                    li <- li + 1;
+                }
+                if (is_ours && !var_exists(captured, nm)) { push(captured, nm); }
+                ri <- ri + 1;
+            }
+        }
+        // Descend through compound shapes to reach nested ArrowFns. Use
+        // the same shape lookup as ir_collect_refs.
+        if (nd.node = "BinOp")    { push(work, nd.left); push(work, nd.right); }
+        if (nd.node = "UnaryOp")  { push(work, nd.operand); }
+        if (nd.node = "Assignment") { push(work, nd.expr); }
+        if (nd.node = "ReturnStmt" && nd.expr != false) { push(work, nd.expr); }
+        if (nd.node = "PrintStmt") { push(work, nd.expr); }
+        if (nd.node = "IfStmt")    {
+            push(work, nd.cond);
+            var k <- 0; while (k < len(nd.then_body)) { push(work, nd.then_body[k]); k <- k + 1; }
+            k <- 0; while (k < len(nd.else_body)) { push(work, nd.else_body[k]); k <- k + 1; }
+        }
+        if (nd.node = "WhileStmt") {
+            push(work, nd.cond);
+            var k <- 0; while (k < len(nd.body)) { push(work, nd.body[k]); k <- k + 1; }
+        }
+        if (nd.node = "ForInStmt") {
+            push(work, nd.iterable);
+            var k <- 0; while (k < len(nd.body)) { push(work, nd.body[k]); k <- k + 1; }
+        }
+        if (nd.node = "Block") {
+            var k <- 0; while (k < len(nd.stmts)) { push(work, nd.stmts[k]); k <- k + 1; }
+        }
+        if (nd.node = "CallExpr") {
+            push(work, nd.callee);
+            var k <- 0; while (k < len(nd.args)) { push(work, nd.args[k]); k <- k + 1; }
+        }
+        if (nd.node = "ArrayLit") {
+            var k <- 0; while (k < len(nd.elements)) { push(work, nd.elements[k]); k <- k + 1; }
+        }
+        if (nd.node = "IndexExpr")    { push(work, nd.obj); push(work, nd.index); }
+        if (nd.node = "IndexAssign")  { push(work, nd.obj); push(work, nd.index); push(work, nd.value); }
+        if (nd.node = "DotExpr")      { push(work, nd.obj); }
+        if (nd.node = "DotAssign")    { push(work, nd.obj); push(work, nd.value); }
+        if (nd.node = "StructLit")    {
+            var k <- 0; while (k < len(nd.fields)) { push(work, nd.fields[k].val); k <- k + 1; }
+        }
+    }
+    return captured;
 }
 
 // ── Emit arena allocator helper ─────────
@@ -3563,6 +3643,20 @@ fn ii_fcmp(dst: str, op: str, l, r) {
 // Cast i64 (storage form of a float) ↔ double.
 fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, T.mk_float(), [v], false); }
 fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, T.mk_int(),   [v], false); }
+// Item 5: allocate an 8-byte heap cell for a captured local. The
+// instruction's dst register holds the cell's address (as i64, the IR's
+// universal integer/pointer). Reads/writes against a boxed slot go through
+// load/store on this pointer, so closures and the outer function share
+// the same memory and see each other's writes.
+fn ii_box_alloc(dst: str)       { return ir_inst("box_alloc", dst, T.mk_int(),   [],  false); }
+// Item 5: load through a box pointer. operand is the box ptr held as i64
+// (e.g. loaded from a slot, or received as a captured env value); we
+// inttoptr it to ptr before the i64 load so LLVM accepts the type.
+fn ii_box_load(dst: str, p)     { return ir_inst("box_load",  dst, T.mk_int(),   [p], false); }
+// Item 5: store through a box pointer. operands = [value, box_ptr_i64].
+// dst is a scratch register name for the inttoptr — caller passes a
+// fresh tmp via ir_fresh_tmp(b, "bsp").
+fn ii_box_store(dst: str, v, p)  { return ir_inst("box_store", dst, T.mk_int(), [v, p], false); }
 // Cast i64 (an int value) to double via signed int-to-fp.
 fn ii_sitofp(dst: str, v)       { return ir_inst("sitofp",    dst, T.mk_float(), [v], false); }
 // Cast double back to a signed i64 (truncate-toward-zero).
@@ -3812,6 +3906,25 @@ fn ir_render_inst(inst): str {
     }
     if (op = "alloca") {
         return inst.dst + " = alloca i64";
+    }
+    // Item 5: heap-allocate an 8-byte cell and return its address as i64.
+    // Used to box captured locals so closures share writable state with
+    // the outer function. Two LLVM instructions: arena_alloc then a
+    // ptrtoint into the destination register so it can flow as an i64.
+    if (op = "box_alloc") {
+        return inst.dst + ".p = call ptr @arena_alloc(i64 8)\n  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+    }
+    // Item 5: dereference a box pointer (held as i64) to read the boxed
+    // value. inttoptr first so LLVM's `load i64, ptr` type-checks.
+    if (op = "box_load") {
+        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = load i64, ptr " + inst.dst + ".bp";
+    }
+    // Item 5: write a value through a box pointer (held as i64). The dst
+    // register is just a scratch name for the inttoptr conversion — the
+    // store itself has no SSA result. Convention: caller supplies a fresh
+    // tmp via ir_fresh_tmp(b, "bsp").
+    if (op = "box_store") {
+        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + inst.dst + ".bp";
     }
     if (op = "load") {
         return inst.dst + " = load i64, ptr " + ir_render_operand(inst.operands[0]);
@@ -4417,11 +4530,98 @@ fn ir_get_local_slot(b, name: str): str {
         i <- i + 1;
     }
     var reg <- "%" + name;
-    push(b.locals, {name: name, reg: reg});
+    push(b.locals, {name: name, reg: reg, boxed: false, box_owned: false});
     // Always emit allocas in the entry block (first block of the function).
     // LLVM convention; also keeps alloca out of loops where it would reset each iter.
     ir_push_inst(b.func.blocks[0], ii_alloca(reg, T.mk_int()));
     return reg;
+}
+
+// Mark an existing local slot as `boxed` — the slot stores a heap-cell
+// pointer rather than the value itself. All reads/writes of this name
+// go through the indirection. The `owned` flag distinguishes the two
+// callers of this function:
+//   owned=true   the outer-fn captured-locals pass that allocated the
+//                box itself. `var x <- ...` for such a slot writes the
+//                initial value through the box pointer — the box IS x's
+//                real storage.
+//   owned=false  the closure body's capture prologue, receiving a box
+//                pointer from env. `var x <- ...` for such a slot
+//                shadows the captured binding with a fresh local, so
+//                we un-box at the var-decl site instead of writing
+//                through.
+fn ir_mark_boxed(b, name: str, owned: int) {
+    var i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) {
+            b.locals[i].boxed <- true;
+            b.locals[i].box_owned <- owned;
+            return false;
+        }
+        i <- i + 1;
+    }
+    return false;
+}
+
+// Inverse of ir_mark_boxed: used when `var x` shadows a captured (boxed)
+// slot inside a closure body. The slot stays the same alloca, but reads
+// and writes after this point treat it as a regular i64 (no deref). The
+// previously-captured box is dropped from this closure's view but still
+// exists on the heap and is still seen by the outer function — only this
+// closure's local binding shadows.
+fn ir_unmark_boxed(b, name: str) {
+    var i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) {
+            b.locals[i].boxed <- false;
+            b.locals[i].box_owned <- false;
+            return false;
+        }
+        i <- i + 1;
+    }
+    return false;
+}
+
+fn ir_is_boxed(b, name: str): int {
+    var i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) { return b.locals[i].boxed; }
+        i <- i + 1;
+    }
+    return false;
+}
+
+// True only when the slot is boxed AND we own that box (allocated it
+// ourselves at fn entry). Used to decide whether `var x <- ...` writes
+// through the box (we own it → it's x's real storage) or shadows the
+// captured binding with a fresh unboxed local (we don't own it).
+fn ir_is_box_owned(b, name: str): int {
+    var i <- 0;
+    while (i < len(b.locals)) {
+        if (b.locals[i].name = name) {
+            if (b.locals[i].boxed) { return b.locals[i].box_owned; }
+            return false;
+        }
+        i <- i + 1;
+    }
+    return false;
+}
+
+// Box-aware store. If `name`'s slot is boxed, the slot value is a pointer
+// (held as i64) to a heap cell; we load that pointer and box_store the
+// value through it (box_store handles the inttoptr). Otherwise it's a
+// regular alloca and we store the value directly. Used by every
+// Assignment write site so boxing stays transparent at the callsites.
+fn ir_emit_store_to_slot(b, slot: str, name: str, v) {
+    if (ir_is_boxed(b, name)) {
+        var ptr_tmp <- ir_fresh_tmp(b, "bxp");
+        ir_push_inst(b.cur_block, ii_load(ptr_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
+        var bs_tmp <- ir_fresh_tmp(b, "bsp");
+        ir_push_inst(b.cur_block, ii_box_store(bs_tmp, v, ir_reg(ptr_tmp, T.mk_int())));
+    } else {
+        ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, T.mk_int())));
+    }
+    return false;
 }
 
 // Non-vivifying lookup: returns true iff the current function already has
@@ -4589,6 +4789,14 @@ fn ir_emit_expr(b, nd) {
         var slot <- ir_get_local_slot(b, nd.name);
         var tmp <- ir_fresh_tmp(b, "ld");
         ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
+        if (ir_is_boxed(b, nd.name)) {
+            // Item 5: boxed slot holds a heap-cell pointer (as i64); the
+            // actual value lives one indirection further. box_load handles
+            // the inttoptr + load.
+            var deref <- ir_fresh_tmp(b, "bx");
+            ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(tmp, T.mk_int())));
+            return ir_reg(deref, T.mk_int());
+        }
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "BinOp") {
@@ -4800,6 +5008,13 @@ fn ir_emit_expr(b, nd) {
             if (is_loc) {
                 var slot <- ir_get_local_slot(b, nm);
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
+                if (ir_is_boxed(b, nm)) {
+                    // Item 5: slot holds a box pointer; the closure pair
+                    // value lives one indirection further.
+                    var deref <- ir_fresh_tmp(b, "bxpair");
+                    ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(pair_tmp, T.mk_int())));
+                    pair_tmp <- deref;
+                }
             } else {
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
@@ -4843,6 +5058,11 @@ fn ir_emit_expr(b, nd) {
                 if (is_loc) {
                     var slot <- ir_get_local_slot(b, nm);
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
+                    if (ir_is_boxed(b, nm)) {
+                        var deref <- ir_fresh_tmp(b, "bxpair");
+                        ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(pair_tmp, T.mk_int())));
+                        pair_tmp <- deref;
+                    }
                 } else {
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
                 }
@@ -4996,6 +5216,11 @@ fn ir_emit_expr(b, nd) {
         }
 
         // Capture prologue: load each capture from env into a local slot.
+        // Item 5: the env stores box POINTERS (not values). Loading them
+        // into the local slot gives the slot a box pointer; we mark the
+        // slot as boxed so reads dereference and writes store through.
+        // This is what makes inner-fn `n <- n + 1` propagate back to the
+        // outer fn's `n` — they share the same heap cell.
         if (len(captures) > 0) {
             i <- 0;
             while (i < len(captures)) {
@@ -5004,6 +5229,9 @@ fn ir_emit_expr(b, nd) {
                 var load_reg <- ir_fresh_tmp(sub, "cval");
                 ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, T.mk_int(), [ir_reg("%env.arg", T.mk_int()), ir_const_int(i)], false));
                 ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, T.mk_int()), ir_reg(cslot, T.mk_int())));
+                // Box came in via env: we don't own it. A later `var cname`
+                // in this closure body should shadow, not write through.
+                ir_mark_boxed(sub, cname, false);
                 set_var_type(cname, cap_outer_types[i]);
                 i <- i + 1;
             }
@@ -5012,25 +5240,19 @@ fn ir_emit_expr(b, nd) {
         // Body. ArrowFn bodies can be either a list of statements (block form)
         // or a single expression (expression form).
         var ret_type_inferred <- T.mk_any();
-        if (nd.is_expr) {
-            var v <- ir_emit_expr(sub, nd.body);
-            ir_set_terminator(sub.cur_block, ii_ret(v));
-            // Observe the expression's static type for the body's return type.
-            // typeof_expr consults var_types populated during emission.
-            ret_type_inferred <- typeof_expr(nd.body);
-        } else {
-            // Block form: temporarily set current_fn[0] so set_fn_ret_type
-            // calls (triggered by infer_body's ReturnStmt branch) record
-            // against this arrow fn's mangled name.
+
+        // For block-body forms, pre-populate sub.locals with every name
+        // assigned to in the body BEFORE the boxing pass runs. Mirrors
+        // emit_function_via_ir for regular FnDecls. We also need infer_body
+        // to run first so var_types is populated for typeof_expr lookups
+        // during emission. Expression-body forms have no declarations, so
+        // they skip this step.
+        if (!nd.is_expr) {
             var old_cur <- current_fn[0];
             current_fn[0] <- afn_name;
             infer_body(nd.body);
             current_fn[0] <- old_cur;
 
-            // Pre-populate sub.locals with all assigned-to names in the body.
-            // Mirrors the same fix applied to regular FnDecls — ensures that
-            // names which happen to also be globals resolve as locals when
-            // referenced inside the closure body.
             var body_vars <- [];
             collect_vars(nd.body, body_vars);
             i <- 0;
@@ -5039,7 +5261,57 @@ fn ir_emit_expr(b, nd) {
                 i <- i + 1;
             }
             ir_get_local_slot(sub, "_for_idx");
+        }
 
+        // Item 5: if our body contains nested closures that capture our
+        // locals (including our params or our own captures), box those
+        // locals so the nested closures share writable state with us.
+        // This pass runs BEFORE body emission so reads/writes throughout
+        // the body see the boxed slot. We do it here uniformly for both
+        // expr-body and block-body ArrowFns — otherwise expression-body
+        // forms like `(a) => (b) => (c) => a + b + c` would skip boxing
+        // for `a` and the inner closures would receive raw values
+        // instead of box pointers, then inttoptr them into bogus
+        // pointers and segfault.
+        var inner_body_list <- nd.body;
+        if (nd.is_expr) {
+            inner_body_list <- [nd.body];
+        }
+        var inner_box <- ir_find_my_captured_locals(sub, inner_body_list);
+        var ibi <- 0;
+        while (ibi < len(inner_box)) {
+            var ibname <- inner_box[ibi];
+            if (!ir_is_boxed(sub, ibname)) {
+                var ibslot <- ir_get_local_slot(sub, ibname);
+                var ibox_tmp <- ir_fresh_tmp(sub, "box");
+                ir_push_inst(sub.cur_block, ii_box_alloc(ibox_tmp));
+                ir_push_inst(sub.cur_block, ii_store(ir_reg(ibox_tmp, T.mk_int()), ir_reg(ibslot, T.mk_int())));
+                // We allocated this box ourselves — own it. A future
+                // `var ibname` in this body is the original declaration
+                // and should write the initial value through the box.
+                ir_mark_boxed(sub, ibname, true);
+            }
+            ibi <- ibi + 1;
+        }
+        // Re-init any boxed params (same reason as in the regular fn
+        // path: the earlier %x.arg → slot store wrote a value where a
+        // box ptr is now required).
+        var ipi <- 0;
+        while (ipi < len(nd.params)) {
+            var ipname <- nd.params[ipi];
+            if (ir_is_boxed(sub, ipname)) {
+                ir_emit_store_to_slot(sub, ir_get_local_slot(sub, ipname), ipname, ir_reg("%" + ipname + ".arg", T.mk_int()));
+            }
+            ipi <- ipi + 1;
+        }
+
+        if (nd.is_expr) {
+            var v <- ir_emit_expr(sub, nd.body);
+            ir_set_terminator(sub.cur_block, ii_ret(v));
+            // Observe the expression's static type for the body's return type.
+            // typeof_expr consults var_types populated during emission.
+            ret_type_inferred <- typeof_expr(nd.body);
+        } else {
             i <- 0;
             while (i < len(nd.body)) {
                 ir_emit_stmt(sub, nd.body[i]);
@@ -5527,17 +5799,52 @@ fn ir_emit_stmt(b, stmt) {
         //
         // At the top-level synthetic frame (__main_logic), top-level vars
         // ARE the globals, so both forms route to @g_x.
+        // Item 1: route the store based on declaration intent.
+        //
+        //   var x <- expr;   (is_decl=true)   always writes to a fresh
+        //                                     local alloca in this function
+        //                                     — even if a global of the
+        //                                     same name exists, this is a
+        //                                     deliberate shadow.
+        //
+        //   x <- expr;       (is_decl=false)  walks up: if there's already
+        //                                     a local in this function, use
+        //                                     it; otherwise, if `x` is a
+        //                                     global, store to @g_x; else
+        //                                     fall back to local. (The
+        //                                     scope checker rejects the
+        //                                     last case ahead of time, so
+        //                                     it shouldn't happen here.)
+        //
+        // At the top-level synthetic frame (__main_logic), top-level vars
+        // ARE the globals, so both forms route to @g_x.
+        //
+        // Item 5 interaction: if `var x` shadows a captured (boxed) slot
+        // — which happens in closure bodies like `var n <- n + 1;` — we
+        // un-box the slot at the var-decl site. The RHS evaluation
+        // already happened above (reading through the box, getting the
+        // captured value); now we want this `var` to introduce a fresh
+        // local shadow, so subsequent reads find the new value directly
+        // and writes don't propagate back to the outer's box.
         var is_top_level <- (b.func.name = "__main_logic");
         if (is_top_level && is_global(stmt.name)) {
             ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
         } else {
             if (stmt.is_decl) {
                 var slot <- ir_get_local_slot(b, stmt.name);
-                ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot, T.mk_int())));
+                // If this `var` is shadowing a captured (not-owned) box,
+                // un-box now so subsequent reads/writes go to the local
+                // slot directly. If we OWN the box (it's the original
+                // declaration in the outer fn that allocated it), keep
+                // the box — the store-to-slot below will write through.
+                if (ir_is_boxed(b, stmt.name) && !ir_is_box_owned(b, stmt.name)) {
+                    ir_unmark_boxed(b, stmt.name);
+                }
+                ir_emit_store_to_slot(b, slot, stmt.name, v);
             } else {
                 if (ir_has_local_slot(b, stmt.name)) {
                     var slot2 <- ir_get_local_slot(b, stmt.name);
-                    ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot2, T.mk_int())));
+                    ir_emit_store_to_slot(b, slot2, stmt.name, v);
                 } else {
                     if (is_global(stmt.name)) {
                         ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
@@ -5546,7 +5853,7 @@ fn ir_emit_stmt(b, stmt) {
                         // have rejected this; if we reach here, behave as
                         // the old auto-declare did and emit a local.
                         var slot3 <- ir_get_local_slot(b, stmt.name);
-                        ir_push_inst(b.cur_block, ii_store(v, ir_reg(slot3, T.mk_int())));
+                        ir_emit_store_to_slot(b, slot3, stmt.name, v);
                     }
                 }
             }
@@ -5872,6 +6179,39 @@ fn emit_function_via_ir(nd, mod) {
         }
         // for-in loops use a synthetic _for_idx counter — pre-allocate that too.
         ir_get_local_slot(b, "_for_idx");
+
+        // Item 5: any local (or param) captured by a nested ArrowFn gets
+        // heap-boxed so reads/writes from either side share storage. The
+        // slot now holds the box pointer; ir_emit_store_to_slot and the
+        // Identifier read path dereference automatically. Boxes are
+        // allocated once per fn entry, so each call gets a fresh cell.
+        var to_box <- ir_find_my_captured_locals(b, nd.body);
+        var bi <- 0;
+        while (bi < len(to_box)) {
+            var bname <- to_box[bi];
+            var bslot <- ir_get_local_slot(b, bname);
+            var box_tmp <- ir_fresh_tmp(b, "box");
+            ir_push_inst(b.cur_block, ii_box_alloc(box_tmp));
+            ir_push_inst(b.cur_block, ii_store(ir_reg(box_tmp, T.mk_int()), ir_reg(bslot, T.mk_int())));
+            // We own the box. `var bname` later in the body is the
+            // original declaration and should write through.
+            ir_mark_boxed(b, bname, true);
+            bi <- bi + 1;
+        }
+        // If a param is boxed, the param-store earlier put the raw arg
+        // value into the slot — but the slot is supposed to hold a box
+        // pointer. Restore: box was just allocated above; load the arg
+        // back from the (now-bogus) location? No — simpler to redo the
+        // param init for boxed params: load the arg directly from the
+        // %x.arg register and store it through the box pointer.
+        var pi <- 0;
+        while (pi < len(nd.params)) {
+            var pname <- nd.params[pi];
+            if (ir_is_boxed(b, pname)) {
+                ir_emit_store_to_slot(b, ir_get_local_slot(b, pname), pname, ir_reg("%" + pname + ".arg", T.mk_int()));
+            }
+            pi <- pi + 1;
+        }
     }
 
     // Body

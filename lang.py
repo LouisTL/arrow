@@ -926,17 +926,17 @@ class Environment:
         self.vars[name] = value
 
     def assign(self, name: str, value: Any) -> bool:
-        # Walk up looking for an existing binding to mutate, stopping at
-        # the function boundary. Returns True if a binding was found and
-        # updated, False otherwise — the caller decides whether to fall
-        # back to globals or error.
+        # Item 5: walk all the way up to find an existing binding. There's
+        # no function-boundary stop any more — a closure that writes a
+        # bare `name <- ...` to a captured outer-fn local mutates the
+        # actual cell, not a snapshot. Globals are the topmost env in the
+        # chain, so this naturally handles function-writes-to-global too
+        # (Item 1) without a separate fallback.
         env = self
         while env is not None:
             if name in env.vars:
                 env.vars[name] = value
                 return True
-            if env.is_fn_root:
-                return False
             env = env.parent
         return False
 
@@ -1028,20 +1028,18 @@ class Interpreter:
                         # Re-raise with position info for better diagnostics.
                         raise RuntimeError_(f"{e} at line {line}, col {col}")
                 else:
-                    # `x <- expr;` — reassignment. Walks up within the
-                    # current function looking for an existing binding,
-                    # then falls through to globals (Item 1: functions can
-                    # write to top-level state). Errors if the name is
-                    # unknown — `<-` to an undeclared variable is no longer
-                    # silently treated as a declaration.
+                    # `x <- expr;` — reassignment. assign() walks the env
+                    # chain freely; that means closures can write to their
+                    # captured outer locals (by-reference), and function
+                    # bodies can write to globals via the topmost env. The
+                    # only failure case is a name that doesn't exist
+                    # anywhere — that's the typo case the user wanted
+                    # caught.
                     if not self.env.assign(name, val):
-                        if name in self.globals.vars:
-                            self.globals.vars[name] = val
-                        else:
-                            raise RuntimeError_(
-                                f"cannot reassign undeclared variable '{name}' "
-                                f"at line {line}, col {col} — did you mean `var {name} <- ...`?"
-                            )
+                        raise RuntimeError_(
+                            f"cannot reassign undeclared variable '{name}' "
+                            f"at line {line}, col {col} — did you mean `var {name} <- ...`?"
+                        )
 
             case IndexAssign(obj, index, value):
                 target = self._eval(obj)

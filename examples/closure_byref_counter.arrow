@@ -1,0 +1,31 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 2
+//OUT: 3
+//OUT: 1
+//OUT: 4
+
+// Item 5: closures capture by reference. A bare `<-` to a captured outer
+// local mutates the actual cell, so successive calls observe each other's
+// writes — the classic counter pattern.
+//
+// Snapshot semantics is still available via the explicit shadow:
+// `var n <- n + 1;` inside the closure creates a fresh local each call
+// (see closures_test.arrow for that pattern).
+fn make_counter() {
+    var n <- 0;
+    return () => {
+        n <- n + 1;
+        return n;
+    };
+}
+
+var c1 <- make_counter();
+print(c1());                 // 1
+print(c1());                 // 2
+print(c1());                 // 3
+
+// Counters from separate make_counter() calls have separate cells.
+var c2 <- make_counter();
+print(c2());                 // 1
+print(c1());                 // 4 (c1's cell unaffected)

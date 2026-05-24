@@ -1,0 +1,34 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 1
+//OUT: 1
+//OUT: 5
+
+// Item 5 doesn't break snapshot semantics — `var n <- n + 1;` in the
+// closure body still introduces a fresh local each call, leaving the
+// captured `n` untouched. This is how the user opts back into snapshot
+// behavior after by-reference became the default.
+fn make_snapshot_counter() {
+    var n <- 0;
+    return () => {
+        var n <- n + 1;
+        return n;
+    };
+}
+
+var c <- make_snapshot_counter();
+print(c());                  // 1 (each call snapshots n=0, returns 1)
+print(c());                  // 1
+print(c());                  // 1
+
+// Sanity: a separate counter using by-reference still works.
+fn make_byref_counter() {
+    var n <- 0;
+    return () => {
+        n <- n + 1;
+        return n;
+    };
+}
+var b <- make_byref_counter();
+b(); b(); b(); b();
+print(b());                  // 5
