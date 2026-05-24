@@ -192,7 +192,7 @@ fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");e
 fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
 // scope checker can enforce same-scope no-redeclaration and reject bare
-// reassignments to names that were never declared (Item 1's strict mode).
+// reassignments to names that were never declared (strict mode).
 fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");
     // Check IDENT explicitly so we can bail out early on `var <- 5;`-style
     // malformed input. Without this, eat() records the error but keeps
@@ -1418,7 +1418,7 @@ fn cv_stmt(nd, work, vars) {
     if (nd.node = "Assignment") {
         // Only declarations (`var x <- ...`) introduce a local slot. Bare
         // reassignments to a global should NOT be pre-allocated as locals
-        // here — that would shadow the global and break Item 1 (a function
+        // here — that would shadow the global and break the function-writes-to-global path (a function
         // writing through a bare `<-` is supposed to mutate the global,
         // not silently create a local with the same name).
         if (nd.is_decl) {
@@ -1995,8 +1995,7 @@ fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
 // Resolution check for the LHS of a bare `<-` reassignment. Differs from
 // scope_resolves only by excluding builtins: shadowing a builtin requires
 // `var`, since builtins are intrinsics, not bindings. Everything else —
-// current-function scopes, captured outer-fn scopes (Item 5: closures can
-// write to captured locals by reference), globals, top-level fn-names —
+// current-function scopes, captured outer-fn scopes, globals, top-level fn-names —
 // is a valid mutation target.
 fn scope_resolves_for_assign(name: str, fn_scopes, captured, globals_set, fn_names): int {
     if (scope_stack_has(fn_scopes, name)) { return true; }
@@ -2605,7 +2604,7 @@ fn ir_find_captures(b, body, params, is_expr: int) {
     return caps;
 }
 
-// Item 5: walk the function body finding every nested ArrowFn, and union
+// walk the function body finding every nested ArrowFn, and union
 // the set of OUR locals that any of them captures. The returned names
 // are the ones we need to heap-box at function entry so closures can
 // share writable state with us. (For top-level globals captured by a
@@ -3643,17 +3642,17 @@ fn ii_fcmp(dst: str, op: str, l, r) {
 // Cast i64 (storage form of a float) ↔ double.
 fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, T.mk_float(), [v], false); }
 fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, T.mk_int(),   [v], false); }
-// Item 5: allocate an 8-byte heap cell for a captured local. The
+// allocate an 8-byte heap cell for a captured local. The
 // instruction's dst register holds the cell's address (as i64, the IR's
 // universal integer/pointer). Reads/writes against a boxed slot go through
 // load/store on this pointer, so closures and the outer function share
 // the same memory and see each other's writes.
 fn ii_box_alloc(dst: str)       { return ir_inst("box_alloc", dst, T.mk_int(),   [],  false); }
-// Item 5: load through a box pointer. operand is the box ptr held as i64
+// load through a box pointer. operand is the box ptr held as i64
 // (e.g. loaded from a slot, or received as a captured env value); we
 // inttoptr it to ptr before the i64 load so LLVM accepts the type.
 fn ii_box_load(dst: str, p)     { return ir_inst("box_load",  dst, T.mk_int(),   [p], false); }
-// Item 5: store through a box pointer. operands = [value, box_ptr_i64].
+// store through a box pointer. operands = [value, box_ptr_i64].
 // dst is a scratch register name for the inttoptr — caller passes a
 // fresh tmp via ir_fresh_tmp(b, "bsp").
 fn ii_box_store(dst: str, v, p)  { return ir_inst("box_store", dst, T.mk_int(), [v, p], false); }
@@ -3907,19 +3906,19 @@ fn ir_render_inst(inst): str {
     if (op = "alloca") {
         return inst.dst + " = alloca i64";
     }
-    // Item 5: heap-allocate an 8-byte cell and return its address as i64.
+    // heap-allocate an 8-byte cell and return its address as i64.
     // Used to box captured locals so closures share writable state with
     // the outer function. Two LLVM instructions: arena_alloc then a
     // ptrtoint into the destination register so it can flow as an i64.
     if (op = "box_alloc") {
         return inst.dst + ".p = call ptr @arena_alloc(i64 8)\n  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
     }
-    // Item 5: dereference a box pointer (held as i64) to read the boxed
+    // dereference a box pointer (held as i64) to read the boxed
     // value. inttoptr first so LLVM's `load i64, ptr` type-checks.
     if (op = "box_load") {
         return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = load i64, ptr " + inst.dst + ".bp";
     }
-    // Item 5: write a value through a box pointer (held as i64). The dst
+    // write a value through a box pointer (held as i64). The dst
     // register is just a scratch name for the inttoptr conversion — the
     // store itself has no SSA result. Convention: caller supplies a fresh
     // tmp via ir_fresh_tmp(b, "bsp").
@@ -4627,7 +4626,7 @@ fn ir_emit_store_to_slot(b, slot: str, name: str, v) {
 // Non-vivifying lookup: returns true iff the current function already has
 // an alloca for `name`. Distinguishes "first write reaches a global" from
 // "write to an existing local" without accidentally creating a fresh local
-// slot just to ask the question — important for Item 1 routing in the
+// slot just to ask the question — important for routing in the
 // Assignment codegen below.
 fn ir_has_local_slot(b, name: str): int {
     var i <- 0;
@@ -4790,7 +4789,7 @@ fn ir_emit_expr(b, nd) {
         var tmp <- ir_fresh_tmp(b, "ld");
         ir_push_inst(b.cur_block, ii_load(tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
         if (ir_is_boxed(b, nd.name)) {
-            // Item 5: boxed slot holds a heap-cell pointer (as i64); the
+            // boxed slot holds a heap-cell pointer (as i64); the
             // actual value lives one indirection further. box_load handles
             // the inttoptr + load.
             var deref <- ir_fresh_tmp(b, "bx");
@@ -5009,7 +5008,7 @@ fn ir_emit_expr(b, nd) {
                 var slot <- ir_get_local_slot(b, nm);
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
                 if (ir_is_boxed(b, nm)) {
-                    // Item 5: slot holds a box pointer; the closure pair
+                    // slot holds a box pointer; the closure pair
                     // value lives one indirection further.
                     var deref <- ir_fresh_tmp(b, "bxpair");
                     ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(pair_tmp, T.mk_int())));
@@ -5216,7 +5215,7 @@ fn ir_emit_expr(b, nd) {
         }
 
         // Capture prologue: load each capture from env into a local slot.
-        // Item 5: the env stores box POINTERS (not values). Loading them
+        // the env stores box POINTERS (not values). Loading them
         // into the local slot gives the slot a box pointer; we mark the
         // slot as boxed so reads dereference and writes store through.
         // This is what makes inner-fn `n <- n + 1` propagate back to the
@@ -5263,7 +5262,7 @@ fn ir_emit_expr(b, nd) {
             ir_get_local_slot(sub, "_for_idx");
         }
 
-        // Item 5: if our body contains nested closures that capture our
+        // if our body contains nested closures that capture our
         // locals (including our params or our own captures), box those
         // locals so the nested closures share writable state with us.
         // This pass runs BEFORE body emission so reads/writes throughout
@@ -5780,26 +5779,7 @@ fn ir_emit_stmt(b, stmt) {
             ir_push_inst(b.cur_block, ii_bc_d_to_i(i64r, ir_reg(dr, T.mk_float())));
             v <- ir_reg(i64r, T.mk_float());
         }
-        // Item 1: route the store based on declaration intent.
-        //
-        //   var x <- expr;   (is_decl=true)   always writes to a fresh
-        //                                     local alloca in this function
-        //                                     — even if a global of the
-        //                                     same name exists, this is a
-        //                                     deliberate shadow.
-        //
-        //   x <- expr;       (is_decl=false)  walks up: if there's already
-        //                                     a local in this function, use
-        //                                     it; otherwise, if `x` is a
-        //                                     global, store to @g_x; else
-        //                                     fall back to local. (The
-        //                                     scope checker rejects the
-        //                                     last case ahead of time, so
-        //                                     it shouldn't happen here.)
-        //
-        // At the top-level synthetic frame (__main_logic), top-level vars
-        // ARE the globals, so both forms route to @g_x.
-        // Item 1: route the store based on declaration intent.
+        // Route the store based on declaration intent.
         //
         //   var x <- expr;   (is_decl=true)   always writes to a fresh
         //                                     local alloca in this function
@@ -5819,7 +5799,7 @@ fn ir_emit_stmt(b, stmt) {
         // At the top-level synthetic frame (__main_logic), top-level vars
         // ARE the globals, so both forms route to @g_x.
         //
-        // Item 5 interaction: if `var x` shadows a captured (boxed) slot
+        // Closure shadowing: if `var x` shadows a captured (boxed) slot
         // — which happens in closure bodies like `var n <- n + 1;` — we
         // un-box the slot at the var-decl site. The RHS evaluation
         // already happened above (reading through the box, getting the
@@ -6180,7 +6160,7 @@ fn emit_function_via_ir(nd, mod) {
         // for-in loops use a synthetic _for_idx counter — pre-allocate that too.
         ir_get_local_slot(b, "_for_idx");
 
-        // Item 5: any local (or param) captured by a nested ArrowFn gets
+        // any local (or param) captured by a nested ArrowFn gets
         // heap-boxed so reads/writes from either side share storage. The
         // slot now holds the box pointer; ir_emit_store_to_slot and the
         // Identifier read path dereference automatically. Boxes are

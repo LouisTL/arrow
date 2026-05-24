@@ -4,7 +4,7 @@
 //OUT: 1
 //OUT: 5
 
-// Item 5 doesn't break snapshot semantics — `var n <- n + 1;` in the
+// Snapshot semantics still works semantics — `var n <- n + 1;` in the
 // closure body still introduces a fresh local each call, leaving the
 // captured `n` untouched. This is how the user opts back into snapshot
 // behavior after by-reference became the default.

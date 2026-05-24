@@ -5,7 +5,7 @@
 //OUT: 1
 //OUT: 4
 
-// Item 5: closures capture by reference. A bare `<-` to a captured outer
+// Closures capture by reference. A bare `<-` to a captured outer
 // local mutates the actual cell, so successive calls observe each other's
 // writes — the classic counter pattern.
 //

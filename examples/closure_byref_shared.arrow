@@ -4,7 +4,7 @@
 //OUT: 102
 //OUT: 102
 
-// Item 5: multiple closures created in the same scope share the same
+// Multiple closures created in the same scope share the same
 // captured cell. `inc` mutates `n`; `get` sees the mutation.
 fn make_pair() {
     var n <- 100;

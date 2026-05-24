@@ -926,12 +926,11 @@ class Environment:
         self.vars[name] = value
 
     def assign(self, name: str, value: Any) -> bool:
-        # Item 5: walk all the way up to find an existing binding. There's
-        # no function-boundary stop any more — a closure that writes a
-        # bare `name <- ...` to a captured outer-fn local mutates the
-        # actual cell, not a snapshot. Globals are the topmost env in the
-        # chain, so this naturally handles function-writes-to-global too
-        # (Item 1) without a separate fallback.
+        # Walk all the way up to find an existing binding. No function
+        # boundary — a closure that writes a bare `name <- ...` to a
+        # captured outer-fn local mutates the actual cell, not a snapshot.
+        # Globals are the topmost env in the chain, so this also handles
+        # function-writes-to-global without a separate fallback.
         env = self
         while env is not None:
             if name in env.vars:
@@ -991,10 +990,9 @@ BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_fil
 class Interpreter:
     def __init__(self):
         self.env = Environment()
-        # The top-level scope is kept separately so that an assignment from
-        # inside a function body can fall through to a global binding when
-        # there's no matching local. Without this hook, the function-root
-        # boundary on assign() would block writes to globals — Item 1.
+        # Top-level scope kept separately so an assignment from inside a
+        # function body can reach a global binding when there's no
+        # matching local on the way up.
         self.globals = self.env
         self.output: list[str] = []
 
