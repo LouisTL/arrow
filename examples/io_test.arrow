@@ -1,3 +1,6 @@
+// EXPECT: ok
+// (interactive — uses input(), so the runner skips the native run)
+
 // Arrow Lang v0.4 — I/O Test
 
 // Write a file

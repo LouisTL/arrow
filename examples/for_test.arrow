@@ -1,3 +1,28 @@
+// EXPECT: ok
+//OUT: 10
+//OUT: 20
+//OUT: 30
+//OUT: 40
+//OUT: 50
+//OUT: h
+//OUT: e
+//OUT: l
+//OUT: l
+//OUT: o
+//OUT: 15
+//OUT: 10
+//OUT: 20
+//OUT: 20
+//OUT: 40
+//OUT: 30
+//OUT: 60
+//OUT: 600
+//OUT: 10
+//OUT: ABC
+//OUT: empty OK
+//OUT: [1, 4, 9, 16, 25]
+//OUT: Done!
+
 // Arrow Lang — For-In Loop Test
 
 // ── Basic for-in over array ─────────────

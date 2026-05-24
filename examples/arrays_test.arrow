@@ -1,3 +1,23 @@
+// EXPECT: ok
+//OUT: [10, 20, 30, 40, 50]
+//OUT: 10
+//OUT: 50
+//OUT: [10, 20, 99, 40, 50]
+//OUT: [100, 200, 300]
+//OUT: 3
+//OUT: 300
+//OUT: [100, 200]
+//OUT: 40
+//OUT: 10
+//OUT: 20
+//OUT: 99
+//OUT: 40
+//OUT: 50
+//OUT: 15
+//OUT: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+//OUT: [0, 1, 4, 9, 16, 25]
+//OUT: Done!
+
 // Arrow Lang v0.3 — Arrays (compiler test)
 // Tests array features that work with the LLVM backend.
 

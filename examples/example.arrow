@@ -1,3 +1,38 @@
+// EXPECT: ok
+//OUT: 13
+//OUT: 7
+//OUT: 30
+//OUT: 3
+//OUT: 1
+//OUT: Hello from Arrow Lang!
+//OUT: x = 10
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: x is big
+//OUT: positive
+//OUT: countdown: 5
+//OUT: countdown: 4
+//OUT: countdown: 3
+//OUT: countdown: 2
+//OUT: countdown: 1
+//OUT: 1
+//OUT: 2
+//OUT: Fizz
+//OUT: 4
+//OUT: Buzz
+//OUT: Fizz
+//OUT: 7
+//OUT: 8
+//OUT: Fizz
+//OUT: Buzz
+//OUT: 11
+//OUT: Fizz
+//OUT: 13
+//OUT: 14
+//OUT: FizzBuzz
+//OUT: Done!
+
 // Arrow Lang — Compiler Test
 // Exercises all features that the LLVM backend supports
 

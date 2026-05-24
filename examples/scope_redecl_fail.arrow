@@ -1,0 +1,7 @@
+// EXPECT: scope_fail
+//ERR: redeclaration of 'x' in the same scope
+
+// Declaring the same name twice in the same scope is a hard error.
+// (Shadowing across nested scopes is allowed — that's a separate test.)
+var x <- 1;
+var x <- 2;

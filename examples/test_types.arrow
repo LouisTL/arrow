@@ -1,3 +1,16 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: hello world
+//OUT: cats and dogs
+//OUT: 42
+//OUT: wow!
+//OUT: 42
+//OUT: typed
+//OUT: 10
+//OUT: 43
+//OUT: hi world
+//OUT: 199
+
 // === Function annotations ===
 
 // Test 1: Annotated function

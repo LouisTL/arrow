@@ -1,3 +1,8 @@
+// EXPECT: ok
+//OUT: 50
+//OUT: hello!
+//OUT: ok
+
 // All annotations correct — should compile and print "ok"
 var x: int <- 42;
 var name: str <- "hello";

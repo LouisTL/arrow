@@ -1,3 +1,37 @@
+// EXPECT: ok
+//OUT: 1.5
+//OUT: 2.0
+//OUT: 0.5
+//OUT: 3.14
+//OUT: 0.1
+//OUT: -1.5
+//OUT: 4.0
+//OUT: 1.0
+//OUT: 6.0
+//OUT: 2.5
+//OUT: 3.3333333333333335
+//OUT: -3.14
+//OUT: 2.5
+//OUT: 3.3333333333333335
+//OUT: 1.0
+//OUT: 0.5
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: 1.5
+//OUT: 2.0
+//OUT: 4.0
+//OUT: 3.5
+//OUT: [0.5, 1.5, 2.5]
+//OUT: 1.5
+//OUT: [10.0, 1.5, 2.5]
+//OUT: {x: 1.5, y: 2.5}
+//OUT: 4.0
+//OUT: 0.30000000000000004
+//OUT: Done!
+
 // Arrow Lang — Floats (compiler test)
 // Floats are stored in i64 slots via bitcast, so the ABI is uniform; each
 // arithmetic site casts to double, does the float op, casts back. Printing

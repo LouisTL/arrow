@@ -1,3 +1,13 @@
+// EXPECT: ok
+//OUT: 49
+//OUT: 27
+//OUT: 120
+//OUT: 55
+//OUT: 3
+//OUT: 48
+//OUT: 41
+//OUT: Done!
+
 // Arrow Lang — Module demo
 //
 // `import "mathlib";` loads ./mathlib.arrow under the namespace `mathlib`.

@@ -193,7 +193,19 @@ fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");e
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
 // scope checker can enforce same-scope no-redeclaration and reject bare
 // reassignments to names that were never declared (Item 1's strict mode).
-fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");var n<-ev("IDENT");var ta<-{kind:"none"};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};}
+fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");
+    // Check IDENT explicitly so we can bail out early on `var <- 5;`-style
+    // malformed input. Without this, eat() records the error but keeps
+    // advancing, and the rest of pvd can race past EOF into a crash
+    // before parse_errors gets a chance to be reported.
+    if (!ci("IDENT")) {
+        parse_error(toks[pos[0]].line, toks[pos[0]].col, "expected IDENT, got " + toks[pos[0]].type);
+        // Return a stub Assignment so pp()'s resync sees a recorded error
+        // and skips to the next statement boundary.
+        return {node:"Assignment",name:"<error>",expr:{node:"NumberLit",value:0},type_ann:{kind:"none"},is_decl:true,line:ln,col:cl};
+    }
+    var nt<-eat("IDENT");var n<-nt.value;var ta<-{kind:"none"};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};
+}
 fn ppa(){var e<-pe();if(ci("ARROW")){eat("ARROW");var v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");var e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}var e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
@@ -6315,7 +6327,14 @@ if (args() > 0) {
     // errors are reported with their own priority — between import errors
     // and type errors. They typically signal a leaked variable from a
     // block (e.g. declared in an if branch, used outside).
-    scope_check_program(combined);
+    //
+    // Skip if the parse already failed: an Assignment with no name, or an
+    // if with no condition, can drop scope_check into states (empty arrays,
+    // unexpected node shapes) that crash before parse errors get reported.
+    // Parse errors take priority anyway; we'll surface them next.
+    if (len(parse_errors) = 0) {
+        scope_check_program(combined);
+    }
 
     if (len(parse_errors) > 0) {
         // Parse errors take priority — type errors and import errors are

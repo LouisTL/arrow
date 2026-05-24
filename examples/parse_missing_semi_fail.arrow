@@ -1,0 +1,6 @@
+// EXPECT: parse_fail
+//ERR: expected SEMI
+
+// Every statement terminates with `;`. Forgetting one is a parse error.
+var x <- 1
+print(x);

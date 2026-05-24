@@ -1,3 +1,7 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: ok
+
 // Should pass: array of int annotated correctly
 var nums: [int] <- [1, 2, 3];
 

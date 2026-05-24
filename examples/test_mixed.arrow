@@ -1,3 +1,9 @@
+// EXPECT: ok
+//OUT: 5
+//OUT: hi world
+//OUT: 20
+//OUT: done
+
 // Mixed annotation styles — shouldn't produce any errors
 
 // Fully annotated

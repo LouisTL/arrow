@@ -1,0 +1,13 @@
+// EXPECT: scope_fail
+//ERR: cannot reassign undeclared variable 'conter'
+
+// Bare `<-` to a name that was never declared anywhere is a typo —
+// the classic "first write silently created a new binding" footgun.
+// Strict mode catches it at compile time.
+var counter <- 0;
+
+fn bump() {
+    conter <- counter + 1;
+}
+
+bump();

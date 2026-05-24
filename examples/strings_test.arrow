@@ -1,3 +1,33 @@
+// EXPECT: ok
+//OUT: 65
+//OUT: 97
+//OUT: 48
+//OUT: 32
+//OUT: 10
+//OUT: A
+//OUT: a
+//OUT: 0
+//OUT: !
+//OUT: Hello
+//OUT: World
+//OUT: Hello, World!
+//OUT: H
+//OUT: h
+//OUT: o
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: false
+//OUT: ABCDEF
+//OUT: hello
+//OUT: single
+//OUT: 42
+//OUT: 12345
+//OUT: 7
+//OUT: Done!
+
 // Arrow Lang — String Operations Test
 
 // ── char_code ───────────────────────────

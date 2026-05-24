@@ -1,3 +1,24 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: hello
+//OUT: true
+//OUT: false
+//OUT: [1, 2, 3]
+//OUT: ["a", "b", "c"]
+//OUT: [true, false, true]
+//OUT: []
+//OUT: {x: 3, y: 4}
+//OUT: {name: "Alice", age: 30}
+//OUT: {ok: true, count: 0}
+//OUT: [[1, 2], [3, 4]]
+//OUT: [["a"], ["b", "c"]]
+//OUT: {tags: ["x", "y"], n: 2}
+//OUT: {inner: {a: 1, b: 2}}
+//OUT: [10, 20, 30]
+//OUT: [10, 99, 30]
+//OUT: {debug: true, level: 3}
+//OUT: Done!
+
 // Arrow Lang — Typed printing of composite values (compiler test)
 // Verifies that arrays and structs print recursively, with strings quoted
 // inside collections and bools rendered as true/false.

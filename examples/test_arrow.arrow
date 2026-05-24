@@ -1,3 +1,15 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 42
+//OUT: hello world
+//OUT: 30
+//OUT: wow!
+//OUT: 15
+//OUT: 1
+//OUT: 2
+//OUT: 3
+//OUT: arrow: captured!
+
 // Test 1: Simple expression arrow fn
 var add <- (x, y) => x + y;
 print(add(3, 4));

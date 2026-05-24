@@ -1,3 +1,39 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 42
+//OUT: 3628800
+//OUT: 8
+//OUT: 13
+//OUT: 14
+//OUT: 21
+//OUT: 30
+//OUT: 40
+//OUT: 11
+//OUT: [2, 4, 6, 8]
+//OUT: [2, 4, 6, 8]
+//OUT: 120
+//OUT: value: 10
+//OUT: value: 20
+//OUT: value: 30
+//OUT: 6
+//OUT: 17
+//OUT: 6
+//OUT: 6
+//OUT: 50
+//OUT: 11
+//OUT: 9
+//OUT: 110
+//OUT: 121
+//OUT: 123
+//OUT: 157
+//OUT: 0
+//OUT: 5
+//OUT: 10
+//OUT: 1
+//OUT: 1
+//OUT: 1
+//OUT: Done!
+
 // Arrow Lang v0.4 — Closures (compiler test)
 
 // ── Basic functions still work ──────────

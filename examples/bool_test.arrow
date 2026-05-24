@@ -1,3 +1,35 @@
+// EXPECT: ok
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: false
+//OUT: false
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: [true, false, true]
+//OUT: {ok: true, fail: false}
+//OUT: positive
+//OUT: negative
+//OUT: zero
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: Done!
+
 // Arrow Lang — Boolean type and operators (compiler test)
 // Exercises the dedicated bool type. Arrow has no separate bool storage; bools
 // share the i64 representation with ints, but typeof_expr distinguishes them

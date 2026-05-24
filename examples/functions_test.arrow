@@ -1,3 +1,35 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 42
+//OUT: 42
+//OUT: 17
+//OUT: 120
+//OUT: 3628800
+//OUT: 55
+//OUT: 6765
+//OUT: 6
+//OUT: 25
+//OUT: 81
+//OUT: 30
+//OUT: 40
+//OUT: 5050
+//OUT: 1
+//OUT: 2
+//OUT: Fizz
+//OUT: 4
+//OUT: Buzz
+//OUT: Fizz
+//OUT: 7
+//OUT: 8
+//OUT: Fizz
+//OUT: Buzz
+//OUT: 11
+//OUT: Fizz
+//OUT: 13
+//OUT: 14
+//OUT: FizzBuzz
+//OUT: Done!
+
 // Arrow Lang v0.2 — Functions (compiler test)
 // All functions work with integer params/returns.
 

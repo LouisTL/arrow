@@ -1,3 +1,41 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 7
+//OUT: 11
+//OUT: 4
+//OUT: 1
+//OUT: 13
+//OUT: 14
+//OUT: 5
+//OUT: 2
+//OUT: 9
+//OUT: 20
+//OUT: 1
+//OUT: 2
+//OUT: 6
+//OUT: 3
+//OUT: -5
+//OUT: 5
+//OUT: -2
+//OUT: -2
+//OUT: -6
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: true
+//OUT: false
+//OUT: abc
+//OUT: count: 7
+//OUT: xy
+//OUT: Done!
+
 // Arrow Lang — Operator precedence and grouping (compiler test)
 // Confirms the parser binds operators at the right tightness so the same
 // expression evaluates the same way in interpreter and native.

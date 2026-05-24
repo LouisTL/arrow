@@ -1,0 +1,9 @@
+// EXPECT: scope_fail
+//ERR: undefined variable 'x'
+
+// `var` declares in the *innermost* block scope. Once that block exits,
+// the binding is gone — reading it from an outer scope is an error.
+if (true) {
+    var x <- 42;
+}
+print(x);

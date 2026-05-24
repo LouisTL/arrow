@@ -1,2 +1,5 @@
+// EXPECT: ok
+//OUT: hello world
+
 // Minimal test — just a string literal, no concatenation
 print("hello world");

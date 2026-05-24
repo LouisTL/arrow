@@ -1,3 +1,12 @@
+// EXPECT: ok
+//OUT: 5
+//OUT: 7
+//OUT: 3
+//OUT: 8
+//OUT: 7
+//OUT: 7
+//OUT: Done!
+
 // Arrow Lang — Std lib demo
 //
 // `import "std/math";` doesn't find `examples/std/math.arrow`, so the

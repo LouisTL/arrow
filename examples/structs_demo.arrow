@@ -1,3 +1,34 @@
+// EXPECT: ok
+//OUT: {name: "Alice", age: 30}
+//OUT: Alice
+//OUT: 30
+//OUT: 31
+//OUT: +
+//OUT: 1
+//OUT: 2
+//OUT: true
+//OUT: app
+//OUT: 3
+//OUT: NUMBER
+//OUT: +
+//OUT: 8
+//OUT: Alice is 31 years old
+//OUT: {x: 3, y: 4}
+//OUT: {x: 10, y: 20}
+//OUT: 305
+//OUT: ["name", "age"]
+//OUT: {}
+//OUT: 0
+//OUT: 3
+//OUT: DIGIT:1
+//OUT: DIGIT:2
+//OUT: PLUS:+
+//OUT: DIGIT:3
+//OUT: DIGIT:4
+//OUT: MINUS:-
+//OUT: DIGIT:5
+//OUT: Done!
+
 // Arrow Lang v0.4 — Structs Demo
 
 // ── Basic struct ────────────────────────

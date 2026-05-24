@@ -1,3 +1,11 @@
+// EXPECT: ok
+//OUT: 30
+//OUT: Ada
+//OUT: 25
+//OUT: Reds
+//OUT: a
+//OUT: ok
+
 // All struct annotations correct
 var pt: {x: int, y: int} <- {x: 3, y: 4};
 

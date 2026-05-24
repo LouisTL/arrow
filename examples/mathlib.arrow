@@ -1,3 +1,6 @@
+// EXPECT: ok
+// (module-only file — exports fns and constants, prints nothing standalone)
+
 // Arrow Lang — Module example: a math library
 //
 // This file is imported by modules_demo.arrow under the namespace `mathlib`.

@@ -1,3 +1,12 @@
+// EXPECT: ok
+//OUT: 3
+//OUT: 4
+//OUT: 30
+//OUT: Ada
+//OUT: 25
+//OUT: Reds
+//OUT: a
+
 // Struct type annotations should parse and run
 var pt: {x: int, y: int} <- {x: 3, y: 4};
 print(pt.x);

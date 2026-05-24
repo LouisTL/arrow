@@ -1,3 +1,26 @@
+// EXPECT: ok
+//OUT: {name: "Alice", age: 30}
+//OUT: Alice
+//OUT: 30
+//OUT: 31
+//OUT: 10
+//OUT: 20
+//OUT: {x: 3, y: 4}
+//OUT: {x: 7, y: 8}
+//OUT: 32
+//OUT: +
+//OUT: 1
+//OUT: 2
+//OUT: 5
+//OUT: 3
+//OUT: 15
+//OUT: {debug: true, level: 3}
+//OUT: true
+//OUT: {}
+//OUT: 30
+//OUT: 5
+//OUT: Done!
+
 // Arrow Lang v0.4 — Structs (compiler test)
 
 // Basic struct with string and int fields

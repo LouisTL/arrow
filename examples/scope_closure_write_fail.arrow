@@ -1,0 +1,17 @@
+// EXPECT: scope_fail
+//ERR: cannot reassign undeclared variable 'n'
+
+// Bare `<-` walks up within the current function and then falls through
+// to globals — it never reaches a captured outer-function scope. To
+// "modify" a captured value, the closure has to explicitly `var n <- n + 1;`
+// (and that snapshot lives only for that call).
+fn make_counter() {
+    var n <- 0;
+    return () => {
+        n <- n + 1;
+        return n;
+    };
+}
+
+var c <- make_counter();
+print(c());

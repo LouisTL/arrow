@@ -1,3 +1,9 @@
+// EXPECT: type_fail
+//ERR: 'x' annotated as int but assigned str
+//ERR: argument 2 expected int but got str
+//ERR: argument 1 expected str but got int
+//ERR: 3 type error(s)
+
 // Three intentional type errors
 var x: int <- "this is a string, not int";
 

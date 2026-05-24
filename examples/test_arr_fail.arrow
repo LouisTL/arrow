@@ -1,3 +1,9 @@
+// EXPECT: type_fail
+//ERR: 'words' annotated as [int] but assigned [str]
+//ERR: argument 1 expected [int] but got [str]
+//ERR: return type mismatch
+//ERR: 3 type error(s)
+
 // Should fail: 3 errors involving array types
 
 // 1. Annotated as [int] but assigned [str]

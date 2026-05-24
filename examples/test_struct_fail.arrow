@@ -1,3 +1,10 @@
+// EXPECT: type_fail
+//ERR: 'bad1' annotated as {x: int, y: int}
+//ERR: 'bad2' annotated as {x: int, y: int}
+//ERR: call to 'dist'
+//ERR: return type mismatch
+//ERR: 4 type error(s)
+
 // Should produce multiple struct-related type errors
 
 // 1. Wrong field type: x should be int, given str

@@ -1,0 +1,5 @@
+// EXPECT: parse_fail
+//ERR: expected IDENT
+
+// `var` must be followed by an identifier. Bare `var <- 5;` is malformed.
+var <- 5;

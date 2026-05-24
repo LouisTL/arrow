@@ -1,3 +1,12 @@
+// EXPECT: ok
+//OUT: 36
+//OUT: 27
+//OUT: 3
+//OUT: 3
+//OUT: 120
+//OUT: 720
+//OUT: Done!
+
 // Arrow Lang — `import "x" as y` aliases
 //
 // The default namespace is the file's basename, but you can override it

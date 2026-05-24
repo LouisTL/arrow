@@ -1,3 +1,20 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 1
+//OUT: 0
+//OUT: 1
+//OUT: 610
+//OUT: 1
+//OUT: 0
+//OUT: 1
+//OUT: 1
+//OUT: 15
+//OUT: 0
+//OUT: 15
+//OUT: 3
+//OUT: 720
+//OUT: Done!
+
 // Arrow Lang — Recursion (compiler test)
 // Cases not covered by functions_test (which has factorial(5)/factorial(10),
 // fib(10)/fib(20), gcd). This file focuses on:
