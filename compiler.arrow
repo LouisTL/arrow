@@ -1231,6 +1231,16 @@ fn scan_fns(stmts) {
                 rt <- stmts[i].ret_type_ann;
             }
             push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
+            var pj <- 0;
+            while (pj < len(stmts[i].param_types_ann)) {
+                if (T.union_in_container(stmts[i].param_types_ann[pj])) {
+                    report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (parameter " + (pj + 1) + " of '" + stmts[i].name + "')");
+                }
+                pj <- pj + 1;
+            }
+            if (T.union_in_container(stmts[i].ret_type_ann)) {
+                report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (return type of '" + stmts[i].name + "')");
+            }
         }
         // Also register top-level arrow-fn assignments under the variable name.
         // This lets the type checker resolve `myVar(args)` calls where myVar holds
@@ -2300,6 +2310,9 @@ fn check_stmt(s) {
             var actual <- typeof_expr(s.expr);
             if (!T.types_compat(s.type_ann, actual)) {
                 report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
+            }
+            if (T.union_in_container(s.type_ann)) {
+                report_error(s.line, s.col, "union inside an array or struct is not supported yet: " + T.type_str(s.type_ann));
             }
         }
         check_expr(s.expr);

@@ -1,0 +1,8 @@
+// EXPECT: type_fail
+//ERR: union inside an array or struct is not supported yet
+
+// Unions nested in arrays/structs aren't widened yet, so the checker rejects
+// the type rather than emitting code that dereferences a raw element as a
+// union cell. (Top-level unions like `int | str` are fine — see union_test.)
+var xs: [int | str] <- [1, 2];
+print(xs);

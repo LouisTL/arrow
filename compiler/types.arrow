@@ -91,6 +91,34 @@ fn union_member_accepts(m, actual): int {
     return m.kind = actual.kind;
 }
 
+// True if a union appears nested inside a container (an array element or a
+// struct field). A top-level union is fine; container-of-union isn't widened
+// yet, so the checker rejects it until that lands.
+fn union_in_container(t): int {
+    if (t.kind = "array") {
+        if (t.elem.kind = "union") { return true; }
+        return union_in_container(t.elem);
+    }
+    if (t.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(t.fields)) {
+            if (t.fields[i].type.kind = "union") { return true; }
+            if (union_in_container(t.fields[i].type)) { return true; }
+            i <- i + 1;
+        }
+        return false;
+    }
+    if (t.kind = "union") {
+        var j <- 0;
+        while (j < len(t.members)) {
+            if (union_in_container(t.members[j])) { return true; }
+            j <- j + 1;
+        }
+        return false;
+    }
+    return false;
+}
+
 // Render a Type as surface syntax for error messages.
 fn type_str(t): str {
     if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
