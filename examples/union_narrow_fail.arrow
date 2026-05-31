@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: cannot use union value
+//ERR: narrow it to a single type first
+
+// A union may be stored, passed, returned, or printed, but not operated on
+// until it's narrowed to a single member. Arithmetic on a union must be a
+// compile-time error rather than silently computing on the cell pointer.
+var id: int | str <- "42";
+print(id + 1);

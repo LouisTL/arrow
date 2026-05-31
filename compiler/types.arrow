@@ -23,6 +23,74 @@ fn mk_none() { return {kind: "none"}; }
 fn mk_array(elem) { return {kind: "array", elem: elem}; }
 fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
 
+fn mk_union(members) { return {kind: "union", members: members}; }
+
+// Canonical ordering rank for union members. Arrow's `<` lowers to integer
+// comparison, so sorting by kind string would compare pointers; a fixed rank
+// table gives a deterministic order instead. Same-rank (compound) members
+// keep source order for now.
+fn type_rank(t): int {
+    if (t.kind = "int") { return 0; }
+    if (t.kind = "bool") { return 1; }
+    if (t.kind = "float") { return 2; }
+    if (t.kind = "str") { return 3; }
+    if (t.kind = "array") { return 4; }
+    if (t.kind = "struct_lit") { return 5; }
+    if (t.kind = "struct") { return 6; }
+    if (t.kind = "fn") { return 7; }
+    if (t.kind = "any") { return 8; }
+    return 9;
+}
+
+// Dedupe (by structural equality) and sort into canonical order, so
+// `int | str` and `str | int` become the same type with identical member
+// indices everywhere — which keeps runtime tags consistent across equal
+// unions written in different orders.
+fn union_normalize(members) {
+    var uniq <- [];
+    var i <- 0;
+    while (i < len(members)) {
+        var seen <- false;
+        var j <- 0;
+        while (j < len(uniq)) {
+            if (type_eq(uniq[j], members[i])) { seen <- true; }
+            j <- j + 1;
+        }
+        if (!seen) { push(uniq, members[i]); }
+        i <- i + 1;
+    }
+    var out <- [];
+    var used <- [];
+    i <- 0;
+    while (i < len(uniq)) { push(used, false); i <- i + 1; }
+    var count <- 0;
+    while (count < len(uniq)) {
+        var best <- -1;
+        var best_rank <- 0;
+        var k <- 0;
+        while (k < len(uniq)) {
+            if (!used[k]) {
+                var r <- type_rank(uniq[k]);
+                if (best = -1 || r < best_rank) { best <- k; best_rank <- r; }
+            }
+            k <- k + 1;
+        }
+        used[best] <- true;
+        push(out, uniq[best]);
+        count <- count + 1;
+    }
+    return out;
+}
+
+// Does union member `m` accept a value of type `actual`? Primitives match by
+// kind exactly — no int/bool/float interchange — so a bool is not silently
+// admitted into `int | str` (which would then misprint). Compound members
+// fall back to structural compatibility.
+fn union_member_accepts(m, actual): int {
+    if (m.kind = "array" || m.kind = "struct_lit") { return types_compat(m, actual); }
+    return m.kind = actual.kind;
+}
+
 // Render a Type as surface syntax for error messages.
 fn type_str(t): str {
     if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
@@ -35,6 +103,17 @@ fn type_str(t): str {
             i <- i + 1;
         }
         return s + "}";
+    }
+    if (t.kind = "union") {
+        var ms <- union_normalize(t.members);
+        var s2 <- "";
+        var i <- 0;
+        while (i < len(ms)) {
+            if (i > 0) { s2 <- s2 + " | "; }
+            s2 <- s2 + type_str(ms[i]);
+            i <- i + 1;
+        }
+        return s2;
     }
     return t.kind;
 }
@@ -75,6 +154,10 @@ fn type_eq(a, b): int {
 fn types_join(a, b) {
     if (a.kind = "none") { return b; }
     if (b.kind = "none") { return a; }
+    if (a.kind = "union" || b.kind = "union") {
+        if (a.kind = "union" && b.kind = "union" && types_compat(a, b) && types_compat(b, a)) { return a; }
+        return mk_any();
+    }
     if (a.kind = "any" || b.kind = "any") { return mk_any(); }
     if (a.kind != b.kind) { return mk_any(); }
     if (a.kind = "int" || a.kind = "str" || a.kind = "bool" || a.kind = "float"
@@ -112,6 +195,29 @@ fn types_compat(annot, actual): int {
     if (actual.kind = "struct") { return true; }
     if (annot.kind = "fn") { return true; }
     if (actual.kind = "fn") { return true; }
+    if (annot.kind = "union" && actual.kind = "union") {
+        var i <- 0;
+        while (i < len(actual.members)) {
+            var m <- actual.members[i];
+            var ok <- false;
+            var j <- 0;
+            while (j < len(annot.members)) {
+                if (union_member_accepts(annot.members[j], m)) { ok <- true; }
+                j <- j + 1;
+            }
+            if (!ok) { return false; }
+            i <- i + 1;
+        }
+        return true;
+    }
+    if (annot.kind = "union") {
+        var k <- 0;
+        while (k < len(annot.members)) {
+            if (union_member_accepts(annot.members[k], actual)) { return true; }
+            k <- k + 1;
+        }
+        return false;
+    }
     // bool and int share the i64 runtime representation — interchangeable.
     if (annot.kind = "int" && actual.kind = "bool") { return true; }
     if (annot.kind = "bool" && actual.kind = "int") { return true; }

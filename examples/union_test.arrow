@@ -1,0 +1,47 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: 7
+//OUT: true
+//OUT: 99
+//OUT: 1
+//OUT: x
+//OUT: 7
+//OUT: hi
+//OUT: done
+
+// Arrow Lang — union types (scalar). A union value is a {tag, payload} cell;
+// the tag selects which member, so printing dispatches at runtime. Members are
+// widened into the cell at three coercion sites: assignment, union-typed
+// return, and union-typed argument.
+
+// ── Assignment + reassignment ────────────
+// The union type sticks across reassignment, so each stored member is wrapped.
+var id: int | str <- "42";
+print(id);                 // 42  (str member)
+id <- 7;
+print(id);                 // 7   (int member)
+
+// ── A tag that earns its keep ────────────
+// int and bool share the i64 representation; only the tag tells them apart.
+var v: int | bool <- true;
+print(v);                  // true
+v <- 99;
+print(v);                  // 99
+
+// ── Union return type ────────────────────
+fn pick(flag): int | str {
+    if (flag) { return 1; }
+    return "x";
+}
+print(pick(true));         // 1
+print(pick(false));        // x
+
+// ── Union parameter ──────────────────────
+fn show(x: int | str): int {
+    print(x);
+    return 0;
+}
+show(7);                   // 7
+show("hi");                // hi
+
+print("done");

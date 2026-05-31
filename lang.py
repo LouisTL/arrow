@@ -42,6 +42,7 @@ class TokenType(Enum):
     GTE       = auto()  # >=
     AND       = auto()  # &&
     OR        = auto()  # ||
+    PIPE      = auto()  # |
     NOT       = auto()  # !
     DOT       = auto()  # .
     COLON     = auto()  # :
@@ -168,6 +169,9 @@ class Lexer:
             elif ch == '|' and self._peek(1) == '|':
                 self._advance(); self._advance()
                 tokens.append(Token(TokenType.OR, '||', line, col))
+            elif ch == '|':
+                self._advance()
+                tokens.append(Token(TokenType.PIPE, '|', line, col))
 
             # Single-character tokens
             elif ch == '+': self._advance(); tokens.append(Token(TokenType.PLUS,     '+', line, col))
@@ -563,6 +567,8 @@ class Parser:
             self._eat(TokenType.RBRACE)
         else:
             self._eat(TokenType.IDENT)
+        while self._match(TokenType.PIPE):
+            self._skip_type_ann()
 
     def _assignment(self, typed: bool = False) -> Assignment:
         ident_tok = self._eat(TokenType.IDENT)
