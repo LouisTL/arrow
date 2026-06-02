@@ -12,8 +12,8 @@
 // ═══════════════════════════════════════════
 
 // Type system primitives and pure type-level helpers live in their own
-// module. Imported as `T` — usage looks like `T.T.mk_int()`, `T.T.types_join(a,b)`,
-// `T.T.types_compat(annot, actual)`. The resolver loads compiler/types.arrow
+// module. Imported as `T` — usage looks like `T.mk_int()`, `T.types_join(a,b)`,
+// `T.types_compat(annot, actual)`. The resolver loads compiler/types.arrow
 // via the search-path fallback (next to the arrow executable) so this
 // works regardless of where the user invoked the compiler from.
 import "compiler/types" as T;
@@ -1995,7 +1995,6 @@ fn is_builtin_name(n: str): int {
         || n = "read_file" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
-        || n = "is_digit" || n = "is_alpha" || n = "is_alnum"
         || n = "exec_cmd" || n = "args"
         || n = "true" || n = "false";
 }
