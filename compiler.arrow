@@ -216,7 +216,7 @@ fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT")
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
-fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var nm<-"";if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}var pt<-pty_one();eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pt,name:nm,body:body});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var nm<-"";var wild<-false;var pt<-{kind:"none"};if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pt,name:nm,body:body,wild:wild});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
 fn paf(){var pl<-ppl();var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
@@ -1925,14 +1925,18 @@ fn infer_body(stmts) {
         if (s.node = "MatchStmt") {
             var mi <- 0;
             while (mi < len(s.arms)) {
-                var bn <- match_bind_name(s.arms[mi], s.scrutinee);
-                if (bn != "") {
-                    var saved <- get_var_type(bn);
-                    set_var_type(bn, s.arms[mi].ptype);
+                if (s.arms[mi].wild) {
                     infer_body(s.arms[mi].body);
-                    set_var_type(bn, saved);
                 } else {
-                    infer_body(s.arms[mi].body);
+                    var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                    if (bn != "") {
+                        var saved <- get_var_type(bn);
+                        set_var_type(bn, s.arms[mi].ptype);
+                        infer_body(s.arms[mi].body);
+                        set_var_type(bn, saved);
+                    } else {
+                        infer_body(s.arms[mi].body);
+                    }
                 }
                 mi <- mi + 1;
             }
@@ -2272,8 +2276,10 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
         var mi <- 0;
         while (mi < len(s.arms)) {
             push(fn_scopes, []);
-            var bn <- match_bind_name(s.arms[mi], s.scrutinee);
-            if (bn != "") { scope_declare(fn_scopes, bn); }
+            if (!s.arms[mi].wild) {
+                var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                if (bn != "") { scope_declare(fn_scopes, bn); }
+            }
             scope_check_stmts(s.arms[mi].body, fn_scopes, captured, globals_set, fn_names);
             pop(fn_scopes);
             mi <- mi + 1;
@@ -2428,34 +2434,48 @@ fn check_stmt(s) {
             var covered <- [];
             var ci2 <- 0;
             while (ci2 < len(ms)) { push(covered, false); ci2 <- ci2 + 1; }
+            var has_wild <- false;
             var mi <- 0;
             while (mi < len(s.arms)) {
-                var pt <- s.arms[mi].ptype;
-                var idx <- union_member_index(ut, pt);
-                if (idx = -1) {
-                    report_error(s.line, s.col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
-                } else {
-                    if (covered[idx]) { report_error(s.line, s.col, "duplicate match arm for " + T.type_str(pt)); }
-                    covered[idx] <- true;
-                }
-                if (s.arms[mi].name = "" && s.scrutinee.node != "Identifier") {
-                    report_error(s.line, s.col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
-                }
-                var bn <- match_bind_name(s.arms[mi], s.scrutinee);
-                if (bn != "") {
-                    var saved <- get_var_type(bn);
-                    set_var_type(bn, pt);
+                if (s.arms[mi].wild) {
+                    if (has_wild) { report_error(s.line, s.col, "duplicate wildcard arm '_'"); }
+                    has_wild <- true;
+                    if (mi != len(s.arms) - 1) { report_error(s.line, s.col, "wildcard arm '_' must be the last arm"); }
+                    var all_cov <- true;
+                    var wc <- 0;
+                    while (wc < len(covered)) { if (!covered[wc]) { all_cov <- false; } wc <- wc + 1; }
+                    if (all_cov) { report_error(s.line, s.col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
                     check_body(s.arms[mi].body);
-                    set_var_type(bn, saved);
                 } else {
-                    check_body(s.arms[mi].body);
+                    var pt <- s.arms[mi].ptype;
+                    var idx <- union_member_index(ut, pt);
+                    if (idx = -1) {
+                        report_error(s.line, s.col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
+                    } else {
+                        if (covered[idx]) { report_error(s.line, s.col, "duplicate match arm for " + T.type_str(pt)); }
+                        covered[idx] <- true;
+                    }
+                    if (s.arms[mi].name = "" && s.scrutinee.node != "Identifier") {
+                        report_error(s.line, s.col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
+                    }
+                    var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                    if (bn != "") {
+                        var saved <- get_var_type(bn);
+                        set_var_type(bn, pt);
+                        check_body(s.arms[mi].body);
+                        set_var_type(bn, saved);
+                    } else {
+                        check_body(s.arms[mi].body);
+                    }
                 }
                 mi <- mi + 1;
             }
-            var ei <- 0;
-            while (ei < len(covered)) {
-                if (!covered[ei]) { report_error(s.line, s.col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
-                ei <- ei + 1;
+            if (!has_wild) {
+                var ei <- 0;
+                while (ei < len(covered)) {
+                    if (!covered[ei]) { report_error(s.line, s.col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
+                    ei <- ei + 1;
+                }
             }
         }
     }
@@ -6187,6 +6207,11 @@ fn ir_emit_stmt(b, stmt) {
         var mi <- 0;
         while (mi < len(stmt.arms)) {
             var arm <- stmt.arms[mi];
+            if (arm.wild) {
+                var wbi <- 0;
+                while (wbi < len(arm.body)) { ir_emit_stmt(b, arm.body[wbi]); wbi <- wbi + 1; }
+                if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            } else {
             var idx <- union_member_index(ut, arm.ptype);
             var do_lbl <- ir_fresh_block_lbl(b, "marm");
             var next_lbl <- join_lbl;
@@ -6249,6 +6274,7 @@ fn ir_emit_stmt(b, stmt) {
                 var next_bb <- ir_block(next_lbl);
                 ir_fn_add_block(b.func, next_bb);
                 b.cur_block <- next_bb;
+            }
             }
             mi <- mi + 1;
         }

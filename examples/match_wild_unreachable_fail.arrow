@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: unreachable wildcard
+// When every member already has a typed arm, the wildcard can never run.
+var v: int | str <- 5;
+match (v) {
+    int => { print(1); },
+    str => { print(2); },
+    _ => { print(3); },
+}

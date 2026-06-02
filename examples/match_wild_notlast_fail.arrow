@@ -1,0 +1,8 @@
+// EXPECT: type_fail
+//ERR: must be the last
+// A wildcard must be the final arm — anything after it is unreachable.
+var v: int | str <- 5;
+match (v) {
+    _ => { print(1); },
+    int => { print(2); },
+}

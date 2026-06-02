@@ -712,10 +712,15 @@ class Parser:
         arms = []
         while self._current().type != TokenType.RBRACE:
             name = None
-            if self._current().type == TokenType.IDENT and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.COLON:
-                name = self._eat(TokenType.IDENT).value
-                self._eat(TokenType.COLON)
-            ptype_kind = self._parse_type_kind()
+            if (self._current().type == TokenType.IDENT and self._current().value == "_"
+                    and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.FAT_ARROW):
+                self._eat(TokenType.IDENT)  # consume the _
+                ptype_kind = "_"
+            else:
+                if self._current().type == TokenType.IDENT and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.COLON:
+                    name = self._eat(TokenType.IDENT).value
+                    self._eat(TokenType.COLON)
+                ptype_kind = self._parse_type_kind()
             self._eat(TokenType.FAT_ARROW)
             body = self._block()
             arms.append(MatchArm(ptype_kind, name, body.statements))
@@ -1140,18 +1145,21 @@ class Interpreter:
                 else: kind = "struct"
                 chosen = None
                 for arm in arms:
-                    if arm.ptype_kind == kind:
+                    if arm.ptype_kind == "_" or arm.ptype_kind == kind:
                         chosen = arm
                         break
                 if chosen is not None:
                     outer = self.env
                     self.env = Environment(parent=outer)
                     try:
-                        bn = chosen.name
-                        if bn is None and isinstance(scrutinee, Identifier):
-                            bn = scrutinee.name
-                        if bn is not None:
-                            self.env.declare(bn, val)
+                        # A wildcard binds nothing — the scrutinee keeps its
+                        # full union value, so no shadow is introduced.
+                        if chosen.ptype_kind != "_":
+                            bn = chosen.name
+                            if bn is None and isinstance(scrutinee, Identifier):
+                                bn = scrutinee.name
+                            if bn is not None:
+                                self.env.declare(bn, val)
                         for s in chosen.body:
                             self._exec(s)
                     finally:
