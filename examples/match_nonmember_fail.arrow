@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: is not a member
+// An arm type that isn't part of the union is a compile error.
+var x: int | str <- 5;
+match (x) {
+    int => { print(x); },
+    str => { print(x); },
+    float => { print(x); },
+}

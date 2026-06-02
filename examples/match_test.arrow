@@ -1,0 +1,72 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: after
+//OUT: 8
+//OUT: 7
+//OUT: true
+//OUT: 100
+//OUT: 1005
+//OUT: 5
+//OUT: hi
+//OUT: hi
+//OUT: 6
+//OUT: neg
+
+// Arrow Lang — typed pattern matching (match statement).
+// A match dispatches on a union's runtime tag. Each arm narrows to one member
+// through a fresh binding: `name: type` binds explicitly; a bare `type`
+// shadows a variable scrutinee. The binding is scoped to the arm — the
+// scrutinee keeps its union type afterward.
+
+// ── bare pattern shadows a variable scrutinee ──
+var id: int | str <- "42";
+match (id) {
+    int => { print(id); },
+    str => { print(id); },        // id shadowed as str here
+}
+print("after");
+
+// ── narrowing makes member operations legal inside the arm ──
+var n: int | str <- 7;
+match (n) {
+    int => { print(n + 1); },     // 8 — n is int in this arm
+    str => { print(n); },
+}
+print(n);                          // 7 — n is still the union after the match
+
+// ── int | bool: the tag disambiguates identical i64 bits ──
+var v: int | bool <- true;
+match (v) {
+    int => { print(v + 1); },
+    b: bool => { print(b); },      // true
+}
+v <- 99;
+match (v) {
+    int => { print(v + 1); },      // 100
+    b: bool => { print(b); },
+}
+
+// ── param scrutinee: the binding swaps the param slot, then restores ──
+fn show(x: int | str) {
+    match (x) {
+        int => { print(x + 1000); },
+        str => { print(x); },
+    }
+    print(x);                      // x restored to the union
+}
+show(5);                           // 1005 then 5
+show("hi");                        // hi then hi
+
+// ── named binding on an expression scrutinee (Option/Result shape) ──
+fn parse(k: int): int | str {
+    if (k > 0) { return k; }
+    return "neg";
+}
+match (parse(5)) {
+    m: int => { print(m + 1); },   // 6
+    s: str => { print(s); },
+}
+match (parse(0 - 1)) {
+    m: int => { print(m + 1); },
+    s: str => { print(s); },       // neg
+}

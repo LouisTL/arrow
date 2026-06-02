@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: requires a binding name
+// A non-variable scrutinee has nothing to shadow, so a bare pattern is an
+// error — the arm must name the unwrapped value with `name: type`.
+fn parse(k: int): int | str { if (k > 0) { return k; } return "neg"; }
+match (parse(5)) {
+    int => { print(1); },
+    str => { print(2); },
+}

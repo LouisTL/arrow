@@ -34,6 +34,7 @@ class TokenType(Enum):
     PERCENT   = auto()  # %
     ARROW     = auto()  # <-
     FAT_ARROW = auto()  # =>
+    MATCH     = auto()  # match keyword
     EQ        = auto()  # =
     NEQ       = auto()  # !=
     LT        = auto()  # <
@@ -85,6 +86,7 @@ class Token:
 #  LEXER
 # ─────────────────────────────────────────────
 KEYWORDS = {
+    "match": TokenType.MATCH,
     "if": TokenType.IF, "else": TokenType.ELSE, "while": TokenType.WHILE,
     "for": TokenType.FOR, "in": TokenType.IN,
     "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
@@ -315,6 +317,17 @@ class PrintStmt:
     expr: Any
 
 @dataclass
+class MatchArm:
+    ptype_kind: str
+    name: str | None
+    body: list
+
+@dataclass
+class MatchStmt:
+    scrutinee: Any
+    arms: list
+
+@dataclass
 class IfStmt:
     condition: Any
     then_body: list
@@ -470,6 +483,8 @@ class Parser:
             return self._if_stmt()
         if tok.type == TokenType.WHILE:
             return self._while_stmt()
+        if tok.type == TokenType.MATCH:
+            return self._match_stmt()
         if tok.type == TokenType.FOR:
             return self._for_in_stmt()
         if tok.type == TokenType.PRINT:
@@ -668,6 +683,45 @@ class Parser:
                     self._skip_type_ann()
         self._eat(TokenType.RPAREN)
         return params
+
+    def _parse_type_kind(self) -> str:
+        """Parse a single (non-union) type for a match arm; return its kind."""
+        t = self._current().type
+        if t == TokenType.LBRACKET:
+            self._eat(TokenType.LBRACKET)
+            self._skip_type_ann()
+            self._eat(TokenType.RBRACKET)
+            return "array"
+        if t == TokenType.LBRACE:
+            self._eat(TokenType.LBRACE)
+            if self._current().type != TokenType.RBRACE:
+                self._eat(TokenType.IDENT); self._eat(TokenType.COLON); self._skip_type_ann()
+                while self._match(TokenType.COMMA):
+                    if self._current().type == TokenType.RBRACE: break
+                    self._eat(TokenType.IDENT); self._eat(TokenType.COLON); self._skip_type_ann()
+            self._eat(TokenType.RBRACE)
+            return "struct"
+        return self._eat(TokenType.IDENT).value
+
+    def _match_stmt(self) -> MatchStmt:
+        self._eat(TokenType.MATCH)
+        self._eat(TokenType.LPAREN)
+        scrutinee = self._expression()
+        self._eat(TokenType.RPAREN)
+        self._eat(TokenType.LBRACE)
+        arms = []
+        while self._current().type != TokenType.RBRACE:
+            name = None
+            if self._current().type == TokenType.IDENT and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.COLON:
+                name = self._eat(TokenType.IDENT).value
+                self._eat(TokenType.COLON)
+            ptype_kind = self._parse_type_kind()
+            self._eat(TokenType.FAT_ARROW)
+            body = self._block()
+            arms.append(MatchArm(ptype_kind, name, body.statements))
+            self._match(TokenType.COMMA)
+        self._eat(TokenType.RBRACE)
+        return MatchStmt(scrutinee, arms)
 
     def _if_stmt(self) -> IfStmt:
         self._eat(TokenType.IF)
@@ -1069,6 +1123,39 @@ class Interpreter:
                 text = self._format(val)
                 print(text)
                 self.output.append(text)
+
+            case MatchStmt(scrutinee, arms):
+                # Dynamically typed: a union value is just the underlying
+                # value, so dispatch on its runtime type. bool is checked
+                # before int (Python bool is an int subclass) — exactly the
+                # native tag order. The matching arm runs in a fresh scope
+                # with the binding (named, or the scrutinee variable shadowed)
+                # bound to the value.
+                val = self._eval(scrutinee)
+                if isinstance(val, bool): kind = "bool"
+                elif isinstance(val, int): kind = "int"
+                elif isinstance(val, str): kind = "str"
+                elif isinstance(val, float): kind = "float"
+                elif isinstance(val, list): kind = "array"
+                else: kind = "struct"
+                chosen = None
+                for arm in arms:
+                    if arm.ptype_kind == kind:
+                        chosen = arm
+                        break
+                if chosen is not None:
+                    outer = self.env
+                    self.env = Environment(parent=outer)
+                    try:
+                        bn = chosen.name
+                        if bn is None and isinstance(scrutinee, Identifier):
+                            bn = scrutinee.name
+                        if bn is not None:
+                            self.env.declare(bn, val)
+                        for s in chosen.body:
+                            self._exec(s)
+                    finally:
+                        self.env = outer
 
             case IfStmt(cond, then_body, else_body):
                 # The condition is evaluated in the enclosing scope. Each
@@ -1523,6 +1610,12 @@ def _mod_rewrite(node, top_names: set, scope: set, mod_name: str):
     if isinstance(node, PrintStmt):
         _mod_rewrite(node.expr, top_names, scope, mod_name)
         return
+    if isinstance(node, MatchStmt):
+        _mod_rewrite(node.scrutinee, top_names, scope, mod_name)
+        for arm in node.arms:
+            for s in arm.body:
+                _mod_rewrite_stmt(s, top_names, scope, mod_name)
+        return
     if isinstance(node, IfStmt):
         _mod_rewrite(node.condition, top_names, scope, mod_name)
         for s in node.then_body:
@@ -1632,6 +1725,12 @@ def _main_rewrite_stmt(s, mod_names: set, canonical_for: dict):
         return s
     if isinstance(s, PrintStmt):
         s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
+        return s
+    if isinstance(s, MatchStmt):
+        s.scrutinee = _main_rewrite(s.scrutinee, mod_names, canonical_for)
+        for arm in s.arms:
+            for i, sub in enumerate(arm.body):
+                arm.body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
         return s
     if isinstance(s, IfStmt):
         s.condition = _main_rewrite(s.condition, mod_names, canonical_for)
