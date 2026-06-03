@@ -8,13 +8,15 @@
 //OUT: bye
 //OUT: is true
 //OUT: neg one
+//OUT: bool false
 //OUT: done
 
 // Literal patterns refine a union member: an arm `42 =>` fires only when the
 // scrutinee is the int 42. Dispatch checks the member tag first, then the
 // value, so `1` never matches `true`. A matched literal binds the scrutinee
 // (narrowed to the member type) just like a typed arm. Literals do not satisfy
-// exhaustiveness — a typed arm or `_` must still cover each member.
+// exhaustiveness — a typed arm or `_` must still cover each member — except
+// that true + false together exhaust bool, which has only two inhabitants.
 
 var n: int | str <- 42;
 match (n) {
@@ -55,5 +57,13 @@ match (m) {
     -1 => { print("neg one"); }   // negative integer literal
     int => { print("other int"); print(m); }
     str => { print("other str"); print(m); }
+}
+
+// true and false jointly cover the bool member — no `bool` arm required.
+var bx: bool | int <- false;
+match (bx) {
+    true => { print("bool true"); }
+    false => { print("bool false"); }   // bx is false
+    int => { print(bx + 1); }
 }
 print("done");

@@ -2301,6 +2301,14 @@ fn check_body(stmts) {
     }
 }
 
+// A bool member is fully covered once BOTH literals `true` and `false` have
+// appeared — bool has exactly two inhabitants, so the pair is total. Every
+// other member is covered only by a type arm or `_` (literals merely refine).
+fn match_eff_covered(covered, ms, i: int, seen_lits): int {
+    if (covered[i]) { return true; }
+    if (ms[i].kind = "bool" && name_in(seen_lits, "bool:true") && name_in(seen_lits, "bool:false")) { return true; }
+    return false;
+}
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
@@ -2356,7 +2364,7 @@ fn check_stmt(s) {
                     if (mi != len(s.arms) - 1) { report_error(s.line, s.col, "wildcard arm '_' must be the last arm"); }
                     var all_cov <- true;
                     var wc <- 0;
-                    while (wc < len(covered)) { if (!covered[wc]) { all_cov <- false; } wc <- wc + 1; }
+                    while (wc < len(covered)) { if (!match_eff_covered(covered, ms, wc, seen_lits)) { all_cov <- false; } wc <- wc + 1; }
                     if (all_cov) { report_error(s.line, s.col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
                     check_body(s.arms[mi].body);
                 } else {
@@ -2403,7 +2411,7 @@ fn check_stmt(s) {
             if (!has_wild) {
                 var ei <- 0;
                 while (ei < len(covered)) {
-                    if (!covered[ei]) { report_error(s.line, s.col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
+                    if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(s.line, s.col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
                     ei <- ei + 1;
                 }
             }
