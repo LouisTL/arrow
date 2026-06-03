@@ -1,0 +1,10 @@
+// EXPECT: type_fail
+//ERR: duplicate literal
+// The same literal value twice — the second arm is unreachable.
+var x: int | str <- 5;
+match (x) {
+    42 => { print(x); }
+    42 => { print(x); }          // duplicate literal pattern
+    int => { print(x); }
+    str => { print(x); }
+}

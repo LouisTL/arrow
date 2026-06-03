@@ -321,6 +321,8 @@ class MatchArm:
     ptype_kind: str
     name: str | None
     body: list
+    lit_kind: str | None = None
+    lit_val: Any = None
 
 @dataclass
 class MatchStmt:
@@ -712,18 +714,35 @@ class Parser:
         arms = []
         while self._current().type != TokenType.RBRACE:
             name = None
-            if (self._current().type == TokenType.IDENT and self._current().value == "_"
-                    and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.FAT_ARROW):
+            lit_kind = None
+            lit_val = None
+            cur = self._current()
+            nxt_tok = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+            nxt = nxt_tok.type if nxt_tok else None
+            if cur.type == TokenType.IDENT and cur.value == "_" and nxt == TokenType.FAT_ARROW:
                 self._eat(TokenType.IDENT)  # consume the _
                 ptype_kind = "_"
+            elif cur.type == TokenType.NUMBER and isinstance(cur.value, int) and not isinstance(cur.value, bool):
+                ptype_kind = "int"; lit_kind = "int"
+                lit_val = self._eat(TokenType.NUMBER).value
+            elif cur.type == TokenType.STRING:
+                ptype_kind = "str"; lit_kind = "str"
+                lit_val = self._eat(TokenType.STRING).value
+            elif cur.type == TokenType.BOOL:
+                ptype_kind = "bool"; lit_kind = "bool"
+                lit_val = self._eat(TokenType.BOOL).value
+            elif cur.type == TokenType.MINUS and nxt == TokenType.NUMBER and isinstance(nxt_tok.value, int) and not isinstance(nxt_tok.value, bool):
+                self._eat(TokenType.MINUS)
+                ptype_kind = "int"; lit_kind = "int"
+                lit_val = -self._eat(TokenType.NUMBER).value
             else:
-                if self._current().type == TokenType.IDENT and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.COLON:
+                if cur.type == TokenType.IDENT and nxt == TokenType.COLON:
                     name = self._eat(TokenType.IDENT).value
                     self._eat(TokenType.COLON)
                 ptype_kind = self._parse_type_kind()
             self._eat(TokenType.FAT_ARROW)
             body = self._block()
-            arms.append(MatchArm(ptype_kind, name, body.statements))
+            arms.append(MatchArm(ptype_kind, name, body.statements, lit_kind, lit_val))
             self._match(TokenType.COMMA)
         self._eat(TokenType.RBRACE)
         return MatchStmt(scrutinee, arms)
@@ -1145,7 +1164,17 @@ class Interpreter:
                 else: kind = "struct"
                 chosen = None
                 for arm in arms:
-                    if arm.ptype_kind == "_" or arm.ptype_kind == kind:
+                    if arm.ptype_kind == "_":
+                        chosen = arm
+                        break
+                    if arm.lit_kind is not None:
+                        # Literal arm: exact-value match, but only once the
+                        # runtime kind matches (so 1 never matches true).
+                        if kind == arm.lit_kind and val == arm.lit_val:
+                            chosen = arm
+                            break
+                        continue
+                    if arm.ptype_kind == kind:
                         chosen = arm
                         break
                 if chosen is not None:

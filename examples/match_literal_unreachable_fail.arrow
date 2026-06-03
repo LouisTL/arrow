@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: unreachable literal
+// Once a typed arm covers a member, a later literal of that member is dead.
+var x: int | str <- 5;
+match (x) {
+    int => { print(x); }
+    42 => { print(x); }          // int already covered by the typed arm above
+    str => { print(x); }
+}

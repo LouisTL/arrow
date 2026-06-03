@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: non-exhaustive match
+// Literals refine, they don't cover: with only a literal int arm and no typed
+// `int` arm or `_`, the int member is left unsatisfied.
+var x: int | str <- 5;
+match (x) {
+    42 => { print(x); }
+    str => { print(x); }
+}
