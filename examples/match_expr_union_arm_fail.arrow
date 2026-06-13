@@ -1,0 +1,12 @@
+// EXPECT: type_fail
+//ERR: cannot itself yield a union
+// v1 restriction: each match-expression arm must yield a concrete (non-union)
+// type, so the result union is built from concrete members. An arm whose value
+// is itself a union is rejected.
+var u: int | str <- 5;
+var v: int | str <- 7;
+var x <- match (v) {
+    n: int => u,        // u is int | str — arm value is itself a union
+    s: str => "x",
+};
+print(x);

@@ -1,0 +1,8 @@
+// EXPECT: type_fail
+//ERR: non-exhaustive match
+// A match-expression must be exhaustive — it must always produce a value.
+var v: int | str <- 5;
+var x <- match (v) {
+    n: int => n + 1,
+};
+print(x);

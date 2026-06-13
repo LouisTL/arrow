@@ -1,0 +1,66 @@
+// EXPECT: ok
+//OUT: zero
+//OUT: int
+//OUT: str
+//OUT: 42
+//OUT: 0
+//OUT: got int
+//OUT: 8
+//OUT: other
+//OUT: 100
+
+// A `match` in expression position yields a value; each arm is `pattern => expr`
+// (comma-separated). The result type is the join of the arm value types: a
+// single type when the arms agree, otherwise the union of the distinct types
+// (each arm value wrapped into that union). Exhaustiveness, binding, and literal
+// refinement behave exactly as in statement-position match.
+
+// Homogeneous result — every arm yields str.
+fn classify(v: int | str): str {
+    return match (v) {
+        0 => "zero",          // literal arm; binds v narrowed to int
+        n: int => "int",
+        str => "str",
+    };
+}
+print(classify(0));
+print(classify(5));
+print(classify("hi"));
+
+// Heterogeneous arms — the result type is the union int | str. The int-valued
+// arms (42, 0) and the str-valued arm ("got int") are each wrapped into int|str.
+fn pick(v: bool | int): int | str {
+    return match (v) {
+        true => 42,
+        false => 0,
+        n: int => "got int",
+    };
+}
+print(pick(true));
+print(pick(false));
+print(pick(99));
+
+// Binding flows into the arm expression.
+var w: int | str <- 7;
+var d <- match (w) {
+    n: int => n + 1,
+    s: str => 0,
+};
+print(d);
+
+// Wildcard arm (binds nothing).
+fn label(v: int | str): str {
+    return match (v) {
+        str => "str",
+        _ => "other",
+    };
+}
+print(label(5));
+
+// A match-expression nested inside a larger expression.
+var e: int | str <- 50;
+var total <- 50 + match (e) {
+    n: int => n,
+    s: str => 0,
+};
+print(total);

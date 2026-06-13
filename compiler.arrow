@@ -170,7 +170,9 @@ fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT")
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
-fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var nm<-"";var wild<-false;var pt<-{kind:"none"};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pt,name:nm,body:body,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:"none"};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
+fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
 fn paf(){var pl<-ppl();var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
@@ -186,6 +188,7 @@ fn ppf(){var e<-ppm();var dn<-false;while(!dn){if(ci("LPAREN")){var cln<-toks[po
     else if(ci("DOT")){eat("DOT");var f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
 fn ppm(){
+    if(ci("match")){return pmatch_expr();}
     if(ci("NUMBER")){var v<-cv();adv();return{node:"NumberLit",value:v};}
     if(ci("FLOAT")){var v<-cv();adv();return{node:"FloatLit",value:v};}
     if(ci("STRING")){var v<-cv();adv();return{node:"StringLit",value:v};}
@@ -370,6 +373,12 @@ fn name_in(names, n: str): int {
 }
 
 fn mod_rewrite_expr(e, top_names, scope, mod_name) {
+    if (e.node = "MatchExpr") {
+        mod_rewrite_expr(e.scrutinee, top_names, scope, mod_name);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) { mod_rewrite_expr(e.arms[mxi].value, top_names, scope, mod_name); mxi <- mxi + 1; }
+        return 0;
+    }
     if (e.node = "Identifier") {
         if (name_in(top_names, e.name) && !name_in(scope, e.name)) {
             e.name <- "__mod_" + mod_name + "__" + e.name;
@@ -565,6 +574,12 @@ fn main_rewrite_stmt(s, mod_names) {
 // Recursively rewrite an expression. Returns the (possibly new) node — for
 // DotExpr-on-imported-namespace we substitute a fresh Identifier node.
 fn main_rewrite_value(e, mod_names) {
+    if (e.node = "MatchExpr") {
+        e.scrutinee <- main_rewrite_value(e.scrutinee, mod_names);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) { e.arms[mxi].value <- main_rewrite_value(e.arms[mxi].value, mod_names); mxi <- mxi + 1; }
+        return e;
+    }
     if (e.node = "DotExpr") {
         // If the base is an imported namespace, replace `mod.sym` with the
         // mangled identifier. Otherwise recurse into the base for nested
@@ -1044,6 +1059,11 @@ fn scs_stmt(nd, work) {
 }
 
 fn scs_expr(nd, work) {
+    if (nd.node = "MatchExpr") {
+        push(work, nd.scrutinee);
+        var mxi <- 0;
+        while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+    }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             var fi <- find_fn(nd.callee.name);
@@ -1420,6 +1440,11 @@ fn cv_stmt(nd, work, vars) {
 }
 
 fn cv_expr(nd, work, vars) {
+    if (nd.node = "MatchExpr") {
+        push(work, nd.scrutinee);
+        var mxi <- 0;
+        while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+    }
     if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
     if (nd.node = "UnaryOp") { push(work, nd.operand); }
     if (nd.node = "CallExpr") {
@@ -1607,7 +1632,99 @@ fn emit_itoa_helper() {
 // before emit_function runs its body, so emit_expr returns concrete
 // types instead of "any" for local variables.
 
+fn match_expr_result_type(nd) {
+    var members <- [];
+    var ai <- 0;
+    while (ai < len(nd.arms)) {
+        var arm <- nd.arms[ai];
+        var vt <- T.mk_none();
+        if (arm.wild) {
+            vt <- typeof_expr(arm.value);
+        } else {
+            var bn <- match_bind_name(arm, nd.scrutinee);
+            if (bn != "") {
+                var saved <- get_var_type(bn);
+                set_var_type(bn, arm.ptype);
+                vt <- typeof_expr(arm.value);
+                set_var_type(bn, saved);
+            } else {
+                vt <- typeof_expr(arm.value);
+            }
+        }
+        if (vt.kind = "union") {
+            var k <- 0;
+            while (k < len(vt.members)) { push(members, vt.members[k]); k <- k + 1; }
+        } else {
+            push(members, vt);
+        }
+        ai <- ai + 1;
+    }
+    var norm <- T.union_normalize(members);
+    if (len(norm) = 0) { return T.mk_none(); }
+    if (len(norm) = 1) { return norm[0]; }
+    return T.mk_union(norm);
+}
+
+fn check_match_coverage(ln, col, scrutinee, ut, arms) {
+    var ms <- T.union_normalize(ut.members);
+    var covered <- [];
+    var ci2 <- 0;
+    while (ci2 < len(ms)) { push(covered, false); ci2 <- ci2 + 1; }
+    var has_wild <- false;
+    var seen_lits <- [];
+    var mi <- 0;
+    while (mi < len(arms)) {
+        if (arms[mi].wild) {
+            if (has_wild) { report_error(ln, col, "duplicate wildcard arm '_'"); }
+            has_wild <- true;
+            if (mi != len(arms) - 1) { report_error(ln, col, "wildcard arm '_' must be the last arm"); }
+            var all_cov <- true;
+            var wc <- 0;
+            while (wc < len(covered)) { if (!match_eff_covered(covered, ms, wc, seen_lits)) { all_cov <- false; } wc <- wc + 1; }
+            if (all_cov) { report_error(ln, col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
+        } else {
+            var pt <- arms[mi].ptype;
+            var idx <- union_member_index(ut, pt);
+            if (arms[mi].is_lit) {
+                if (idx = -1) {
+                    report_error(ln, col, "literal pattern of type " + T.type_str(pt) + " is not a member of " + T.type_str(ut));
+                } else {
+                    if (covered[idx]) {
+                        report_error(ln, col, "unreachable literal pattern: " + T.type_str(pt) + " is already fully covered by an earlier arm");
+                    } else {
+                        var lkey <- arms[mi].lit_kind + ":" + arms[mi].lit;
+                        if (name_in(seen_lits, lkey)) {
+                            report_error(ln, col, "unreachable duplicate literal pattern");
+                        } else {
+                            push(seen_lits, lkey);
+                        }
+                    }
+                }
+            } else {
+                if (idx = -1) {
+                    report_error(ln, col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
+                } else {
+                    if (covered[idx]) { report_error(ln, col, "duplicate match arm for " + T.type_str(pt)); }
+                    covered[idx] <- true;
+                }
+                if (arms[mi].name = "" && scrutinee.node != "Identifier") {
+                    report_error(ln, col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
+                }
+            }
+        }
+        mi <- mi + 1;
+    }
+    if (!has_wild) {
+        var ei <- 0;
+        while (ei < len(covered)) {
+            if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(ln, col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
+            ei <- ei + 1;
+        }
+    }
+}
+
 fn typeof_expr(nd) {
+    if (nd.node = "MatchExpr") { return match_expr_result_type(nd); }
     if (nd.node = "NumberLit") { return T.mk_int(); }
     if (nd.node = "FloatLit") { return T.mk_float(); }
     if (nd.node = "StringLit") { return T.mk_str(); }
@@ -2035,6 +2152,21 @@ fn scope_declare(fn_scopes, name: str) {
 // into nested expressions; for ArrowFn, walks into the closure body with
 // a fresh fn_scopes and the current fn_scopes appended to captured.
 fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
+    if (e.node = "MatchExpr") {
+        scope_check_expr(e.scrutinee, fn_scopes, captured, globals_set, fn_names);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) {
+            push(fn_scopes, []);
+            if (!e.arms[mxi].wild) {
+                var bn <- match_bind_name(e.arms[mxi], e.scrutinee);
+                if (bn != "") { scope_declare(fn_scopes, bn); }
+            }
+            scope_check_expr(e.arms[mxi].value, fn_scopes, captured, globals_set, fn_names);
+            pop(fn_scopes);
+            mxi <- mxi + 1;
+        }
+        return false;
+    }
     if (e.node = "Identifier") {
         if (!scope_resolves(e.name, fn_scopes, captured, globals_set, fn_names)) {
             var ln <- 0;
@@ -2350,52 +2482,13 @@ fn check_stmt(s) {
         if (ut.kind != "union") {
             report_error(s.line, s.col, "match requires a union value, got " + T.type_str(ut));
         } else {
-            var ms <- T.union_normalize(ut.members);
-            var covered <- [];
-            var ci2 <- 0;
-            while (ci2 < len(ms)) { push(covered, false); ci2 <- ci2 + 1; }
-            var has_wild <- false;
-            var seen_lits <- [];
+            check_match_coverage(s.line, s.col, s.scrutinee, ut, s.arms);
             var mi <- 0;
             while (mi < len(s.arms)) {
                 if (s.arms[mi].wild) {
-                    if (has_wild) { report_error(s.line, s.col, "duplicate wildcard arm '_'"); }
-                    has_wild <- true;
-                    if (mi != len(s.arms) - 1) { report_error(s.line, s.col, "wildcard arm '_' must be the last arm"); }
-                    var all_cov <- true;
-                    var wc <- 0;
-                    while (wc < len(covered)) { if (!match_eff_covered(covered, ms, wc, seen_lits)) { all_cov <- false; } wc <- wc + 1; }
-                    if (all_cov) { report_error(s.line, s.col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
                     check_body(s.arms[mi].body);
                 } else {
                     var pt <- s.arms[mi].ptype;
-                    var idx <- union_member_index(ut, pt);
-                    if (s.arms[mi].is_lit) {
-                        if (idx = -1) {
-                            report_error(s.line, s.col, "literal pattern of type " + T.type_str(pt) + " is not a member of " + T.type_str(ut));
-                        } else {
-                            if (covered[idx]) {
-                                report_error(s.line, s.col, "unreachable literal pattern: " + T.type_str(pt) + " is already fully covered by an earlier arm");
-                            } else {
-                                var lkey <- s.arms[mi].lit_kind + ":" + s.arms[mi].lit;
-                                if (name_in(seen_lits, lkey)) {
-                                    report_error(s.line, s.col, "unreachable duplicate literal pattern");
-                                } else {
-                                    push(seen_lits, lkey);
-                                }
-                            }
-                        }
-                    } else {
-                        if (idx = -1) {
-                            report_error(s.line, s.col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
-                        } else {
-                            if (covered[idx]) { report_error(s.line, s.col, "duplicate match arm for " + T.type_str(pt)); }
-                            covered[idx] <- true;
-                        }
-                        if (s.arms[mi].name = "" && s.scrutinee.node != "Identifier") {
-                            report_error(s.line, s.col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
-                        }
-                    }
                     var bn <- match_bind_name(s.arms[mi], s.scrutinee);
                     if (bn != "") {
                         var saved <- get_var_type(bn);
@@ -2407,13 +2500,6 @@ fn check_stmt(s) {
                     }
                 }
                 mi <- mi + 1;
-            }
-            if (!has_wild) {
-                var ei <- 0;
-                while (ei < len(covered)) {
-                    if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(s.line, s.col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
-                    ei <- ei + 1;
-                }
             }
         }
     }
@@ -2457,6 +2543,30 @@ fn check_no_union(e, what: str) {
     }
 }
 fn check_expr(e) {
+    if (e.node = "MatchExpr") {
+        check_expr(e.scrutinee);
+        var mut <- typeof_expr(e.scrutinee);
+        if (mut.kind != "union") {
+            report_error(e.line, e.col, "match requires a union value, got " + T.type_str(mut));
+        } else {
+            check_match_coverage(e.line, e.col, e.scrutinee, mut, e.arms);
+            var mxi <- 0;
+            while (mxi < len(e.arms)) {
+                var marm <- e.arms[mxi];
+                var mbn <- "";
+                if (!marm.wild) { mbn <- match_bind_name(marm, e.scrutinee); }
+                var msaved <- T.mk_none();
+                if (mbn != "") { msaved <- get_var_type(mbn); set_var_type(mbn, marm.ptype); }
+                check_expr(marm.value);
+                var mavt <- typeof_expr(marm.value);
+                if (mavt.kind = "union") {
+                    report_error(e.line, e.col, "match-expression arm cannot itself yield a union (" + T.type_str(mavt) + "); narrow it to a single type");
+                }
+                if (mbn != "") { set_var_type(mbn, msaved); }
+                mxi <- mxi + 1;
+            }
+        }
+    }
     if (e.node = "BinOp") { check_no_union(e.left, "in arithmetic or comparison"); check_no_union(e.right, "in arithmetic or comparison"); check_expr(e.left); check_expr(e.right); }
     if (e.node = "UnaryOp") { check_no_union(e.operand, "in a unary operation"); check_expr(e.operand); }
     if (e.node = "CallExpr") {
@@ -2583,6 +2693,11 @@ fn find_captures(body, params, is_expr: int) {
             var mi <- 0;
             while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
         }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+        }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
             var i <- 0;
@@ -2690,6 +2805,11 @@ fn ir_collect_refs(body, params_in, is_expr: int) {
             push(work, nd.scrutinee);
             var mi <- 0; while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
         }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+        }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
             var i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
@@ -2789,6 +2909,11 @@ fn ir_find_my_captured_locals(b, body) {
         if (nd.node = "MatchStmt") {
             push(work, nd.scrutinee);
             var mi <- 0; while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+        }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
         }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
@@ -4364,6 +4489,130 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(deref, T.mk_int());
         }
         return ir_reg(tmp, T.mk_int());
+    }
+    if (nd.node = "MatchExpr") {
+        var cell <- ir_emit_expr(b, nd.scrutinee);
+        var ut <- typeof_expr(nd.scrutinee);
+        var R <- match_expr_result_type(nd);
+        var r_is_union <- false;
+        if (R.kind = "union") { r_is_union <- true; }
+        var res_slot <- ir_fresh_tmp(b, "mres");
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot, T.mk_int()));
+        var tag <- ir_fresh_tmp(b, "mtag");
+        ir_push_inst(b.cur_block, ii_union_tag(tag, cell));
+        var join_lbl <- ir_fresh_block_lbl(b, "mxjoin");
+        var mi <- 0;
+        while (mi < len(nd.arms)) {
+            var arm <- nd.arms[mi];
+            if (arm.wild) {
+                var wv <- ir_emit_expr(b, arm.value);
+                var wavt <- typeof_expr(arm.value);
+                if (r_is_union) { wv <- ir_union_wrap(b, wv, wavt, R); }
+                ir_push_inst(b.cur_block, ii_store(wv, ir_reg(res_slot, T.mk_int())));
+                if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            } else {
+            var idx <- union_member_index(ut, arm.ptype);
+            var do_lbl <- ir_fresh_block_lbl(b, "mxarm");
+            var next_lbl <- join_lbl;
+            if (mi + 1 < len(nd.arms)) { next_lbl <- ir_fresh_block_lbl(b, "mxnext"); }
+            var cmp <- ir_fresh_tmp(b, "mxcmp");
+            ir_push_inst(b.cur_block, ii_icmp(cmp, "eq", ir_reg(tag, T.mk_int()), ir_const_int(idx)));
+            if (arm.is_lit) {
+                var vchk_lbl <- ir_fresh_block_lbl(b, "mxval");
+                var brt <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brt, ir_reg(cmp, T.mk_int()), vchk_lbl, next_lbl));
+                var vchk_bb <- ir_block(vchk_lbl);
+                ir_fn_add_block(b.func, vchk_bb);
+                b.cur_block <- vchk_bb;
+                var lpay <- ir_fresh_tmp(b, "mxlpay");
+                ir_push_inst(b.cur_block, ii_union_payload(lpay, cell));
+                var veq <- ir_fresh_tmp(b, "mxveq");
+                if (arm.lit_kind = "str") {
+                    var sid <- ir_mod_add_str(b.mod, arm.lit);
+                    var lptr <- ir_fresh_tmp(b, "mxls");
+                    ir_push_inst(b.cur_block, ii_ptrtoint(lptr, ir_const_str(sid)));
+                    ir_push_inst(b.cur_block, ii_strcmp(veq, "eq", ir_reg(lpay, T.mk_str()), ir_reg(lptr, T.mk_str())));
+                } else {
+                    var kconst <- ir_const_int(0);
+                    if (arm.lit_kind = "bool") {
+                        if (arm.lit = "true") { kconst <- ir_const_int(1); }
+                    } else {
+                        kconst <- ir_const_int(arm.lit);
+                    }
+                    ir_push_inst(b.cur_block, ii_icmp(veq, "eq", ir_reg(lpay, T.mk_int()), kconst));
+                }
+                var brv <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brv, ir_reg(veq, T.mk_int()), do_lbl, next_lbl));
+            } else {
+                var brc <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brc, ir_reg(cmp, T.mk_int()), do_lbl, next_lbl));
+            }
+            var do_bb <- ir_block(do_lbl);
+            ir_fn_add_block(b.func, do_bb);
+            b.cur_block <- do_bb;
+            var bn <- match_bind_name(arm, nd.scrutinee);
+            var swapped <- false;
+            var swap_i <- -1;
+            var add_idx <- -1;
+            var saved_reg <- "";
+            var saved_boxed <- false;
+            var saved_vt <- T.mk_none();
+            if (bn != "") {
+                var payload <- ir_fresh_tmp(b, "mxpay");
+                ir_push_inst(b.cur_block, ii_union_payload(payload, cell));
+                var slot <- ir_fresh_tmp(b, "mxbind");
+                ir_push_inst(b.func.blocks[0], ii_alloca(slot, T.mk_int()));
+                ir_push_inst(b.cur_block, ii_store(ir_reg(payload, arm.ptype), ir_reg(slot, T.mk_int())));
+                var li <- 0;
+                var found <- false;
+                while (li < len(b.locals)) {
+                    if (b.locals[li].name = bn) { found <- true; swap_i <- li; }
+                    li <- li + 1;
+                }
+                if (found) {
+                    saved_reg <- b.locals[swap_i].reg;
+                    saved_boxed <- b.locals[swap_i].boxed;
+                    b.locals[swap_i].reg <- slot;
+                    b.locals[swap_i].boxed <- false;
+                    swapped <- true;
+                } else {
+                    add_idx <- len(b.locals);
+                    push(b.locals, {name: bn, reg: slot, boxed: false, box_owned: false});
+                }
+                saved_vt <- get_var_type(bn);
+                set_var_type(bn, arm.ptype);
+            }
+            var av <- ir_emit_expr(b, arm.value);
+            var avt <- typeof_expr(arm.value);
+            if (r_is_union) { av <- ir_union_wrap(b, av, avt, R); }
+            ir_push_inst(b.cur_block, ii_store(av, ir_reg(res_slot, T.mk_int())));
+            if (bn != "") {
+                set_var_type(bn, saved_vt);
+                if (swapped) {
+                    b.locals[swap_i].reg <- saved_reg;
+                    b.locals[swap_i].boxed <- saved_boxed;
+                } else {
+                    var nl <- [];
+                    var ri <- 0;
+                    while (ri < len(b.locals)) { if (ri != add_idx) { push(nl, b.locals[ri]); } ri <- ri + 1; }
+                    b.locals <- nl;
+                }
+            }
+            if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            if (mi + 1 < len(nd.arms)) {
+                var next_bb <- ir_block(next_lbl);
+                ir_fn_add_block(b.func, next_bb);
+                b.cur_block <- next_bb;
+            }
+            }
+            mi <- mi + 1;
+        }
+        var join_bb <- ir_block(join_lbl);
+        ir_fn_add_block(b.func, join_bb);
+        b.cur_block <- join_bb;
+        var result <- ir_fresh_tmp(b, "mxresv");
+        ir_push_inst(b.cur_block, ii_load(result, T.mk_int(), ir_reg(res_slot, T.mk_int())));
+        return ir_reg(result, R);
     }
     if (nd.node = "BinOp") {
         return ir_emit_binop(b, nd);
