@@ -1,0 +1,6 @@
+// EXPECT: type_fail
+//ERR: is not a member of the array element type
+// Pushing a non-member into a [union] array is rejected.
+var xs: [int | str] <- [1];
+push(xs, true);
+print(len(xs));

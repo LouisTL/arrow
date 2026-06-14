@@ -1,10 +1,8 @@
 // EXPECT: type_fail
 //ERR: union inside an array or struct is not supported yet
 
-// 3a lifted the restriction for array-of-union *literals* at a variable
-// declaration (see array_union_test). Passing or returning a union-element
-// array is still unsupported (deferred), so a [int | str] parameter is rejected.
-fn first(xs: [int | str]): int {
-    return 0;
-}
-print(first([1]));
+// 3a/3b support arrays of unions: [int | str] can be declared, passed, returned,
+// and pushed to. A union inside a STRUCT field is still unsupported (deferred),
+// so the checker rejects the type.
+var p: {tag: int | str} <- {tag: 1};
+print(p);

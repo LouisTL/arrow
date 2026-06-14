@@ -1184,12 +1184,14 @@ fn scan_fns(stmts) {
             push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
             var pj <- 0;
             while (pj < len(stmts[i].param_types_ann)) {
-                if (T.union_in_container(stmts[i].param_types_ann[pj])) {
+                var pct <- stmts[i].param_types_ann[pj];
+                if (T.union_in_container(pct) && !(pct.kind = "array" && pct.elem.kind = "union")) {
                     report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (parameter " + (pj + 1) + " of '" + stmts[i].name + "')");
                 }
                 pj <- pj + 1;
             }
-            if (T.union_in_container(stmts[i].ret_type_ann)) {
+            var rct <- stmts[i].ret_type_ann;
+            if (T.union_in_container(rct) && !(rct.kind = "array" && rct.elem.kind = "union")) {
                 report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (return type of '" + stmts[i].name + "')");
             }
         }
@@ -1919,7 +1921,7 @@ fn infer_body(stmts) {
                 // declared as a union: the stored value is a member and the
                 // variable keeps its union type for the whole function.
                 var existing <- get_var_type(s.name);
-                if (existing.kind != "union") {
+                if (existing.kind != "union" && !(existing.kind = "array" && existing.elem.kind = "union")) {
                     var ty <- typeof_expr(s.expr);
                     set_var_type(s.name, ty);
                 }
@@ -2020,7 +2022,14 @@ fn infer_body(stmts) {
                     if (cur_t.elem.kind = "any") {
                         new_elem <- val_t;
                     } else {
-                        new_elem <- T.types_join(cur_t.elem, val_t);
+                        if (cur_t.elem.kind = "union") {
+                            // Pushing a member into a [union] array keeps the
+                            // union element type (the value is wrapped at codegen);
+                            // don't let types_join collapse it to `any`.
+                            new_elem <- cur_t.elem;
+                        } else {
+                            new_elem <- T.types_join(cur_t.elem, val_t);
+                        }
                     }
                     set_var_type(arr_arg.name, T.mk_array(new_elem));
                     if (new_elem.kind = "str") { set_array_elem_type(arr_arg.name, "str"); }
@@ -2457,15 +2466,32 @@ fn check_array_union_elements(ln, col, ut, lit) {
         i <- i + 1;
     }
 }
+// 3b: is `actual`/`src` an acceptable source for an array-of-union target whose
+// element union is `ut`? Either an exactly-matching [union] array (same handle,
+// already-wrapped cells, so reference semantics are preserved) or an empty array
+// literal (nothing to wrap). No implicit element-wise widening.
+fn array_union_src_ok(ut, actual, src): int {
+    if (actual.kind = "array" && T.type_eq(actual.elem, ut)) { return true; }
+    if (src.node = "ArrayLit") { if (len(src.elements) = 0) { return true; } }
+    return false;
+}
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
-            if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union" && s.expr.node = "ArrayLit") {
-                // 3a: array-of-union fed by an array literal. Each element is
-                // wrapped into the union at construction; verify membership here
-                // and bypass the generic types_compat check, which would see the
-                // literal's joined `any` element type and spuriously reject it.
-                check_array_union_elements(s.line, s.col, s.type_ann.elem, s.expr);
+            if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union") {
+                // Array-of-union slot. A literal RHS wraps its elements into the
+                // union at construction (3a); a non-literal RHS must already be an
+                // exactly-matching [union] array (3b) — no implicit element
+                // widening, which would silently copy and break reference
+                // semantics. An empty literal trivially satisfies either path.
+                if (s.expr.node = "ArrayLit") {
+                    check_array_union_elements(s.line, s.col, s.type_ann.elem, s.expr);
+                } else {
+                    var aactual <- typeof_expr(s.expr);
+                    if (!array_union_src_ok(s.type_ann.elem, aactual, s.expr)) {
+                        report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
+                    }
+                }
             } else {
                 var actual <- typeof_expr(s.expr);
                 if (!T.types_compat(s.type_ann, actual)) {
@@ -2476,7 +2502,31 @@ fn check_stmt(s) {
                 }
             }
         }
+        if (s.type_ann.kind = "none") {
+            // Bare reassignment to an array-of-union variable: the variable keeps
+            // its declared [union] type (see infer_body), so guard the new value
+            // exactly like a declaration. A literal wraps and member-checks its
+            // elements; any other source must be an exactly-matching [union] array
+            // — no implicit element widening, which would store raw cells.
+            var lvt <- get_var_type(s.name);
+            if (lvt.kind = "array" && lvt.elem.kind = "union") {
+                if (s.expr.node = "ArrayLit") {
+                    check_array_union_elements(s.line, s.col, lvt.elem, s.expr);
+                } else {
+                    var rsa <- typeof_expr(s.expr);
+                    if (!array_union_src_ok(lvt.elem, rsa, s.expr)) {
+                        report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
+                    }
+                }
+            }
+        }
         check_expr(s.expr);
+    }
+    if (s.node = "CallExpr") {
+        // Bare call statement. Only route `push` through the expression checker
+        // (for the [union] member-check); general bare-call arg-checking is left
+        // off deliberately to preserve the loosely-typed self-host.
+        if (s.callee.node = "Identifier" && s.callee.name = "push") { check_expr(s); }
     }
     if (s.node = "PrintStmt") { check_expr(s.expr); }
     if (s.node = "ReturnStmt") {
@@ -2487,8 +2537,14 @@ fn check_stmt(s) {
                 if (fi != false) {
                     if (fi.ret_type_ann.kind != "none") {
                         var actual <- typeof_expr(s.expr);
-                        if (!T.types_compat(fi.ret_type_ann, actual)) {
-                            report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
+                        if (fi.ret_type_ann.kind = "array" && fi.ret_type_ann.elem.kind = "union") {
+                            if (!array_union_src_ok(fi.ret_type_ann.elem, actual, s.expr)) {
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] value or an empty array literal)");
+                            }
+                        } else {
+                            if (!T.types_compat(fi.ret_type_ann, actual)) {
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
+                            }
                         }
                     }
                 }
@@ -2594,6 +2650,17 @@ fn check_expr(e) {
     if (e.node = "BinOp") { check_no_union(e.left, "in arithmetic or comparison"); check_no_union(e.right, "in arithmetic or comparison"); check_expr(e.left); check_expr(e.right); }
     if (e.node = "UnaryOp") { check_no_union(e.operand, "in a unary operation"); check_expr(e.operand); }
     if (e.node = "CallExpr") {
+        if (e.callee.node = "Identifier" && e.callee.name = "push" && len(e.args) >= 2) {
+            var pat0 <- typeof_expr(e.args[0]);
+            if (pat0.kind = "array" && pat0.elem.kind = "union") {
+                var pvt <- typeof_expr(e.args[1]);
+                if (pvt.kind != "union") {
+                    if (union_member_index(pat0.elem, pvt) = -1) {
+                        report_error(e.line, e.col, T.type_str(pvt) + " is not a member of the array element type " + T.type_str(pat0.elem));
+                    }
+                }
+            }
+        }
         if (e.callee.node = "Identifier") {
             var fi <- find_fn(e.callee.name);
             // If the direct lookup failed, the callee may be a variable holding
@@ -2610,8 +2677,14 @@ fn check_expr(e) {
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "none") {
                             var actual <- typeof_expr(e.args[j]);
-                            if (!T.types_compat(ann, actual)) {
-                                report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
+                            if (ann.kind = "array" && ann.elem.kind = "union") {
+                                if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
+                                }
+                            } else {
+                                if (!T.types_compat(ann, actual)) {
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
+                                }
                             }
                         }
                     }
@@ -4704,6 +4777,11 @@ fn ir_emit_expr(b, nd) {
         if (nm = "push") {
             var arr <- ir_emit_expr(b, nd.args[0]);
             var val <- ir_emit_expr(b, nd.args[1]);
+            var parrt <- typeof_expr(nd.args[0]);
+            if (parrt.kind = "array" && parrt.elem.kind = "union") {
+                var pvalt <- typeof_expr(nd.args[1]);
+                if (pvalt.kind != "union") { val <- ir_union_wrap(b, val, pvalt, parrt.elem); }
+            }
             var tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;

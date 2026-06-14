@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: an array-of-union requires an exactly matching [union] source
+// A [int] array cannot be reassigned into a [int | str] variable — it would
+// store raw, untagged cells. A [union] array variable keeps its declared element
+// type across reassignments (no implicit widening, no silent downgrade).
+var ys: [int | str] <- [1, "a"];
+var zs: [int] <- [1, 2];
+ys <- zs;
+print(len(ys));

@@ -1,0 +1,15 @@
+// EXPECT: ok
+//OUT: 2
+//OUT: c
+
+// Legitimate reassignments of a [union] array variable: from another [union]
+// array, from an empty literal, and from an array literal (elements wrapped).
+// The variable keeps its [int | str] type throughout.
+var ys: [int | str] <- [1, "a"];
+var ws: [int | str] <- [9, "z"];
+ys <- ws;
+ys <- [];
+push(ys, 5);
+ys <- [42, "c"];
+print(len(ys));
+match (ys[1]) { n: int => { print(n); } s: str => { print(s); } }
