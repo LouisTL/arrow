@@ -181,8 +181,8 @@ fn struct_field_type(fields, name: str) {
     return mk_none();
 }
 
-// Recursive structural equality on Types. Currently unused — kept here
-// because the type checker may want it later for stricter checks.
+// Recursive structural equality on Types. Used by union_normalize (member
+// dedupe) and by union_member_index; unions compare member-wise post-normalize.
 fn type_eq(a, b): int {
     if (a.kind != b.kind) { return false; }
     if (a.kind = "array") { return type_eq(a.elem, b.elem); }
@@ -194,6 +194,17 @@ fn type_eq(a, b): int {
             if (bt.kind = "none") { return false; }
             if (!type_eq(a.fields[i].type, bt)) { return false; }
             i <- i + 1;
+        }
+        return true;
+    }
+    if (a.kind = "union") {
+        var na <- union_normalize(a.members);
+        var nb <- union_normalize(b.members);
+        if (len(na) != len(nb)) { return false; }
+        var iu <- 0;
+        while (iu < len(na)) {
+            if (!type_eq(na[iu], nb[iu])) { return false; }
+            iu <- iu + 1;
         }
         return true;
     }

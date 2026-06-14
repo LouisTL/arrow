@@ -1,0 +1,27 @@
+// EXPECT: ok
+// Regression for the 3a type_eq fix (compiler/types.arrow): unions compare
+// member-wise and order-insensitively, with arity and member identity checked.
+// Before the fix, type_eq returned true for ANY two unions. It lives in the
+// compiler's T module, so we import it directly. We branch on the result and
+// print words to stay clear of int/bool print-format differences.
+import "compiler/types" as T;
+
+var u_is  <- T.mk_union([T.mk_int(), T.mk_str()]);              // int | str
+var u_si  <- T.mk_union([T.mk_str(), T.mk_int()]);              // str | int  (reordered)
+var u_ib  <- T.mk_union([T.mk_int(), T.mk_bool()]);             // int | bool (member differs)
+var u_isb <- T.mk_union([T.mk_int(), T.mk_str(), T.mk_bool()]); // int|str|bool (arity differs)
+
+fn show(b: int) {
+    if (b) { print("eq"); } else { print("ne"); }
+}
+
+show(T.type_eq(u_is, u_si));        // same members, different order -> eq
+//OUT: eq
+show(T.type_eq(u_is, u_ib));        // a member differs -> ne (wart wrongly said eq)
+//OUT: ne
+show(T.type_eq(u_is, u_isb));       // arity differs -> ne
+//OUT: ne
+show(T.type_eq(u_is, T.mk_int()));  // union vs non-union -> ne
+//OUT: ne
+show(T.type_eq(u_isb, u_isb));      // reflexive -> eq
+//OUT: eq
