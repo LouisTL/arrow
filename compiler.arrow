@@ -2441,15 +2441,39 @@ fn match_eff_covered(covered, ms, i: int, seen_lits): int {
     if (ms[i].kind = "bool" && name_in(seen_lits, "bool:true") && name_in(seen_lits, "bool:false")) { return true; }
     return false;
 }
+// 3a: every element of an array-of-union literal must be a concrete member of
+// the union; it is wrapped into that union at construction (see ir_emit_stmt).
+fn check_array_union_elements(ln, col, ut, lit) {
+    var i <- 0;
+    while (i < len(lit.elements)) {
+        var et <- typeof_expr(lit.elements[i]);
+        if (et.kind = "union") {
+            report_error(ln, col, "array element cannot itself yield a union (" + T.type_str(et) + "); each element must be a concrete member of " + T.type_str(ut));
+        } else {
+            if (union_member_index(ut, et) = -1) {
+                report_error(ln, col, T.type_str(et) + " is not a member of " + T.type_str(ut));
+            }
+        }
+        i <- i + 1;
+    }
+}
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
-            var actual <- typeof_expr(s.expr);
-            if (!T.types_compat(s.type_ann, actual)) {
-                report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
-            }
-            if (T.union_in_container(s.type_ann)) {
-                report_error(s.line, s.col, "union inside an array or struct is not supported yet: " + T.type_str(s.type_ann));
+            if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union" && s.expr.node = "ArrayLit") {
+                // 3a: array-of-union fed by an array literal. Each element is
+                // wrapped into the union at construction; verify membership here
+                // and bypass the generic types_compat check, which would see the
+                // literal's joined `any` element type and spuriously reject it.
+                check_array_union_elements(s.line, s.col, s.type_ann.elem, s.expr);
+            } else {
+                var actual <- typeof_expr(s.expr);
+                if (!T.types_compat(s.type_ann, actual)) {
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
+                }
+                if (T.union_in_container(s.type_ann)) {
+                    report_error(s.line, s.col, "union inside an array or struct is not supported yet: " + T.type_str(s.type_ann));
+                }
             }
         }
         check_expr(s.expr);
@@ -5634,6 +5658,27 @@ fn ir_emit_format_union(b, cell_val, members, top_level: int) {
     return 0;
 }
 
+// Emit `expr` as a value destined for a slot of type `slot_t`. The one special
+// case is a [union] slot fed by an array literal (3a): each element is wrapped
+// into the union member it matches, so the array holds tagged cells rather than
+// raw values. Every other shape emits through the normal expression path.
+fn ir_emit_value_for_slot(b, expr, slot_t) {
+    if (slot_t.kind = "array" && slot_t.elem.kind = "union" && expr.node = "ArrayLit") {
+        var welems <- [];
+        var wi <- 0;
+        while (wi < len(expr.elements)) {
+            var ev <- ir_emit_expr(b, expr.elements[wi]);
+            var evt <- typeof_expr(expr.elements[wi]);
+            if (evt.kind != "union") { ev <- ir_union_wrap(b, ev, evt, slot_t.elem); }
+            push(welems, ev);
+            wi <- wi + 1;
+        }
+        var atmp <- ir_fresh_tmp(b, "uarr");
+        ir_push_inst(b.cur_block, ii_array_new(atmp, T.mk_int(), welems));
+        return ir_reg(atmp, slot_t);
+    }
+    return ir_emit_expr(b, expr);
+}
 fn ir_emit_stmt(b, stmt) {
     if (stmt.node = "ReturnStmt") {
         if (stmt.expr = false) {
@@ -5658,12 +5703,6 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "Assignment") {
-        var v <- ir_emit_expr(b, stmt.expr);
-        // If the slot is annotated `float` (or already known to be float from a
-        // prior annotation) and the RHS is int-typed, we need to numerically
-        // promote int→float at storage time. Without this, storing the raw
-        // i64 bits of an int into a float slot would later be bitcast to
-        // double, producing a tiny denormal instead of the intended value.
         var slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
@@ -5671,6 +5710,11 @@ fn ir_emit_stmt(b, stmt) {
             // Look up existing var type — same name may have been declared earlier.
             slot_t <- get_var_type(stmt.name);
         }
+        // 3a: an array-of-union literal wraps each element into the union at
+        // construction (ir_emit_value_for_slot); all other RHS forms emit
+        // normally. The float promotion below still applies for float slots:
+        // storing raw int bits into a float slot would bitcast to a denormal.
+        var v <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
         var rhs_t <- typeof_expr(stmt.expr);
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.

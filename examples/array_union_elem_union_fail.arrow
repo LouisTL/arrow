@@ -1,0 +1,6 @@
+// EXPECT: type_fail
+//ERR: cannot itself yield a union
+// v1 restriction: each element must be a concrete member, not itself a union.
+var u: int | str <- 5;
+var xs: [int | str] <- [u, 1];
+print(len(xs));

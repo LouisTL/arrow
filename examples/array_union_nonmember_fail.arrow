@@ -1,0 +1,5 @@
+// EXPECT: type_fail
+//ERR: is not a member of
+// Each element of a [union] array must be a member of that union.
+var xs: [int | str] <- [1, true];
+print(len(xs));

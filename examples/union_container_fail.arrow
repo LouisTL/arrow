@@ -1,8 +1,10 @@
 // EXPECT: type_fail
 //ERR: union inside an array or struct is not supported yet
 
-// Unions nested in arrays/structs aren't widened yet, so the checker rejects
-// the type rather than emitting code that dereferences a raw element as a
-// union cell. (Top-level unions like `int | str` are fine — see union_test.)
-var xs: [int | str] <- [1, 2];
-print(xs);
+// 3a lifted the restriction for array-of-union *literals* at a variable
+// declaration (see array_union_test). Passing or returning a union-element
+// array is still unsupported (deferred), so a [int | str] parameter is rejected.
+fn first(xs: [int | str]): int {
+    return 0;
+}
+print(first([1]));

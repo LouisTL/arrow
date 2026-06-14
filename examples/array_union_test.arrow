@@ -1,0 +1,40 @@
+// EXPECT: ok
+//OUT: 5000000
+//OUT: big
+//OUT: 7
+//OUT: 0
+//OUT: T
+//OUT: 2
+//OUT: F
+
+// An array annotated with a union element type stores each element as a tagged
+// union cell. Elements are wrapped at construction, and indexing yields the
+// union type — which you narrow with match, exactly as for a scalar union.
+// This is the sound replacement for [any]: 5000000 (>= 2^20) round-trips
+// correctly here, whereas under [any]'s magnitude heuristic it would misread
+// as a string pointer.
+var xs: [int | str] <- [5000000, "big", 7];
+var i <- 0;
+while (i < 3) {
+    match (xs[i]) {
+        n: int => { print(n); }
+        s: str => { print(s); }
+    }
+    i <- i + 1;
+}
+
+// Empty union-element array is allowed (nothing to wrap).
+var ys: [int | str] <- [];
+print(len(ys));
+
+// Bool members refine via literal arms, same as scalar union match.
+var zs: [bool | int] <- [true, 2, false];
+var j <- 0;
+while (j < 3) {
+    match (zs[j]) {
+        true => { print("T"); }
+        false => { print("F"); }
+        n: int => { print(n); }
+    }
+    j <- j + 1;
+}
