@@ -6,6 +6,14 @@
 //OUT: T
 //OUT: 2
 //OUT: F
+//OUT: 1
+//OUT: a
+//OUT: 2
+//OUT: extra
+//OUT: 99
+//OUT: 0
+//OUT: 2
+//OUT: c
 
 // An array annotated with a union element type stores each element as a tagged
 // union cell. Elements are wrapped at construction, and indexing yields the
@@ -38,3 +46,40 @@ while (j < 3) {
     }
     j <- j + 1;
 }
+
+// ───────────────────────────────────────────────────────────────────────
+// A [union] array is passed by handle (reference), pushed to, and returned —
+// no implicit copy. push wraps the value into the union; an empty array literal
+// satisfies a [union] parameter.
+fn tag_all(items: [int | str]): [int | str] {
+    push(items, "extra");
+    push(items, 99);
+    return items;
+}
+fn count(items: [int | str]): int {
+    return len(items);
+}
+var p_xs: [int | str] <- [1, "a", 2];
+var p_ys: [int | str] <- tag_all(p_xs);
+var p_i <- 0;
+while (p_i < len(p_ys)) {
+    match (p_ys[p_i]) {
+        n: int => { print(n); }
+        s: str => { print(s); }
+    }
+    p_i <- p_i + 1;
+}
+print(count([]));
+
+// ───────────────────────────────────────────────────────────────────────
+// Legitimate reassignments of a [union] array variable: from another [union]
+// array, from an empty literal, and from an array literal (elements wrapped).
+// The variable keeps its [int | str] type throughout.
+var r_ys: [int | str] <- [1, "a"];
+var r_ws: [int | str] <- [9, "z"];
+r_ys <- r_ws;
+r_ys <- [];
+push(r_ys, 5);
+r_ys <- [42, "c"];
+print(len(r_ys));
+match (r_ys[1]) { n: int => { print(n); } s: str => { print(s); } }

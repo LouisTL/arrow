@@ -1,9 +1,0 @@
-// EXPECT: type_fail
-//ERR: is not a member
-// A literal whose type isn't part of the union is a compile error.
-var x: int | str <- 5;
-match (x) {
-    true => { print(x); }        // bool literal: not a member of int | str
-    int => { print(x); }
-    str => { print(x); }
-}

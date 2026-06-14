@@ -1,0 +1,30 @@
+// EXPECT: type_fail
+//ERR: missing arm for {b: int}
+//ERR: duplicate match arm
+//ERR: {c: int} is not a member
+
+// Three ways a struct-shape match fails: an uncovered shape (non-exhaustive),
+// two arms for the same shape (duplicate), and an arm naming a shape outside
+// the union (non-member).
+
+// uncovered struct member, no wildcard
+var s1: {a: int} | {b: int} <- {a: 1};
+match (s1) {
+    {a: int} => { print(s1.a); }
+}
+
+// two arms for the same struct shape
+var s2: {a: int} | {b: int} <- {a: 1};
+match (s2) {
+    {a: int} => { print(s2.a); }
+    {a: int} => { print(s2.a); }
+    {b: int} => { print(s2.b); }
+}
+
+// an arm naming a shape not in the union
+var s3: {a: int} | {b: int} <- {a: 1};
+match (s3) {
+    {a: int} => { print(s3.a); }
+    {b: int} => { print(s3.b); }
+    {c: int} => { print(0); }
+}

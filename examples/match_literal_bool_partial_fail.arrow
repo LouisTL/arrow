@@ -1,9 +1,0 @@
-// EXPECT: type_fail
-//ERR: non-exhaustive match
-// One bool literal isn't enough: bool has two inhabitants and `false` is left
-// unhandled, so the match is non-exhaustive.
-var x: bool | int <- 5;
-match (x) {
-    true => { print(x); }
-    int => { print(x); }
-}

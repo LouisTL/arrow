@@ -12,6 +12,14 @@
 //OUT: 5
 //OUT: [{tag: 1}, {tag: "two"}, {tag: 3}]
 //OUT: {tag: "two"}
+//OUT: {tag: 1}
+//OUT: {tag: "hello"}
+//OUT: {tag: 42}
+//OUT: 43
+//OUT: {outer: {inner: "deep"}}
+//OUT: {outer: {inner: 9}}
+//OUT: {a: "aa", b: 7, n: 5}
+//OUT: {a: "aa", b: 7, n: 6}
 
 // Union as a struct field: constructed (each union field wrapped into a
 // {tag,payload} cell), read (field access narrows to the union), printed,
@@ -59,3 +67,30 @@ print(match (nest.outer.inner) { n: int => n, s: str => str_len(s) });
 var arr: [{tag: int | str}] <- [{tag: 1}, {tag: "two"}, {tag: 3}];
 print(arr);
 print(arr[1]);
+
+// ───────────────────────────────────────────────────────────────────────
+// Direct mutation of a union-typed field (DotAssign): the new value is wrapped
+// into the field's cell, so later reads/print/match see the active member.
+// Covers int<->str switches, nested fields, and several union fields mutated
+// independently alongside a plain field.
+
+var p2: {tag: int | str} <- {tag: 1};
+print(p2);
+p2.tag <- "hello";
+print(p2);
+p2.tag <- 42;
+print(p2);
+print(match (p2.tag) { n: int => n + 1, s: str => str_len(s) });
+
+var nest2: {outer: {inner: int | str}} <- {outer: {inner: 1}};
+nest2.outer.inner <- "deep";
+print(nest2);
+nest2.outer.inner <- 9;
+print(nest2);
+
+var m2: {a: int | str, b: int | str, n: int} <- {a: 1, b: "x", n: 5};
+m2.a <- "aa";
+m2.b <- 7;
+print(m2);
+m2.n <- 6;
+print(m2);

@@ -1,0 +1,21 @@
+// EXPECT: type_fail
+//ERR: must be the last arm
+//ERR: unreachable wildcard arm
+
+// A wildcard must be the last arm, and is rejected when every member already
+// has a typed arm (it could never run).
+
+// wildcard not last → the following arm is unreachable
+var v1: int | str <- 5;
+match (v1) {
+    _ => { print(1); },
+    int => { print(2); },
+}
+
+// wildcard with all members already covered → unreachable
+var v2: int | str <- 5;
+match (v2) {
+    int => { print(1); },
+    str => { print(2); },
+    _ => { print(3); },
+}

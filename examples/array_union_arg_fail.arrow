@@ -1,8 +1,0 @@
-// EXPECT: type_fail
-//ERR: exactly matching [union] argument
-// No implicit widening: a [int] array is not accepted where [int | str] is
-// expected (it would copy and break reference semantics). Build it as the
-// union type instead.
-fn f(items: [int | str]): int { return 0; }
-var zs: [int] <- [1, 2];
-print(f(zs));

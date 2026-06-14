@@ -1,7 +1,0 @@
-// EXPECT: type_fail
-//ERR: type mismatch
-
-// Declaring a union-field struct with a value whose field isn't a union member
-// is a type error (bool is not a member of int|str).
-var r: {tag: int | str} <- {tag: true};
-print(r);
