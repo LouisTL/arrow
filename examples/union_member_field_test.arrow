@@ -1,0 +1,59 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: 5
+//OUT: 7
+//OUT: 99
+//OUT: 5
+//OUT: 3
+//OUT: 123
+//OUT: 4
+//OUT: 88
+
+// A struct with a union-typed field used as a MEMBER of a top-level union.
+// The value must dispatch to the right member (by field-name set, with the
+// field types allowed to be narrower than the member's), and the union-typed
+// field must be stored as a real union cell so it can be read and re-matched.
+
+// Build with the int branch of the union field; bind the field and re-match.
+var d: {tag: int | str} | {flag: int} <- {tag: 42};
+match (d) {
+    {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } }
+    {flag: int} => { print(flag); }
+}
+// Reassign to the str branch.
+d <- {tag: "hello"};
+match (d) {
+    {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } }
+    {flag: int} => { print(flag); }
+}
+// Reassign to the other member.
+d <- {flag: 7};
+match (d) {
+    {tag: int | str} => { print(111); }
+    {flag: int} => { print(flag); }
+}
+
+// Reverse member ordering must tag identically.
+var e: {flag: int} | {tag: int | str} <- {tag: 99};
+match (e) {
+    {flag: int} => { print(flag); }
+    {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } }
+}
+
+// Returned from a function (return-site wrap), matched at the call site.
+fn mk(useStr: int): {tag: int | str} | {flag: int} {
+    if (useStr = 1) { return {tag: "hey"}; }
+    return {tag: 5};
+}
+var f <- mk(0);
+match (f) { {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } } {flag: int} => { print(flag); } }
+var gg <- mk(1);
+match (gg) { {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } } {flag: int} => { print(flag); } }
+
+// Passed as an argument (arg-site wrap), via a destructuring expression arm.
+fn readtag(u: {tag: int | str} | {flag: int}): int {
+    return match (u) { {tag: int | str} => match (tag) { n: int => n, s: str => str_len(s) }, {flag: int} => flag };
+}
+print(readtag({tag: 123}));
+print(readtag({tag: "abcd"}));
+print(readtag({flag: 88}));

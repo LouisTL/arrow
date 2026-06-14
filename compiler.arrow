@@ -170,7 +170,8 @@ fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT")
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
-fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn match_destructure_body(bindName: str, ptype, body, ln: int, cl: int){var out<-[];var i<-0;while(i<len(ptype.fields)){var fname<-ptype.fields[i].name;push(out,{node:"Assignment",name:fname,expr:{node:"DotExpr",obj:{node:"Identifier",name:bindName,line:ln,col:cl},field:fname},type_ann:{kind:"none"},is_decl:true,line:ln,col:cl});i<-i+1;}var j<-0;while(j<len(body)){push(out,body[j]);j<-j+1;}return out;}
+fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();if(pat.ptype.kind="struct_lit"&&!pat.wild){var bn<-pat.name;if(bn=""&&sc.node="Identifier"){bn<-sc.name;}if(bn!=""){body<-match_destructure_body(bn,pat.ptype,body,ln,cl);}}push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:"none"};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
 fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
@@ -1640,7 +1641,9 @@ fn match_expr_result_type(nd) {
             if (bn != "") {
                 var saved <- get_var_type(bn);
                 set_var_type(bn, arm.ptype);
+                var fsv <- arm_destructure_set_types(arm.ptype);
                 vt <- typeof_expr(arm.value);
+                arm_destructure_restore_types(fsv);
                 set_var_type(bn, saved);
             } else {
                 vt <- typeof_expr(arm.value);
@@ -1884,6 +1887,83 @@ fn typeof_expr(nd) {
 // Effective binding name for a match arm: the explicit `name:` if present,
 // else the scrutinee variable name (a bare pattern shadows it), else "" — no
 // binding (a bare pattern on a non-variable scrutinee, which the checker flags).
+fn arm_destructure_set_types(ptype) {
+    var sv <- [];
+    if (ptype.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(ptype.fields)) {
+            var fnm <- ptype.fields[i].name;
+            push(sv, {name: fnm, ty: get_var_type(fnm)});
+            set_var_type(fnm, ptype.fields[i].type);
+            i <- i + 1;
+        }
+    }
+    return sv;
+}
+fn arm_destructure_restore_types(sv) {
+    var i <- 0;
+    while (i < len(sv)) { set_var_type(sv[i].name, sv[i].ty); i <- i + 1; }
+}
+fn arm_destructure_scope_declare(scopes, ptype) {
+    if (ptype.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(ptype.fields)) { scope_declare(scopes, ptype.fields[i].name); i <- i + 1; }
+    }
+}
+fn arm_destructure_emit_bind(b, bn, ptype) {
+    var pre <- len(b.locals);
+    var saves <- [];
+    if (ptype.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(ptype.fields)) {
+            var fnm <- ptype.fields[i].name;
+            var dot <- {node: "DotExpr", obj: {node: "Identifier", name: bn, line: 0, col: 0}, field: fnm};
+            var fval <- ir_emit_expr(b, dot);
+            var fslot <- ir_fresh_tmp(b, "mxfd");
+            ir_push_inst(b.func.blocks[0], ii_alloca(fslot, T.mk_int()));
+            ir_push_inst(b.cur_block, ii_store(fval, ir_reg(fslot, T.mk_int())));
+            var swapped <- false;
+            var swap_i <- 0;
+            var sreg <- "";
+            var sbox <- false;
+            var li <- 0;
+            while (li < len(b.locals)) {
+                if (b.locals[li].name = fnm) { swapped <- true; swap_i <- li; }
+                li <- li + 1;
+            }
+            if (swapped) {
+                sreg <- b.locals[swap_i].reg;
+                sbox <- b.locals[swap_i].boxed;
+                b.locals[swap_i].reg <- fslot;
+                b.locals[swap_i].boxed <- false;
+            } else {
+                push(b.locals, {name: fnm, reg: fslot, boxed: false, box_owned: false});
+            }
+            var svt <- get_var_type(fnm);
+            set_var_type(fnm, ptype.fields[i].type);
+            push(saves, {name: fnm, swapped: swapped, swap_i: swap_i, sreg: sreg, sbox: sbox, svt: svt});
+            i <- i + 1;
+        }
+    }
+    return {saves: saves, pre: pre};
+}
+fn arm_destructure_emit_restore(b, rec) {
+    var saves <- rec.saves;
+    var i <- 0;
+    while (i < len(saves)) {
+        var s <- saves[i];
+        set_var_type(s.name, s.svt);
+        if (s.swapped) {
+            b.locals[s.swap_i].reg <- s.sreg;
+            b.locals[s.swap_i].boxed <- s.sbox;
+        }
+        i <- i + 1;
+    }
+    var nl <- [];
+    var k <- 0;
+    while (k < rec.pre) { push(nl, b.locals[k]); k <- k + 1; }
+    b.locals <- nl;
+}
 fn match_bind_name(arm, scrutinee): str {
     if (arm.name != "") { return arm.name; }
     if (scrutinee.node = "Identifier") { return scrutinee.name; }
@@ -1897,6 +1977,19 @@ fn union_member_index(u, mt): int {
     var i <- 0;
     while (i < len(ms)) {
         if (T.type_eq(ms[i], mt)) { return i; }
+        i <- i + 1;
+    }
+    // Second pass: a struct value whose field *types* are narrower than a
+    // struct member's — e.g. {tag: int} fitting member {tag: int | str}.
+    // Require the exact top-level field-name set (same field count, every
+    // member field present in the value) so a width-subtyped value with
+    // extra fields does NOT collapse onto a narrower member; only the field
+    // types may differ, and they must be assignable.
+    i <- 0;
+    while (i < len(ms)) {
+        if (ms[i].kind = "struct_lit" && mt.kind = "struct_lit") {
+            if (len(ms[i].fields) = len(mt.fields) && T.types_compat(ms[i], mt)) { return i; }
+        }
         i <- i + 1;
     }
     return -1;
@@ -2163,7 +2256,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
             push(fn_scopes, []);
             if (!e.arms[mxi].wild) {
                 var bn <- match_bind_name(e.arms[mxi], e.scrutinee);
-                if (bn != "") { scope_declare(fn_scopes, bn); }
+                if (bn != "") { scope_declare(fn_scopes, bn); arm_destructure_scope_declare(fn_scopes, e.arms[mxi].ptype); }
             }
             scope_check_expr(e.arms[mxi].value, fn_scopes, captured, globals_set, fn_names);
             pop(fn_scopes);
@@ -2650,13 +2743,14 @@ fn check_expr(e) {
                 var mbn <- "";
                 if (!marm.wild) { mbn <- match_bind_name(marm, e.scrutinee); }
                 var msaved <- T.mk_none();
-                if (mbn != "") { msaved <- get_var_type(mbn); set_var_type(mbn, marm.ptype); }
+                var mfsv <- [];
+                if (mbn != "") { msaved <- get_var_type(mbn); set_var_type(mbn, marm.ptype); mfsv <- arm_destructure_set_types(marm.ptype); }
                 check_expr(marm.value);
                 var mavt <- typeof_expr(marm.value);
                 if (mavt.kind = "union") {
                     report_error(e.line, e.col, "match-expression arm cannot itself yield a union (" + T.type_str(mavt) + "); narrow it to a single type");
                 }
-                if (mbn != "") { set_var_type(mbn, msaved); }
+                if (mbn != "") { arm_destructure_restore_types(mfsv); set_var_type(mbn, msaved); }
                 mxi <- mxi + 1;
             }
         }
@@ -4668,6 +4762,7 @@ fn ir_emit_expr(b, nd) {
             var saved_reg <- "";
             var saved_boxed <- false;
             var saved_vt <- T.mk_none();
+            var fld_rec <- {saves: [], pre: 0};
             if (bn != "") {
                 var payload <- ir_fresh_tmp(b, "mxpay");
                 ir_push_inst(b.cur_block, ii_union_payload(payload, cell));
@@ -4692,12 +4787,14 @@ fn ir_emit_expr(b, nd) {
                 }
                 saved_vt <- get_var_type(bn);
                 set_var_type(bn, arm.ptype);
+                fld_rec <- arm_destructure_emit_bind(b, bn, arm.ptype);
             }
             var av <- ir_emit_expr(b, arm.value);
             var avt <- typeof_expr(arm.value);
             if (r_is_union) { av <- ir_union_wrap(b, av, avt, R); }
             ir_push_inst(b.cur_block, ii_store(av, ir_reg(res_slot, T.mk_int())));
             if (bn != "") {
+                arm_destructure_emit_restore(b, fld_rec);
                 set_var_type(bn, saved_vt);
                 if (swapped) {
                     b.locals[swap_i].reg <- saved_reg;
@@ -5695,7 +5792,8 @@ fn ir_emit_format_struct(b, struct_val, fields) {
 }
 
 // Wrap a member value in a {tag, payload} union cell. tag = the member's
-// index in the normalized union, found by kind (membership is kind-exact).
+// index in the normalized union (exact type match, or a struct value whose
+// field types are narrower than the member's — see union_member_index).
 fn ir_union_wrap(b, val, member_type, union_type) {
     if (member_type.kind = "any") {
         report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
@@ -5752,8 +5850,19 @@ fn ir_coerce_slot_value(b, expr, slot_t) {
     if (slot_t.kind = "union") {
         var vt <- typeof_expr(expr);
         if (vt.kind != "union") {
-            var raw <- ir_emit_expr(b, expr);
-            return ir_union_wrap(b, raw, vt, slot_t);
+            // Resolve which member the value inhabits, then build the value
+            // *for that member type* so a struct member's union-typed fields
+            // get wrapped (a literal {tag: 42} stored into a {tag: int | str}
+            // member needs its tag field wrapped into an int|str cell) before
+            // the whole value is tagged as that member.
+            var midx <- union_member_index(slot_t, vt);
+            var mem <- vt;
+            if (midx >= 0) {
+                var ms2 <- T.union_normalize(slot_t.members);
+                mem <- ms2[midx];
+            }
+            var raw <- ir_emit_value_for_slot(b, expr, mem);
+            return ir_union_wrap(b, raw, mem, slot_t);
         }
         return ir_emit_expr(b, expr);
     }
@@ -5763,8 +5872,10 @@ fn ir_coerce_slot_value(b, expr, slot_t) {
 // Recursively build `expr` as a value for `slot_t`, wrapping every union-typed
 // position that sits *inside* a container (a struct field or array element, at
 // any depth) into a {tag, payload} cell. A whole-value (top-level) union is not
-// wrapped here — the var-decl/return/arg sites wrap that themselves. Slots with
-// no nested union emit through the normal expression path unchanged.
+// wrapped here — the var-decl/return/arg sites wrap that themselves — but the
+// value IS built for the specific member type it inhabits, so a struct member's
+// own union fields get coerced before the caller tags it. Slots with no nested
+// union emit through the normal expression path unchanged.
 fn ir_emit_value_for_slot(b, expr, slot_t) {
     if (slot_t.kind = "array" && expr.node = "ArrayLit" && T.union_in_container(slot_t)) {
         var welems <- [];
@@ -5791,6 +5902,16 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
         var stmp <- ir_fresh_tmp(b, "sl");
         ir_push_inst(b.cur_block, ir_inst("struct_new", stmp, T.mk_struct(), [], fields));
         return ir_reg(stmp, T.mk_struct());
+    }
+    if (slot_t.kind = "union") {
+        var uvt <- typeof_expr(expr);
+        if (uvt.kind != "union") {
+            var umidx <- union_member_index(slot_t, uvt);
+            if (umidx >= 0) {
+                var ums <- T.union_normalize(slot_t.members);
+                return ir_emit_value_for_slot(b, expr, ums[umidx]);
+            }
+        }
     }
     return ir_emit_expr(b, expr);
 }

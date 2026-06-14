@@ -1,0 +1,96 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 12
+//OUT: 8
+//OUT: ok
+//OUT: 100
+//OUT: 11
+//OUT: 24
+//OUT: 18
+//OUT: 8
+//OUT: 3
+//OUT: 100
+
+// Destructuring in statement arms: a struct pattern binds its field names
+// as arm-local variables, typed as the field types. The scrutinee binding
+// (named, or the narrowed scrutinee identifier) still works alongside.
+
+// Single field, bound with no scrutinee name.
+var a: {x: int} | {y: int} <- {x: 7};
+match (a) {
+    {x: int} => { print(x); }
+    {y: int} => { print(y); }
+}
+
+// Multiple fields.
+var b: {x: int, y: int} | {z: int} <- {x: 5, y: 7};
+match (b) {
+    {x: int, y: int} => { print(x + y); }
+    {z: int} => { print(z); }
+}
+
+// Nested struct field: the top-level field `outer` is bound (itself a
+// struct); reach the inner field via outer.inner (destructuring is one
+// level deep, by design).
+var c: {outer: {inner: int}} | {n: int} <- {outer: {inner: 8}};
+match (c) {
+    {outer: {inner: int}} => { print(outer.inner); }
+    {n: int} => { print(n); }
+}
+
+// An explicit scrutinee name AND field bindings coexist: `s` is the whole
+// struct, `x` is the destructured field.
+var e: {x: int} | {y: int} <- {x: 50};
+match (e) {
+    s: {x: int} => {
+        if (s.x = x) { print("ok"); }
+        print(s.x + x);
+    }
+    s: {y: int} => { print(s.y); }
+}
+
+// ─── Expression arms ──────────────────────────────────────────────────────
+// A struct pattern binds its fields for use in the arm's result expression.
+
+// Single field.
+var ea: {x: int} | {y: int} <- {x: 11};
+var r1 <- match (ea) {
+    {x: int} => x,
+    {y: int} => y,
+};
+print(r1);
+
+// Multiple fields in the result expression.
+var eb: {x: int, y: int} | {z: int} <- {x: 4, y: 6};
+var r2 <- match (eb) {
+    {x: int, y: int} => x * y,
+    {z: int} => z,
+};
+print(r2);
+
+// Explicit name AND fields together.
+var ec: {x: int} | {y: int} <- {x: 9};
+var r3 <- match (ec) {
+    s: {x: int} => s.x + x,
+    s: {y: int} => s.y + y,
+};
+print(r3);
+
+// Nested struct field: bind outer, reach inner via outer.inner.
+var ed: {outer: {inner: int}} | {n: int} <- {outer: {inner: 7}};
+var r4 <- match (ed) {
+    {outer: {inner: int}} => outer.inner + 1,
+    {n: int} => n,
+};
+print(r4);
+
+// A field binding shadows an outer local of the same name within the arm,
+// and the outer binding is restored afterward.
+var x <- 100;
+var ee: {x: int} | {y: int} <- {x: 3};
+var r5 <- match (ee) {
+    {x: int} => x,
+    {y: int} => y,
+};
+print(r5);
+print(x);

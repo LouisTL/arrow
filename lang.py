@@ -1213,6 +1213,7 @@ class Interpreter:
                                 bn = scrutinee.name
                             if bn is not None:
                                 self.env.declare(bn, val)
+                                self._bind_match_fields(chosen, val)
                         for s in chosen.body:
                             self._exec(s)
                     finally:
@@ -1300,6 +1301,18 @@ class Interpreter:
                 return arm
         return None
 
+    def _bind_match_fields(self, chosen, val):
+        # Destructuring: a struct-pattern arm binds each of its pattern
+        # fields as a local in the arm scope (statement and expression
+        # arms alike). The native compiler reaches the same end via a
+        # parser desugar (statement arms) and emit-time field binding
+        # (expression arms).
+        if chosen.ptype_kind == "struct" and chosen.pfields is not None \
+                and isinstance(val, Struct):
+            fv = val.fields()
+            for fname in chosen.pfields:
+                self.env.declare(fname, fv[fname])
+
     def _eval(self, node) -> Any:
         match node:
             case NumberLit(v): return v
@@ -1363,6 +1376,7 @@ class Interpreter:
                             bn = scrutinee.name
                         if bn is not None:
                             self.env.declare(bn, val)
+                            self._bind_match_fields(chosen, val)
                     return self._eval(chosen.value)
                 finally:
                     self.env = outer
