@@ -94,9 +94,9 @@ describe(5);
 describe(-3);
 describe(0);
 
-// ── Logical short-circuit doesn't matter for pure exprs ──
-// (Arrow's && and || are eagerly evaluated — see the language docs;
-//  this test just confirms the result, not the side-effect ordering.)
+// ── Logical operators (pure-expression results) ──
+// && and || short-circuit — the right operand is skipped once the left
+// decides the result — but these side-effect-free operands only check values.
 fn even(n) { return n % 2 = 0; }
 fn pos(n)  { return n > 0; }
 var e: bool <- even(4) && pos(4);

@@ -719,7 +719,7 @@ fn fresh_lbl(prefix: str): str {
 }
 
 // Track which variables have been allocated in current function
-var fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
+var fn_vars <- []; // {name, depth} entries for locals allocated in the current function
 var current_fn <- [""]; // name of function being compiled
 
 // Arrow function counter
@@ -2445,7 +2445,7 @@ fn match_eff_covered(covered, ms, i: int, seen_lits): int {
     if (ms[i].kind = "bool" && name_in(seen_lits, "bool:true") && name_in(seen_lits, "bool:false")) { return true; }
     return false;
 }
-// 3a: every element of an array-of-union literal must be a concrete member of
+// Every element of an array-of-union literal must be a concrete member of
 // the union; it is wrapped into that union at construction (see ir_emit_stmt).
 fn check_array_union_elements(ln, col, ut, lit) {
     var i <- 0;
@@ -2461,7 +2461,7 @@ fn check_array_union_elements(ln, col, ut, lit) {
         i <- i + 1;
     }
 }
-// 3b: is `actual`/`src` an acceptable source for an array-of-union target whose
+// Is `actual`/`src` an acceptable source for an array-of-union target whose
 // element union is `ut`? Either an exactly-matching [union] array (same handle,
 // already-wrapped cells, so reference semantics are preserved) or an empty array
 // literal (nothing to wrap). No implicit element-wise widening.
@@ -2475,8 +2475,8 @@ fn check_stmt(s) {
         if (s.type_ann.kind != "none") {
             if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union") {
                 // Array-of-union slot. A literal RHS wraps its elements into the
-                // union at construction (3a); a non-literal RHS must already be an
-                // exactly-matching [union] array (3b) — no implicit element
+                // union at construction; a non-literal RHS must already be an
+                // exactly-matching [union] array — no implicit element
                 // widening, which would silently copy and break reference
                 // semantics. An empty literal trivially satisfies either path.
                 if (s.expr.node = "ArrayLit") {
@@ -2629,7 +2629,7 @@ fn expr_pos_col(e): int {
 }
 // Reject using a union value where a single concrete type is required. A union
 // may only be stored, passed to a union parameter, returned from a union-typed
-// function, or printed; anything else must narrow it first (coming with match).
+// function, or printed; anything else must narrow it first with a match.
 fn check_no_union(e, what: str) {
     var t <- typeof_expr(e);
     if (t.kind = "union") {
@@ -5329,8 +5329,8 @@ fn ir_emit_expr(b, nd) {
     }
 
     // Fallback — unsupported node. Return a sentinel const_int(0) so that
-    // we at least produce valid (but semantically wrong) IR. Future phases
-    // will extend this with the full node set.
+    // we at least produce valid (but semantically wrong) IR for any node the
+    // emitter doesn't explicitly handle, rather than crashing.
     print("ir_emit_expr: unsupported node " + nd.node);
     return ir_const_int(0);
 }
@@ -5743,10 +5743,9 @@ fn ir_emit_format_union(b, cell_val, members, top_level: int) {
     return 0;
 }
 
-// Emit `expr` as a value destined for a slot of type `slot_t`. The one special
-// case is a [union] slot fed by an array literal (3a): each element is wrapped
-// into the union member it matches, so the array holds tagged cells rather than
-// raw values. Every other shape emits through the normal expression path.
+// Build `expr` as a value for a slot of type `slot_t`. If the slot is itself a
+// union, a member value is wrapped into a {tag, payload} cell here; container
+// slots (arrays/structs holding unions) are built by ir_emit_value_for_slot.
 fn ir_coerce_slot_value(b, expr, slot_t) {
     // A union *leaf* (this position is itself a union member): wrap the value
     // into a {tag, payload} cell. Otherwise descend through any container.
@@ -5829,7 +5828,7 @@ fn ir_emit_stmt(b, stmt) {
             // Look up existing var type — same name may have been declared earlier.
             slot_t <- get_var_type(stmt.name);
         }
-        // 3a: an array-of-union literal wraps each element into the union at
+        // An array-of-union literal wraps each element into the union at
         // construction (ir_emit_value_for_slot); all other RHS forms emit
         // normally. The float promotion below still applies for float slots:
         // storing raw int bits into a float slot would bitcast to a denormal.
@@ -6841,7 +6840,7 @@ if (args() > 0) {
     // Skip if the parse already failed: an Assignment with no name, or an
     // if with no condition, can drop scope_check into states (empty arrays,
     // unexpected node shapes) that crash before parse errors get reported.
-    // Parse errors take priority anyway; we'll surface them next.
+    // Parse errors take priority anyway and are surfaced next.
     if (len(parse_errors) = 0) {
         scope_check_program(combined);
     }
