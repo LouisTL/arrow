@@ -1,0 +1,61 @@
+// EXPECT: ok
+//OUT: {tag: 1}
+//OUT: {tag: "hi"}
+//OUT: 8
+//OUT: {a: 3, n: 50, b: "yo"}
+//OUT: {a: "ab", n: 60, b: 9}
+//OUT: 42
+//OUT: 4
+//OUT: {tag: 99}
+//OUT: {tag: "set"}
+//OUT: {outer: {inner: 5}}
+//OUT: 5
+//OUT: [{tag: 1}, {tag: "two"}, {tag: 3}]
+//OUT: {tag: "two"}
+
+// Union as a struct field: constructed (each union field wrapped into a
+// {tag,payload} cell), read (field access narrows to the union), printed,
+// matched, reassigned (the variable keeps its declared type), passed and
+// returned through functions, and nested to arbitrary depth.
+
+var p: {tag: int | str} <- {tag: 1};
+print(p);
+p <- {tag: "hi"};                       // whole-var reassign keeps {tag: int|str}
+print(p);
+
+// read a union field into a local, then match on it
+var pi: {tag: int | str} <- {tag: 7};
+var t: int | str <- pi.tag;
+print(match (t) { int => t + 1, str => str_len(t) });
+
+// multiple union fields alongside a plain field
+var m: {a: int | str, n: int, b: int | str} <- {a: 3, n: 50, b: "yo"};
+print(m);
+m <- {a: "ab", n: 60, b: 9};
+print(m);
+
+// union field as a function parameter and return type
+fn tagval(r: {tag: int | str}): int {
+    return match (r.tag) { n: int => n, s: str => str_len(s) };
+}
+print(tagval({tag: 42}));
+print(tagval({tag: "abcd"}));
+
+fn make(useStr: int): {tag: int | str} {
+    var r: {tag: int | str} <- {tag: 0};
+    if (useStr = 1) { r <- {tag: "set"}; }
+    if (useStr = 0) { r <- {tag: 99}; }
+    return r;
+}
+print(make(0));
+print(make(1));
+
+// union nested two levels deep inside structs
+var nest: {outer: {inner: int | str}} <- {outer: {inner: 5}};
+print(nest);
+print(match (nest.outer.inner) { n: int => n, s: str => str_len(s) });
+
+// array of structs each carrying a union field
+var arr: [{tag: int | str}] <- [{tag: 1}, {tag: "two"}, {tag: 3}];
+print(arr);
+print(arr[1]);

@@ -1185,14 +1185,7 @@ fn scan_fns(stmts) {
             var pj <- 0;
             while (pj < len(stmts[i].param_types_ann)) {
                 var pct <- stmts[i].param_types_ann[pj];
-                if (T.union_in_container(pct) && !(pct.kind = "array" && pct.elem.kind = "union")) {
-                    report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (parameter " + (pj + 1) + " of '" + stmts[i].name + "')");
-                }
                 pj <- pj + 1;
-            }
-            var rct <- stmts[i].ret_type_ann;
-            if (T.union_in_container(rct) && !(rct.kind = "array" && rct.elem.kind = "union")) {
-                report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (return type of '" + stmts[i].name + "')");
             }
         }
         // Also register top-level arrow-fn assignments under the variable name.
@@ -1918,10 +1911,12 @@ fn infer_body(stmts) {
                 set_var_type(s.name, s.type_ann);
             } else {
                 // A reassignment (no annotation) must not downgrade a variable
-                // declared as a union: the stored value is a member and the
-                // variable keeps its union type for the whole function.
+                // whose declared type carries a union — a top-level union or a
+                // container holding one (array-of-union, struct-with-union-field,
+                // nested). The stored value is coerced to the declared type, which
+                // the variable keeps for the whole function.
                 var existing <- get_var_type(s.name);
-                if (existing.kind != "union" && !(existing.kind = "array" && existing.elem.kind = "union")) {
+                if (!T.union_in_container(existing) && existing.kind != "union") {
                     var ty <- typeof_expr(s.expr);
                     set_var_type(s.name, ty);
                 }
@@ -2497,9 +2492,6 @@ fn check_stmt(s) {
                 if (!T.types_compat(s.type_ann, actual)) {
                     report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
                 }
-                if (T.union_in_container(s.type_ann)) {
-                    report_error(s.line, s.col, "union inside an array or struct is not supported yet: " + T.type_str(s.type_ann));
-                }
             }
         }
         if (s.type_ann.kind = "none") {
@@ -2517,6 +2509,15 @@ fn check_stmt(s) {
                     if (!array_union_src_ok(lvt.elem, rsa, s.expr)) {
                         report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
                     }
+                }
+            } else if (T.union_in_container(lvt)) {
+                // A struct-with-union-field (or nested container) keeps its declared
+                // type on reassignment; validate the new value against it just like a
+                // declaration. A struct/array literal has its union members wrapped at
+                // construction; types_compat enforces that each value is a real member.
+                var rsv <- typeof_expr(s.expr);
+                if (!T.types_compat(lvt, rsv)) {
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' (declared " + T.type_str(lvt) + ") reassigned " + T.type_str(rsv));
                 }
             }
         }
@@ -2600,6 +2601,19 @@ fn check_stmt(s) {
     if (s.node = "DotAssign") {
         check_expr(s.obj);
         check_expr(s.value);
+        // A union-typed field accepts only its members: validate the new
+        // value against the field's declared type, like a declaration. Plain
+        // (non-union) fields keep the loosely-typed self-host's behavior.
+        var dot <- typeof_expr(s.obj);
+        if (dot.kind = "struct_lit") {
+            var fft <- T.struct_field_type(dot.fields, s.field);
+            if (fft.kind = "union" || T.union_in_container(fft)) {
+                var dval <- typeof_expr(s.value);
+                if (!T.types_compat(fft, dval)) {
+                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
+                }
+            }
+        }
     }
 }
 
@@ -5003,14 +5017,13 @@ fn ir_emit_expr(b, nd) {
         var args <- [];
         var i <- 0;
         while (i < len(nd.args)) {
-            var av <- ir_emit_expr(b, nd.args[i]);
-            if (cfi != false && i < len(cfi.param_types_ann)) {
-                var pann <- cfi.param_types_ann[i];
-                if (pann.kind = "union") {
-                    var avt <- typeof_expr(nd.args[i]);
-                    if (avt.kind != "union") {
-                        av <- ir_union_wrap(b, av, avt, pann);
-                    }
+            var pann <- T.mk_none();
+            if (cfi != false && i < len(cfi.param_types_ann)) { pann <- cfi.param_types_ann[i]; }
+            var av <- ir_emit_value_for_slot(b, nd.args[i], pann);
+            if (pann.kind = "union") {
+                var avt <- typeof_expr(nd.args[i]);
+                if (avt.kind != "union") {
+                    av <- ir_union_wrap(b, av, avt, pann);
                 }
             }
             push(args, av);
@@ -5560,6 +5573,10 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
         return 0;
     }
+    if (t.kind = "union") {
+        ir_emit_format_union(b, val, t.members, top_level);
+        return 0;
+    }
     // Fallback for any/struct/unknown — use the runtime any-dispatcher,
     // which heuristically picks int vs string based on the value's
     // magnitude. Catches cases where static inference couldn't recover an
@@ -5567,10 +5584,6 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
     // type joined across mixed-shape literals to `any`. For untyped structs
     // (the `struct` kind, distinct from `struct_lit`) we still fall back to
     // int — there's no general way to walk an opaque struct at runtime.
-    if (t.kind = "union") {
-        ir_emit_format_union(b, val, t.members, top_level);
-        return 0;
-    }
     if (t.kind = "any") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_any(val)); }
         else { ir_push_inst(b.cur_block, ii_format_any(val)); }
@@ -5734,20 +5747,51 @@ fn ir_emit_format_union(b, cell_val, members, top_level: int) {
 // case is a [union] slot fed by an array literal (3a): each element is wrapped
 // into the union member it matches, so the array holds tagged cells rather than
 // raw values. Every other shape emits through the normal expression path.
+fn ir_coerce_slot_value(b, expr, slot_t) {
+    // A union *leaf* (this position is itself a union member): wrap the value
+    // into a {tag, payload} cell. Otherwise descend through any container.
+    if (slot_t.kind = "union") {
+        var vt <- typeof_expr(expr);
+        if (vt.kind != "union") {
+            var raw <- ir_emit_expr(b, expr);
+            return ir_union_wrap(b, raw, vt, slot_t);
+        }
+        return ir_emit_expr(b, expr);
+    }
+    return ir_emit_value_for_slot(b, expr, slot_t);
+}
+
+// Recursively build `expr` as a value for `slot_t`, wrapping every union-typed
+// position that sits *inside* a container (a struct field or array element, at
+// any depth) into a {tag, payload} cell. A whole-value (top-level) union is not
+// wrapped here — the var-decl/return/arg sites wrap that themselves. Slots with
+// no nested union emit through the normal expression path unchanged.
 fn ir_emit_value_for_slot(b, expr, slot_t) {
-    if (slot_t.kind = "array" && slot_t.elem.kind = "union" && expr.node = "ArrayLit") {
+    if (slot_t.kind = "array" && expr.node = "ArrayLit" && T.union_in_container(slot_t)) {
         var welems <- [];
         var wi <- 0;
         while (wi < len(expr.elements)) {
-            var ev <- ir_emit_expr(b, expr.elements[wi]);
-            var evt <- typeof_expr(expr.elements[wi]);
-            if (evt.kind != "union") { ev <- ir_union_wrap(b, ev, evt, slot_t.elem); }
-            push(welems, ev);
+            push(welems, ir_coerce_slot_value(b, expr.elements[wi], slot_t.elem));
             wi <- wi + 1;
         }
         var atmp <- ir_fresh_tmp(b, "uarr");
         ir_push_inst(b.cur_block, ii_array_new(atmp, T.mk_int(), welems));
         return ir_reg(atmp, slot_t);
+    }
+    if (slot_t.kind = "struct_lit" && expr.node = "StructLit" && T.union_in_container(slot_t)) {
+        var fields <- [];
+        var fi <- 0;
+        while (fi < len(expr.fields)) {
+            var fkey <- expr.fields[fi].key;
+            var fslot <- T.struct_field_type(slot_t.fields, fkey);
+            var fval <- ir_coerce_slot_value(b, expr.fields[fi].val, fslot);
+            var fkid <- ir_mod_add_str(b.mod, fkey);
+            push(fields, {key_id: fkid, val: fval});
+            fi <- fi + 1;
+        }
+        var stmp <- ir_fresh_tmp(b, "sl");
+        ir_push_inst(b.cur_block, ir_inst("struct_new", stmp, T.mk_struct(), [], fields));
+        return ir_reg(stmp, T.mk_struct());
     }
     return ir_emit_expr(b, expr);
 }
@@ -5757,17 +5801,20 @@ fn ir_emit_stmt(b, stmt) {
             // bare `return;` — still require a terminator for well-formed IR.
             ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
         } else {
-            var v <- ir_emit_expr(b, stmt.expr);
+            var rfn <- find_fn(b.func.name);
+            var rslot <- T.mk_none();
+            if (rfn != false) { rslot <- rfn.ret_type_ann; }
+            var v <- ir_emit_value_for_slot(b, stmt.expr, rslot);
             // Return coercion: a member value returned from a union-typed
             // function is wrapped in a {tag, payload} cell, so callers (which
-            // type the call as the union) receive a real union value.
-            var rfn <- find_fn(b.func.name);
-            if (rfn != false) {
-                if (rfn.ret_type_ann.kind = "union") {
-                    var rvt <- typeof_expr(stmt.expr);
-                    if (rvt.kind != "union") {
-                        v <- ir_union_wrap(b, v, rvt, rfn.ret_type_ann);
-                    }
+            // type the call as the union) receive a real union value. A struct
+            // or array return whose fields hold unions is wrapped field-wise by
+            // ir_emit_value_for_slot above; values already of union type pass
+            // through unchanged.
+            if (rslot.kind = "union") {
+                var rvt <- typeof_expr(stmt.expr);
+                if (rvt.kind != "union") {
+                    v <- ir_union_wrap(b, v, rvt, rslot);
                 }
             }
             ir_set_terminator(b.cur_block, ii_ret(v));
@@ -5887,7 +5934,13 @@ fn ir_emit_stmt(b, stmt) {
     }
     if (stmt.node = "DotAssign") {
         var obj <- ir_emit_expr(b, stmt.obj);
-        var val <- ir_emit_expr(b, stmt.value);
+        // Coerce the new value to the field's declared type: a union-typed
+        // field stores a {tag,payload} cell, so a member value is wrapped
+        // (and a nested container has its own unions wrapped, recursively).
+        var ot <- typeof_expr(stmt.obj);
+        var fslot <- T.mk_none();
+        if (ot.kind = "struct_lit") { fslot <- T.struct_field_type(ot.fields, stmt.field); }
+        var val <- ir_coerce_slot_value(b, stmt.value, fslot);
         var fid <- ir_mod_add_str(b.mod, stmt.field);
         var prefix <- ir_fresh_tmp(b, "sset");
         ir_push_inst(b.cur_block, ii_struct_set(prefix, obj, fid, val));

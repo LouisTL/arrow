@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: reassigned
+
+// Reassigning a union-typed field with a non-member value is rejected: the
+// variable keeps its declared {tag: int|str} type, so the new value is checked
+// against it exactly like a declaration.
+var r: {tag: int | str} <- {tag: 1};
+r <- {tag: true};
+print(r);

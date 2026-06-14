@@ -1,0 +1,8 @@
+// EXPECT: type_fail
+//ERR: type mismatch
+
+// Mutating a union-typed field with a non-member value is rejected: the field
+// declared as int|str accepts only int or str members, not bool.
+var p: {tag: int | str} <- {tag: 1};
+p.tag <- true;
+print(p);
