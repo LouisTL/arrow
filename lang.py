@@ -323,6 +323,7 @@ class MatchArm:
     body: list
     lit_kind: str | None = None
     lit_val: Any = None
+    pfields: list | None = None
 
 @dataclass
 class MatchStmt:
@@ -336,6 +337,7 @@ class MatchExprArm:
     value: Any
     lit_kind: str | None = None
     lit_val: Any = None
+    pfields: list | None = None
 
 @dataclass
 class MatchExpr:
@@ -699,31 +701,35 @@ class Parser:
         self._eat(TokenType.RPAREN)
         return params
 
-    def _parse_type_kind(self) -> str:
-        """Parse a single (non-union) type for a match arm; return its kind."""
+    def _parse_type_kind(self):
+        """Parse a single (non-union) type for a match arm; return
+        (kind, pfields). pfields is the list of field names for a struct
+        pattern (used for structural arm dispatch), else None."""
         t = self._current().type
         if t == TokenType.LBRACKET:
             self._eat(TokenType.LBRACKET)
             self._skip_type_ann()
             self._eat(TokenType.RBRACKET)
-            return "array"
+            return "array", None
         if t == TokenType.LBRACE:
             self._eat(TokenType.LBRACE)
+            fnames = []
             if self._current().type != TokenType.RBRACE:
-                self._eat(TokenType.IDENT); self._eat(TokenType.COLON); self._skip_type_ann()
+                fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
                 while self._match(TokenType.COMMA):
                     if self._current().type == TokenType.RBRACE: break
-                    self._eat(TokenType.IDENT); self._eat(TokenType.COLON); self._skip_type_ann()
+                    fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
             self._eat(TokenType.RBRACE)
-            return "struct"
-        return self._eat(TokenType.IDENT).value
+            return "struct", fnames
+        return self._eat(TokenType.IDENT).value, None
 
     def _parse_arm_pattern(self):
         """Parse one arm pattern (shared by statement and expression match).
-        Returns (ptype_kind, name, lit_kind, lit_val); does not consume `=>`."""
+        Returns (ptype_kind, name, lit_kind, lit_val, pfields); does not consume `=>`."""
         name = None
         lit_kind = None
         lit_val = None
+        pfields = None
         cur = self._current()
         nxt_tok = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
         nxt = nxt_tok.type if nxt_tok else None
@@ -747,8 +753,8 @@ class Parser:
             if cur.type == TokenType.IDENT and nxt == TokenType.COLON:
                 name = self._eat(TokenType.IDENT).value
                 self._eat(TokenType.COLON)
-            ptype_kind = self._parse_type_kind()
-        return ptype_kind, name, lit_kind, lit_val
+            ptype_kind, pfields = self._parse_type_kind()
+        return ptype_kind, name, lit_kind, lit_val, pfields
 
     def _match_stmt(self) -> MatchStmt:
         self._eat(TokenType.MATCH)
@@ -758,10 +764,10 @@ class Parser:
         self._eat(TokenType.LBRACE)
         arms = []
         while self._current().type != TokenType.RBRACE:
-            ptype_kind, name, lit_kind, lit_val = self._parse_arm_pattern()
+            ptype_kind, name, lit_kind, lit_val, pfields = self._parse_arm_pattern()
             self._eat(TokenType.FAT_ARROW)
             body = self._block()
-            arms.append(MatchArm(ptype_kind, name, body.statements, lit_kind, lit_val))
+            arms.append(MatchArm(ptype_kind, name, body.statements, lit_kind, lit_val, pfields))
             self._match(TokenType.COMMA)
         self._eat(TokenType.RBRACE)
         return MatchStmt(scrutinee, arms)
@@ -774,10 +780,10 @@ class Parser:
         self._eat(TokenType.LBRACE)
         arms = []
         while self._current().type != TokenType.RBRACE:
-            ptype_kind, name, lit_kind, lit_val = self._parse_arm_pattern()
+            ptype_kind, name, lit_kind, lit_val, pfields = self._parse_arm_pattern()
             self._eat(TokenType.FAT_ARROW)
             value = self._expression()
-            arms.append(MatchExprArm(ptype_kind, name, value, lit_kind, lit_val))
+            arms.append(MatchExprArm(ptype_kind, name, value, lit_kind, lit_val, pfields))
             if self._current().type != TokenType.RBRACE:
                 self._eat(TokenType.COMMA)
         self._eat(TokenType.RBRACE)
@@ -1283,6 +1289,14 @@ class Interpreter:
                     return arm
                 continue
             if arm.ptype_kind == kind:
+                if kind == "struct":
+                    # Distinct struct shapes are told apart by their exact
+                    # field-name set — the runtime analogue of the native tag
+                    # that encodes which struct member the value inhabits.
+                    if isinstance(val, Struct) and arm.pfields is not None \
+                            and set(arm.pfields) == set(val.fields().keys()):
+                        return arm
+                    continue
                 return arm
         return None
 

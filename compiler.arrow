@@ -1903,7 +1903,7 @@ fn union_member_index(u, mt): int {
     var ms <- T.union_normalize(u.members);
     var i <- 0;
     while (i < len(ms)) {
-        if (ms[i].kind = mt.kind) { return i; }
+        if (T.type_eq(ms[i], mt)) { return i; }
         i <- i + 1;
     }
     return -1;
@@ -5687,13 +5687,7 @@ fn ir_union_wrap(b, val, member_type, union_type) {
     if (member_type.kind = "any") {
         report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
     }
-    var ms <- T.union_normalize(union_type.members);
-    var tag <- 0;
-    var i <- 0;
-    while (i < len(ms)) {
-        if (ms[i].kind = member_type.kind) { tag <- i; }
-        i <- i + 1;
-    }
+    var tag <- union_member_index(union_type, member_type);
     var dst <- ir_fresh_tmp(b, "umk");
     ir_push_inst(b.cur_block, ii_union_new(dst, ir_const_int(tag), val));
     return ir_reg(dst, union_type);

@@ -1,0 +1,11 @@
+// EXPECT: type_fail
+//ERR: duplicate match arm
+
+// Two arms for the same struct shape — structural identity makes the second a
+// duplicate, not a distinct member.
+var s: {a: int} | {b: int} <- {a: 1};
+match (s) {
+    {a: int} => { print(s.a); }
+    {a: int} => { print(s.a); }
+    {b: int} => { print(s.b); }
+}

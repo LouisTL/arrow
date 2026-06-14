@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: non-exhaustive match
+
+// A struct member with no covering arm (and no wildcard) is a type error,
+// just like an uncovered primitive member.
+var s: {a: int} | {b: int} <- {a: 1};
+match (s) {
+    {a: int} => { print(s.a); }
+}
