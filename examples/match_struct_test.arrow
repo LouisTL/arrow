@@ -1,0 +1,116 @@
+// EXPECT: ok
+//OUT: 5
+//OUT: 9
+//OUT: 3
+//OUT: hi
+//OUT: 42
+//OUT: 3
+//OUT: 8
+//OUT: 100
+//OUT: int
+//OUT: a
+//OUT: other
+//OUT: 30
+//OUT: 7
+//OUT: 99
+
+// Distinct struct shapes as union members. A match dispatches on which struct
+// shape the value inhabits (exact field-set identity — no width subtyping),
+// narrows the scrutinee to that shape, and field access works in the arm.
+
+// Two single-field shapes, distinguished by field name.
+fn tag2(s: {a: int} | {b: int}): int {
+    return match (s) {
+        {a: int} => s.a,
+        {b: int} => s.b,
+    };
+}
+print(tag2({a: 5}));        // 5
+print(tag2({b: 9}));        // 9
+
+// Primitive + two struct shapes, reassigned across members.
+var v: int | {x: int} | {y: str} <- {x: 3};
+match (v) {
+    int => { print(v + 1); },
+    {x: int} => { print(v.x); },        // 3
+    {y: str} => { print(v.y); },
+}
+v <- {y: "hi"};
+match (v) {
+    int => { print(v + 1); },
+    {x: int} => { print(v.x); },
+    {y: str} => { print(v.y); },        // hi
+}
+v <- 41;
+match (v) {
+    int => { print(v + 1); },           // 42
+    {x: int} => { print(v.x); },
+    {y: str} => { print(v.y); },
+}
+
+// Two shapes that share a field name but differ in width — exact-set identity
+// means {x:1,y:2} does NOT match the {x:int} arm.
+var p: {x: int} | {x: int, y: int} <- {x: 1, y: 2};
+match (p) {
+    {x: int} => { print(p.x); },
+    {x: int, y: int} => { print(p.x + p.y); },   // 3
+}
+p <- {x: 8};
+match (p) {
+    {x: int} => { print(p.x); },                 // 8
+    {x: int, y: int} => { print(p.x + p.y); },
+}
+
+// Named binding on a struct arm.
+var q: {a: int} | {b: int} <- {b: 100};
+match (q) {
+    m: {a: int} => { print(m.a); },
+    m: {b: int} => { print(m.b); },              // 100
+}
+
+// Wildcard catches uncovered struct members.
+fn kindof(w: int | {a: int} | {b: int}): str {
+    return match (w) {
+        int => "int",
+        {a: int} => "a",
+        _ => "other",
+    };
+}
+print(kindof(7));          // int
+print(kindof({a: 1}));     // a
+print(kindof({b: 2}));     // other
+
+// ───────────────────────────────────────────────────────────────────────
+// Member ORDER must not change runtime tags: a value built under one member
+// ordering must match correctly under a different but structurally equal
+// ordering. union_normalize canonicalizes same-rank compound members so
+// {p:int}|{q:int,r:int} and {q:int,r:int}|{p:int} tag identically.
+fn make(): {p: int} | {q: int, r: int} {
+    return {q: 10, r: 20};
+}
+fn use_rev(s: {q: int, r: int} | {p: int}): int {     // reversed order
+    return match (s) {
+        {p: int} => s.p,
+        {q: int, r: int} => s.q + s.r,
+    };
+}
+print(use_rev(make()));     // 30
+
+fn mk2(): {a: int} | {b: int} { return {b: 7}; }
+fn rev2(s: {b: int} | {a: int}): int {
+    return match (s) {
+        {a: int} => s.a,
+        {b: int} => s.b,
+    };
+}
+print(rev2(mk2()));         // 7
+
+fn mk3(): {a: int} | {b: int} | {c: int} { return {c: 99}; }
+fn rev3(s: {c: int} | {a: int} | {b: int}): int {
+    return match (s) {
+        {a: int} => s.a,
+        {b: int} => s.b,
+        {c: int} => s.c,
+    };
+}
+print(rev3(mk3()));         // 99

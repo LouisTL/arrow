@@ -1,0 +1,22 @@
+// EXPECT: type_fail
+//ERR: annotated as {tag: int | str}
+//ERR: reassigned {tag: bool}
+//ERR: field 'tag' is int | str
+
+// Three ways a union-typed struct field rejects a non-member value (bool is not
+// a member of int|str): at declaration, at whole-struct reassignment, and at
+// direct field mutation.
+
+// declaration with a non-member field value
+var r1: {tag: int | str} <- {tag: true};
+print(r1);
+
+// whole-struct reassignment with a non-member field value
+var r2: {tag: int | str} <- {tag: 1};
+r2 <- {tag: true};
+print(r2);
+
+// direct field mutation with a non-member value
+var p1: {tag: int | str} <- {tag: 1};
+p1.tag <- true;
+print(p1);

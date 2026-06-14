@@ -1,0 +1,49 @@
+// EXPECT: type_fail
+//ERR: missing arm for bool
+//ERR: duplicate literal
+//ERR: missing arm for int
+//ERR: literal pattern of type bool is not a member
+//ERR: unreachable literal pattern
+
+// All the ways a literal-pattern match fails: a partial bool cover, a duplicate
+// literal, a literal that doesn't satisfy exhaustiveness, a literal whose type
+// isn't a union member, and a literal of an already-covered member.
+
+// (1) one bool literal leaves false uncovered → non-exhaustive
+var x1: bool | int <- 5;
+match (x1) {
+    true => { print(x1); }
+    int => { print(x1); }
+}
+
+// (2) the same literal value twice → duplicate
+var x2: int | str <- 5;
+match (x2) {
+    42 => { print(x2); }
+    42 => { print(x2); }
+    int => { print(x2); }
+    str => { print(x2); }
+}
+
+// (3) a literal int arm without a typed int arm leaves int unsatisfied
+var x3: int | str <- 5;
+match (x3) {
+    42 => { print(x3); }
+    str => { print(x3); }
+}
+
+// (4) a literal whose type isn't a union member
+var x4: int | str <- 5;
+match (x4) {
+    true => { print(x4); }
+    int => { print(x4); }
+    str => { print(x4); }
+}
+
+// (5) a literal of a member already covered by a typed arm → unreachable
+var x5: int | str <- 5;
+match (x5) {
+    int => { print(x5); }
+    42 => { print(x5); }
+    str => { print(x5); }
+}

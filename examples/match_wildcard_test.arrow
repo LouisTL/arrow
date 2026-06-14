@@ -1,0 +1,34 @@
+// EXPECT: ok
+//OUT: 6
+//OUT: hi
+//OUT: true
+//OUT: caught
+//OUT: 42
+
+// Wildcard arm `_` matches any union member not covered by a typed arm. It
+// satisfies exhaustiveness, must be last, and binds nothing — so the
+// scrutinee keeps its full union type inside the arm.
+
+// _ catches the members with no typed arm.
+fn show(v: int | str | bool) {
+    match (v) {
+        int => { print(v + 1); },
+        _ => { print(v); },          // str + bool land here; v is still the union
+    }
+}
+show(5);        // 6
+show("hi");     // hi
+show(true);     // true
+
+// A wildcard-only match accepts anything.
+var w: int | str <- 99;
+match (w) {
+    _ => { print("caught"); },
+}
+
+// _ after a partial set of typed arms; the int value falls through to it.
+var n: int | str <- 42;
+match (n) {
+    str => { print(n); },
+    _ => { print(n); },              // int lands here → 42 (union print)
+}

@@ -28,7 +28,7 @@ fn mk_union(members) { return {kind: "union", members: members}; }
 // Canonical ordering rank for union members. Arrow's `<` lowers to integer
 // comparison, so sorting by kind string would compare pointers; a fixed rank
 // table gives a deterministic order instead. Same-rank (compound) members
-// keep source order for now.
+// are tie-broken by their type_str in union_normalize (source-order-independent).
 fn type_rank(t): int {
     if (t.kind = "int") { return 0; }
     if (t.kind = "bool") { return 1; }
@@ -46,6 +46,26 @@ fn type_rank(t): int {
 // `int | str` and `str | int` become the same type with identical member
 // indices everywhere — which keeps runtime tags consistent across equal
 // unions written in different orders.
+// Lexicographic '<' on strings, by char code. Arrow's `<` lowers to integer
+// comparison (on strings it would compare pointers), so ordering strings needs
+// an explicit char-by-char compare. Used to give same-rank compound union
+// members a canonical, source-order-independent ordering in union_normalize.
+fn str_lt(a: str, b: str): int {
+    var la <- str_len(a);
+    var lb <- str_len(b);
+    var n <- la;
+    if (lb < n) { n <- lb; }
+    var i <- 0;
+    while (i < n) {
+        var ca <- char_code(char_at(a, i));
+        var cb <- char_code(char_at(b, i));
+        if (ca < cb) { return true; }
+        if (ca > cb) { return false; }
+        i <- i + 1;
+    }
+    return la < lb;
+}
+
 fn union_normalize(members) {
     var uniq <- [];
     var i <- 0;
@@ -71,7 +91,11 @@ fn union_normalize(members) {
         while (k < len(uniq)) {
             if (!used[k]) {
                 var r <- type_rank(uniq[k]);
-                if (best = -1 || r < best_rank) { best <- k; best_rank <- r; }
+                if (best = -1 || r < best_rank) {
+                    best <- k; best_rank <- r;
+                } else if (r = best_rank && str_lt(type_str(uniq[k]), type_str(uniq[best]))) {
+                    best <- k;
+                }
             }
             k <- k + 1;
         }
@@ -92,8 +116,8 @@ fn union_member_accepts(m, actual): int {
 }
 
 // True if a union appears nested inside a container (an array element or a
-// struct field). A top-level union is fine; container-of-union isn't widened
-// yet, so the checker rejects it until that lands.
+// struct field), at any depth. Used to drive per-element/field wrapping at
+// construction and to keep such a variable's declared type across reassignment.
 fn union_in_container(t): int {
     if (t.kind = "array") {
         if (t.elem.kind = "union") { return true; }

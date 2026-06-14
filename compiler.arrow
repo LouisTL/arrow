@@ -12,59 +12,13 @@
 // ═══════════════════════════════════════════
 
 // Type system primitives and pure type-level helpers live in their own
-// module. Imported as `T` — usage looks like `T.T.mk_int()`, `T.T.types_join(a,b)`,
-// `T.T.types_compat(annot, actual)`. The resolver loads compiler/types.arrow
+// module. Imported as `T` — usage looks like `T.mk_int()`, `T.types_join(a,b)`,
+// `T.types_compat(annot, actual)`. The resolver loads compiler/types.arrow
 // via the search-path fallback (next to the arrow executable) so this
 // works regardless of where the user invoked the compiler from.
 import "compiler/types" as T;
-
-// ── Lexer ───────────────────────────────
-fn is_digit(c: int): int{return c>=48&&c<=57;}
-fn is_alpha(c: int): int{return(c>=65&&c<=90)||(c>=97&&c<=122)||c=95;}
-fn is_alnum(c: int): int{return is_digit(c)||is_alpha(c);}
-fn is_ws(c: int): int{return c=32||c=9||c=10||c=13;}
-fn mktok(t: str,v: str,l: int,c: int){return{type:t,value:v,line:l,col:c};}
-fn is_kw(w: str): int{if(w="if"){return true;}if(w="else"){return true;}if(w="while"){return true;}if(w="for"){return true;}if(w="in"){return true;}if(w="print"){return true;}if(w="fn"){return true;}if(w="return"){return true;}if(w="true"){return true;}if(w="false"){return true;}if(w="import"){return true;}if(w="var"){return true;}return false;}
-
-fn tokenize(src: str){
-    var ts<-[];var p<-0;var ln<-1;var cl<-1;var sl<-str_len(src);
-    while(p<sl){var ch<-char_code(char_at(src,p));
-        if(is_ws(ch)){if(ch=10){ln<-ln+1;cl<-1;}else{cl<-cl+1;}p<-p+1;}
-        else if(ch=47&&p+1<sl&&char_code(char_at(src,p+1))=47){while(p<sl&&char_code(char_at(src,p))!=10){p<-p+1;}}
-        else if(is_digit(ch)){var s<-p;var sc<-cl;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}if(p+1<sl&&char_at(src,p)="."&&is_digit(char_code(char_at(src,p+1)))){p<-p+1;cl<-cl+1;while(p<sl&&is_digit(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}push(ts,mktok("FLOAT",substring(src,s,p),ln,sc));}else{push(ts,mktok("NUMBER",substring(src,s,p),ln,sc));}}
-        else if(ch=34){var sc<-cl;p<-p+1;cl<-cl+1;var sv<-"";while(p<sl&&char_code(char_at(src,p))!=34){var c<-char_at(src,p);if(c="\\"){p<-p+1;cl<-cl+1;var nx<-char_at(src,p);if(nx="n"){sv<-sv+from_char_code(10);}else if(nx="t"){sv<-sv+from_char_code(9);}else if(nx="\\"){sv<-sv+"\\";}else{sv<-sv+nx;}}else{sv<-sv+c;}p<-p+1;cl<-cl+1;}p<-p+1;cl<-cl+1;push(ts,mktok("STRING",sv,ln,sc));}
-        else if(is_alpha(ch)){var s<-p;var sc<-cl;while(p<sl&&is_alnum(char_code(char_at(src,p)))){p<-p+1;cl<-cl+1;}var w<-substring(src,s,p);if(w="true"||w="false"){push(ts,mktok("BOOL",w,ln,sc));}else if(is_kw(w)){push(ts,mktok(w,w,ln,sc));}else{push(ts,mktok("IDENT",w,ln,sc));}  }
-        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=45){push(ts,mktok("ARROW","<-",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=61&&p+1<sl&&char_code(char_at(src,p+1))=62){push(ts,mktok("FAT_ARROW","=>",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=60&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("LTE","<=",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=62&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("GTE",">=",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=33&&p+1<sl&&char_code(char_at(src,p+1))=61){push(ts,mktok("NEQ","!=",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=38&&p+1<sl&&char_code(char_at(src,p+1))=38){push(ts,mktok("AND","&&",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=124&&p+1<sl&&char_code(char_at(src,p+1))=124){push(ts,mktok("OR","||",ln,cl));p<-p+2;cl<-cl+2;}
-        else if(ch=124){push(ts,mktok("PIPE","|",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=43){push(ts,mktok("PLUS","+",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=45){push(ts,mktok("MINUS","-",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=42){push(ts,mktok("STAR","*",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=47){push(ts,mktok("SLASH","/",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=37){push(ts,mktok("PERCENT","%",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=60){push(ts,mktok("LT","<",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=62){push(ts,mktok("GT",">",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=33){push(ts,mktok("NOT","!",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=61){push(ts,mktok("EQ","=",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=46){push(ts,mktok("DOT",".",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=58){push(ts,mktok("COLON",":",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=40){push(ts,mktok("LPAREN","(",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=41){push(ts,mktok("RPAREN",")",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=123){push(ts,mktok("LBRACE","{",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=125){push(ts,mktok("RBRACE","}",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=91){push(ts,mktok("LBRACKET","[",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=93){push(ts,mktok("RBRACKET","]",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=59){push(ts,mktok("SEMI",";",ln,cl));p<-p+1;cl<-cl+1;}
-        else if(ch=44){push(ts,mktok("COMMA",",",ln,cl));p<-p+1;cl<-cl+1;}
-        else{p<-p+1;cl<-cl+1;}
-    }
-    push(ts,mktok("EOF","",ln,cl));return ts;
-}
+import "compiler/lexer" as lex;
+import "compiler/ir_render" as irr;
 
 // ── Parser ──────────────────────────────
 var toks<-[];var pos<-[0];
@@ -142,7 +96,7 @@ fn pp(){
 }
 fn ps(){
     if(ci("fn")){return pfd();}if(ci("return")){return prt();}
-    if(ci("if")){return pif();}if(ci("while")){return pwh();}
+    if(ci("if")){return pif();}if(ci("while")){return pwh();}if(ci("match")){return pmatch();}
     if(ci("for")){return pfi();}if(ci("print")){return ppr();}
     if(ci("import")){return pim();}
     if(ci("var")){return pvd();}
@@ -216,6 +170,9 @@ fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT")
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:"none"};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
+fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
 fn paf(){var pl<-ppl();var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
@@ -231,6 +188,7 @@ fn ppf(){var e<-ppm();var dn<-false;while(!dn){if(ci("LPAREN")){var cln<-toks[po
     else if(ci("DOT")){eat("DOT");var f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
 fn ppm(){
+    if(ci("match")){return pmatch_expr();}
     if(ci("NUMBER")){var v<-cv();adv();return{node:"NumberLit",value:v};}
     if(ci("FLOAT")){var v<-cv();adv();return{node:"FloatLit",value:v};}
     if(ci("STRING")){var v<-cv();adv();return{node:"StringLit",value:v};}
@@ -364,6 +322,12 @@ fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
         mod_rewrite_stmts(s.else_body, top_names, scope, mod_name);
         return 0;
     }
+    if (s.node = "MatchStmt") {
+        mod_rewrite_expr(s.scrutinee, top_names, scope, mod_name);
+        var mi <- 0;
+        while (mi < len(s.arms)) { mod_rewrite_stmts(s.arms[mi].body, top_names, scope, mod_name); mi <- mi + 1; }
+        return 0;
+    }
     if (s.node = "WhileStmt") {
         mod_rewrite_expr(s.cond, top_names, scope, mod_name);
         mod_rewrite_stmts(s.body, top_names, scope, mod_name);
@@ -409,6 +373,12 @@ fn name_in(names, n: str): int {
 }
 
 fn mod_rewrite_expr(e, top_names, scope, mod_name) {
+    if (e.node = "MatchExpr") {
+        mod_rewrite_expr(e.scrutinee, top_names, scope, mod_name);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) { mod_rewrite_expr(e.arms[mxi].value, top_names, scope, mod_name); mxi <- mxi + 1; }
+        return 0;
+    }
     if (e.node = "Identifier") {
         if (name_in(top_names, e.name) && !name_in(scope, e.name)) {
             e.name <- "__mod_" + mod_name + "__" + e.name;
@@ -567,6 +537,12 @@ fn main_rewrite_stmt(s, mod_names) {
         main_rewrite_stmts(s.else_body, mod_names);
         return s;
     }
+    if (s.node = "MatchStmt") {
+        s.scrutinee <- main_rewrite_value(s.scrutinee, mod_names);
+        var mi <- 0;
+        while (mi < len(s.arms)) { main_rewrite_stmts(s.arms[mi].body, mod_names); mi <- mi + 1; }
+        return s;
+    }
     if (s.node = "WhileStmt") {
         s.cond <- main_rewrite_value(s.cond, mod_names);
         main_rewrite_stmts(s.body, mod_names);
@@ -598,6 +574,12 @@ fn main_rewrite_stmt(s, mod_names) {
 // Recursively rewrite an expression. Returns the (possibly new) node — for
 // DotExpr-on-imported-namespace we substitute a fresh Identifier node.
 fn main_rewrite_value(e, mod_names) {
+    if (e.node = "MatchExpr") {
+        e.scrutinee <- main_rewrite_value(e.scrutinee, mod_names);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) { e.arms[mxi].value <- main_rewrite_value(e.arms[mxi].value, mod_names); mxi <- mxi + 1; }
+        return e;
+    }
     if (e.node = "DotExpr") {
         // If the base is an imported namespace, replace `mod.sym` with the
         // mangled identifier. Otherwise recurse into the base for nested
@@ -737,7 +719,7 @@ fn fresh_lbl(prefix: str): str {
 }
 
 // Track which variables have been allocated in current function
-var fn_vars <- []; // list of {name, depth}  — we'll simplify to just names in scope
+var fn_vars <- []; // {name, depth} entries for locals allocated in the current function
 var current_fn <- [""]; // name of function being compiled
 
 // Arrow function counter
@@ -768,47 +750,6 @@ fn add_string(text: str): str {
     var id <- "str" + str_counter[0];
     push(str_constants, {id: id, text: text});
     return id;
-}
-
-// Escape string for LLVM IR constant
-fn ir_escape(s: str): str {
-    var result <- "";
-    var i <- 0;
-    var total_len <- 0;
-    while (i < str_len(s)) {
-        var ch <- char_code(char_at(s, i));
-        if (ch = 10) { result <- result + "\\0A"; }
-        else if (ch = 9) { result <- result + "\\09"; }
-        else if (ch = 34) { result <- result + "\\22"; }
-        else if (ch = 92) { result <- result + "\\5C"; }
-        else if (ch = 0) { result <- result + "\\00"; }
-        else { result <- result + char_at(s, i); }
-        total_len <- total_len + 1;
-        i <- i + 1;
-    }
-    return result;
-}
-
-fn ir_str_len(s: str): int {
-    // Count actual bytes in the escaped string
-    // Each \XX escape = 1 byte, each regular char = check byte length
-    // Simple approach: iterate and count char_code > 127 as multi-byte
-    var count <- 0;
-    var i <- 0;
-    while (i < str_len(s)) {
-        var ch <- char_code(char_at(s, i));
-        if (ch >= 128) {
-            // Multi-byte UTF-8: determine byte count from leading byte
-            if (ch >= 240) { count <- count + 4; }
-            else if (ch >= 224) { count <- count + 3; }
-            else if (ch >= 192) { count <- count + 2; }
-            else { count <- count + 1; } // continuation byte (shouldn't happen at start)
-        } else {
-            count <- count + 1;
-        }
-        i <- i + 1;
-    }
-    return count + 1; // +1 for null terminator
 }
 
 // Track allocated variables per function — boxed in array
@@ -1082,6 +1023,11 @@ fn scs_stmt(nd, work) {
         i <- 0;
         while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
     }
+    if (nd.node = "MatchStmt") {
+        push(work, nd.scrutinee);
+        var mi <- 0;
+        while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+    }
     if (nd.node = "WhileStmt") {
         push(work, nd.cond);
         var i <- 0;
@@ -1113,6 +1059,11 @@ fn scs_stmt(nd, work) {
 }
 
 fn scs_expr(nd, work) {
+    if (nd.node = "MatchExpr") {
+        push(work, nd.scrutinee);
+        var mxi <- 0;
+        while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+    }
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             var fi <- find_fn(nd.callee.name);
@@ -1233,13 +1184,8 @@ fn scan_fns(stmts) {
             push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
             var pj <- 0;
             while (pj < len(stmts[i].param_types_ann)) {
-                if (T.union_in_container(stmts[i].param_types_ann[pj])) {
-                    report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (parameter " + (pj + 1) + " of '" + stmts[i].name + "')");
-                }
+                var pct <- stmts[i].param_types_ann[pj];
                 pj <- pj + 1;
-            }
-            if (T.union_in_container(stmts[i].ret_type_ann)) {
-                report_error(stmts[i].line, stmts[i].col, "union inside an array or struct is not supported yet (return type of '" + stmts[i].name + "')");
             }
         }
         // Also register top-level arrow-fn assignments under the variable name.
@@ -1290,6 +1236,10 @@ fn collect_returns(body, acc) {
             while (j < len(nd.then_body)) { push(work, nd.then_body[j]); j <- j + 1; }
             j <- 0;
             while (j < len(nd.else_body)) { push(work, nd.else_body[j]); j <- j + 1; }
+        }
+        if (nd.node = "MatchStmt") {
+            var mi <- 0;
+            while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
         }
         if (nd.node = "WhileStmt") {
             var j <- 0;
@@ -1373,6 +1323,10 @@ fn scan_globals(nd) {
         scan_globals_list(nd.then_body);
         scan_globals_list(nd.else_body);
     }
+    else if (nd.node = "MatchStmt") {
+        var mi <- 0;
+        while (mi < len(nd.arms)) { scan_globals_list(nd.arms[mi].body); mi <- mi + 1; }
+    }
     else if (nd.node = "WhileStmt") {
         scan_globals_list(nd.body);
     }
@@ -1449,6 +1403,11 @@ fn cv_stmt(nd, work, vars) {
         i <- 0;
         while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
     }
+    if (nd.node = "MatchStmt") {
+        push(work, nd.scrutinee);
+        var mi <- 0;
+        while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+    }
     if (nd.node = "WhileStmt") {
         push(work, nd.cond);
         var i <- 0;
@@ -1476,6 +1435,11 @@ fn cv_stmt(nd, work, vars) {
 }
 
 fn cv_expr(nd, work, vars) {
+    if (nd.node = "MatchExpr") {
+        push(work, nd.scrutinee);
+        var mxi <- 0;
+        while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+    }
     if (nd.node = "BinOp") { push(work, nd.left); push(work, nd.right); }
     if (nd.node = "UnaryOp") { push(work, nd.operand); }
     if (nd.node = "CallExpr") {
@@ -1663,7 +1627,99 @@ fn emit_itoa_helper() {
 // before emit_function runs its body, so emit_expr returns concrete
 // types instead of "any" for local variables.
 
+fn match_expr_result_type(nd) {
+    var members <- [];
+    var ai <- 0;
+    while (ai < len(nd.arms)) {
+        var arm <- nd.arms[ai];
+        var vt <- T.mk_none();
+        if (arm.wild) {
+            vt <- typeof_expr(arm.value);
+        } else {
+            var bn <- match_bind_name(arm, nd.scrutinee);
+            if (bn != "") {
+                var saved <- get_var_type(bn);
+                set_var_type(bn, arm.ptype);
+                vt <- typeof_expr(arm.value);
+                set_var_type(bn, saved);
+            } else {
+                vt <- typeof_expr(arm.value);
+            }
+        }
+        if (vt.kind = "union") {
+            var k <- 0;
+            while (k < len(vt.members)) { push(members, vt.members[k]); k <- k + 1; }
+        } else {
+            push(members, vt);
+        }
+        ai <- ai + 1;
+    }
+    var norm <- T.union_normalize(members);
+    if (len(norm) = 0) { return T.mk_none(); }
+    if (len(norm) = 1) { return norm[0]; }
+    return T.mk_union(norm);
+}
+
+fn check_match_coverage(ln, col, scrutinee, ut, arms) {
+    var ms <- T.union_normalize(ut.members);
+    var covered <- [];
+    var ci2 <- 0;
+    while (ci2 < len(ms)) { push(covered, false); ci2 <- ci2 + 1; }
+    var has_wild <- false;
+    var seen_lits <- [];
+    var mi <- 0;
+    while (mi < len(arms)) {
+        if (arms[mi].wild) {
+            if (has_wild) { report_error(ln, col, "duplicate wildcard arm '_'"); }
+            has_wild <- true;
+            if (mi != len(arms) - 1) { report_error(ln, col, "wildcard arm '_' must be the last arm"); }
+            var all_cov <- true;
+            var wc <- 0;
+            while (wc < len(covered)) { if (!match_eff_covered(covered, ms, wc, seen_lits)) { all_cov <- false; } wc <- wc + 1; }
+            if (all_cov) { report_error(ln, col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
+        } else {
+            var pt <- arms[mi].ptype;
+            var idx <- union_member_index(ut, pt);
+            if (arms[mi].is_lit) {
+                if (idx = -1) {
+                    report_error(ln, col, "literal pattern of type " + T.type_str(pt) + " is not a member of " + T.type_str(ut));
+                } else {
+                    if (covered[idx]) {
+                        report_error(ln, col, "unreachable literal pattern: " + T.type_str(pt) + " is already fully covered by an earlier arm");
+                    } else {
+                        var lkey <- arms[mi].lit_kind + ":" + arms[mi].lit;
+                        if (name_in(seen_lits, lkey)) {
+                            report_error(ln, col, "unreachable duplicate literal pattern");
+                        } else {
+                            push(seen_lits, lkey);
+                        }
+                    }
+                }
+            } else {
+                if (idx = -1) {
+                    report_error(ln, col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
+                } else {
+                    if (covered[idx]) { report_error(ln, col, "duplicate match arm for " + T.type_str(pt)); }
+                    covered[idx] <- true;
+                }
+                if (arms[mi].name = "" && scrutinee.node != "Identifier") {
+                    report_error(ln, col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
+                }
+            }
+        }
+        mi <- mi + 1;
+    }
+    if (!has_wild) {
+        var ei <- 0;
+        while (ei < len(covered)) {
+            if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(ln, col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
+            ei <- ei + 1;
+        }
+    }
+}
+
 fn typeof_expr(nd) {
+    if (nd.node = "MatchExpr") { return match_expr_result_type(nd); }
     if (nd.node = "NumberLit") { return T.mk_int(); }
     if (nd.node = "FloatLit") { return T.mk_float(); }
     if (nd.node = "StringLit") { return T.mk_str(); }
@@ -1825,6 +1881,26 @@ fn typeof_expr(nd) {
 }
 
 // Walk a body of statements, updating var_types for each assignment
+// Effective binding name for a match arm: the explicit `name:` if present,
+// else the scrutinee variable name (a bare pattern shadows it), else "" — no
+// binding (a bare pattern on a non-variable scrutinee, which the checker flags).
+fn match_bind_name(arm, scrutinee): str {
+    if (arm.name != "") { return arm.name; }
+    if (scrutinee.node = "Identifier") { return scrutinee.name; }
+    return "";
+}
+// Index of member type `mt` within the union's normalized members (-1 if none).
+// This is the runtime tag value for that member.
+fn union_member_index(u, mt): int {
+    if (u.kind != "union") { return -1; }
+    var ms <- T.union_normalize(u.members);
+    var i <- 0;
+    while (i < len(ms)) {
+        if (T.type_eq(ms[i], mt)) { return i; }
+        i <- i + 1;
+    }
+    return -1;
+}
 fn infer_body(stmts) {
     var i <- 0;
     while (i < len(stmts)) {
@@ -1835,10 +1911,12 @@ fn infer_body(stmts) {
                 set_var_type(s.name, s.type_ann);
             } else {
                 // A reassignment (no annotation) must not downgrade a variable
-                // declared as a union: the stored value is a member and the
-                // variable keeps its union type for the whole function.
+                // whose declared type carries a union — a top-level union or a
+                // container holding one (array-of-union, struct-with-union-field,
+                // nested). The stored value is coerced to the declared type, which
+                // the variable keeps for the whole function.
                 var existing <- get_var_type(s.name);
-                if (existing.kind != "union") {
+                if (!T.union_in_container(existing) && existing.kind != "union") {
                     var ty <- typeof_expr(s.expr);
                     set_var_type(s.name, ty);
                 }
@@ -1870,6 +1948,25 @@ fn infer_body(stmts) {
         if (s.node = "IfStmt") {
             infer_body(s.then_body);
             infer_body(s.else_body);
+        }
+        if (s.node = "MatchStmt") {
+            var mi <- 0;
+            while (mi < len(s.arms)) {
+                if (s.arms[mi].wild) {
+                    infer_body(s.arms[mi].body);
+                } else {
+                    var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                    if (bn != "") {
+                        var saved <- get_var_type(bn);
+                        set_var_type(bn, s.arms[mi].ptype);
+                        infer_body(s.arms[mi].body);
+                        set_var_type(bn, saved);
+                    } else {
+                        infer_body(s.arms[mi].body);
+                    }
+                }
+                mi <- mi + 1;
+            }
         }
         if (s.node = "WhileStmt") { infer_body(s.body); }
         if (s.node = "ForInStmt") {
@@ -1920,7 +2017,14 @@ fn infer_body(stmts) {
                     if (cur_t.elem.kind = "any") {
                         new_elem <- val_t;
                     } else {
-                        new_elem <- T.types_join(cur_t.elem, val_t);
+                        if (cur_t.elem.kind = "union") {
+                            // Pushing a member into a [union] array keeps the
+                            // union element type (the value is wrapped at codegen);
+                            // don't let types_join collapse it to `any`.
+                            new_elem <- cur_t.elem;
+                        } else {
+                            new_elem <- T.types_join(cur_t.elem, val_t);
+                        }
                     }
                     set_var_type(arr_arg.name, T.mk_array(new_elem));
                     if (new_elem.kind = "str") { set_array_elem_type(arr_arg.name, "str"); }
@@ -1972,7 +2076,6 @@ fn is_builtin_name(n: str): int {
         || n = "read_file" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
-        || n = "is_digit" || n = "is_alpha" || n = "is_alnum"
         || n = "exec_cmd" || n = "args"
         || n = "true" || n = "false";
 }
@@ -2053,6 +2156,21 @@ fn scope_declare(fn_scopes, name: str) {
 // into nested expressions; for ArrowFn, walks into the closure body with
 // a fresh fn_scopes and the current fn_scopes appended to captured.
 fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
+    if (e.node = "MatchExpr") {
+        scope_check_expr(e.scrutinee, fn_scopes, captured, globals_set, fn_names);
+        var mxi <- 0;
+        while (mxi < len(e.arms)) {
+            push(fn_scopes, []);
+            if (!e.arms[mxi].wild) {
+                var bn <- match_bind_name(e.arms[mxi], e.scrutinee);
+                if (bn != "") { scope_declare(fn_scopes, bn); }
+            }
+            scope_check_expr(e.arms[mxi].value, fn_scopes, captured, globals_set, fn_names);
+            pop(fn_scopes);
+            mxi <- mxi + 1;
+        }
+        return false;
+    }
     if (e.node = "Identifier") {
         if (!scope_resolves(e.name, fn_scopes, captured, globals_set, fn_names)) {
             var ln <- 0;
@@ -2201,6 +2319,21 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
         pop(fn_scopes);
         return false;
     }
+    if (s.node = "MatchStmt") {
+        scope_check_expr(s.scrutinee, fn_scopes, captured, globals_set, fn_names);
+        var mi <- 0;
+        while (mi < len(s.arms)) {
+            push(fn_scopes, []);
+            if (!s.arms[mi].wild) {
+                var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                if (bn != "") { scope_declare(fn_scopes, bn); }
+            }
+            scope_check_stmts(s.arms[mi].body, fn_scopes, captured, globals_set, fn_names);
+            pop(fn_scopes);
+            mi <- mi + 1;
+        }
+        return false;
+    }
     if (s.node = "WhileStmt") {
         scope_check_expr(s.cond, fn_scopes, captured, globals_set, fn_names);
         push(fn_scopes, []);
@@ -2304,18 +2437,97 @@ fn check_body(stmts) {
     }
 }
 
+// A bool member is fully covered once BOTH literals `true` and `false` have
+// appeared — bool has exactly two inhabitants, so the pair is total. Every
+// other member is covered only by a type arm or `_` (literals merely refine).
+fn match_eff_covered(covered, ms, i: int, seen_lits): int {
+    if (covered[i]) { return true; }
+    if (ms[i].kind = "bool" && name_in(seen_lits, "bool:true") && name_in(seen_lits, "bool:false")) { return true; }
+    return false;
+}
+// Every element of an array-of-union literal must be a concrete member of
+// the union; it is wrapped into that union at construction (see ir_emit_stmt).
+fn check_array_union_elements(ln, col, ut, lit) {
+    var i <- 0;
+    while (i < len(lit.elements)) {
+        var et <- typeof_expr(lit.elements[i]);
+        if (et.kind = "union") {
+            report_error(ln, col, "array element cannot itself yield a union (" + T.type_str(et) + "); each element must be a concrete member of " + T.type_str(ut));
+        } else {
+            if (union_member_index(ut, et) = -1) {
+                report_error(ln, col, T.type_str(et) + " is not a member of " + T.type_str(ut));
+            }
+        }
+        i <- i + 1;
+    }
+}
+// Is `actual`/`src` an acceptable source for an array-of-union target whose
+// element union is `ut`? Either an exactly-matching [union] array (same handle,
+// already-wrapped cells, so reference semantics are preserved) or an empty array
+// literal (nothing to wrap). No implicit element-wise widening.
+fn array_union_src_ok(ut, actual, src): int {
+    if (actual.kind = "array" && T.type_eq(actual.elem, ut)) { return true; }
+    if (src.node = "ArrayLit") { if (len(src.elements) = 0) { return true; } }
+    return false;
+}
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
-            var actual <- typeof_expr(s.expr);
-            if (!T.types_compat(s.type_ann, actual)) {
-                report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
+            if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union") {
+                // Array-of-union slot. A literal RHS wraps its elements into the
+                // union at construction; a non-literal RHS must already be an
+                // exactly-matching [union] array — no implicit element
+                // widening, which would silently copy and break reference
+                // semantics. An empty literal trivially satisfies either path.
+                if (s.expr.node = "ArrayLit") {
+                    check_array_union_elements(s.line, s.col, s.type_ann.elem, s.expr);
+                } else {
+                    var aactual <- typeof_expr(s.expr);
+                    if (!array_union_src_ok(s.type_ann.elem, aactual, s.expr)) {
+                        report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
+                    }
+                }
+            } else {
+                var actual <- typeof_expr(s.expr);
+                if (!T.types_compat(s.type_ann, actual)) {
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
+                }
             }
-            if (T.union_in_container(s.type_ann)) {
-                report_error(s.line, s.col, "union inside an array or struct is not supported yet: " + T.type_str(s.type_ann));
+        }
+        if (s.type_ann.kind = "none") {
+            // Bare reassignment to an array-of-union variable: the variable keeps
+            // its declared [union] type (see infer_body), so guard the new value
+            // exactly like a declaration. A literal wraps and member-checks its
+            // elements; any other source must be an exactly-matching [union] array
+            // — no implicit element widening, which would store raw cells.
+            var lvt <- get_var_type(s.name);
+            if (lvt.kind = "array" && lvt.elem.kind = "union") {
+                if (s.expr.node = "ArrayLit") {
+                    check_array_union_elements(s.line, s.col, lvt.elem, s.expr);
+                } else {
+                    var rsa <- typeof_expr(s.expr);
+                    if (!array_union_src_ok(lvt.elem, rsa, s.expr)) {
+                        report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
+                    }
+                }
+            } else if (T.union_in_container(lvt)) {
+                // A struct-with-union-field (or nested container) keeps its declared
+                // type on reassignment; validate the new value against it just like a
+                // declaration. A struct/array literal has its union members wrapped at
+                // construction; types_compat enforces that each value is a real member.
+                var rsv <- typeof_expr(s.expr);
+                if (!T.types_compat(lvt, rsv)) {
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' (declared " + T.type_str(lvt) + ") reassigned " + T.type_str(rsv));
+                }
             }
         }
         check_expr(s.expr);
+    }
+    if (s.node = "CallExpr") {
+        // Bare call statement. Only route `push` through the expression checker
+        // (for the [union] member-check); general bare-call arg-checking is left
+        // off deliberately to preserve the loosely-typed self-host.
+        if (s.callee.node = "Identifier" && s.callee.name = "push") { check_expr(s); }
     }
     if (s.node = "PrintStmt") { check_expr(s.expr); }
     if (s.node = "ReturnStmt") {
@@ -2326,8 +2538,14 @@ fn check_stmt(s) {
                 if (fi != false) {
                     if (fi.ret_type_ann.kind != "none") {
                         var actual <- typeof_expr(s.expr);
-                        if (!T.types_compat(fi.ret_type_ann, actual)) {
-                            report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
+                        if (fi.ret_type_ann.kind = "array" && fi.ret_type_ann.elem.kind = "union") {
+                            if (!array_union_src_ok(fi.ret_type_ann.elem, actual, s.expr)) {
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] value or an empty array literal)");
+                            }
+                        } else {
+                            if (!T.types_compat(fi.ret_type_ann, actual)) {
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
+                            }
                         }
                     }
                 }
@@ -2338,6 +2556,33 @@ fn check_stmt(s) {
         check_expr(s.cond);
         check_body(s.then_body);
         check_body(s.else_body);
+    }
+    if (s.node = "MatchStmt") {
+        check_expr(s.scrutinee);
+        var ut <- typeof_expr(s.scrutinee);
+        if (ut.kind != "union") {
+            report_error(s.line, s.col, "match requires a union value, got " + T.type_str(ut));
+        } else {
+            check_match_coverage(s.line, s.col, s.scrutinee, ut, s.arms);
+            var mi <- 0;
+            while (mi < len(s.arms)) {
+                if (s.arms[mi].wild) {
+                    check_body(s.arms[mi].body);
+                } else {
+                    var pt <- s.arms[mi].ptype;
+                    var bn <- match_bind_name(s.arms[mi], s.scrutinee);
+                    if (bn != "") {
+                        var saved <- get_var_type(bn);
+                        set_var_type(bn, pt);
+                        check_body(s.arms[mi].body);
+                        set_var_type(bn, saved);
+                    } else {
+                        check_body(s.arms[mi].body);
+                    }
+                }
+                mi <- mi + 1;
+            }
+        }
     }
     if (s.node = "WhileStmt") {
         check_expr(s.cond);
@@ -2356,6 +2601,19 @@ fn check_stmt(s) {
     if (s.node = "DotAssign") {
         check_expr(s.obj);
         check_expr(s.value);
+        // A union-typed field accepts only its members: validate the new
+        // value against the field's declared type, like a declaration. Plain
+        // (non-union) fields keep the loosely-typed self-host's behavior.
+        var dot <- typeof_expr(s.obj);
+        if (dot.kind = "struct_lit") {
+            var fft <- T.struct_field_type(dot.fields, s.field);
+            if (fft.kind = "union" || T.union_in_container(fft)) {
+                var dval <- typeof_expr(s.value);
+                if (!T.types_compat(fft, dval)) {
+                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
+                }
+            }
+        }
     }
 }
 
@@ -2371,7 +2629,7 @@ fn expr_pos_col(e): int {
 }
 // Reject using a union value where a single concrete type is required. A union
 // may only be stored, passed to a union parameter, returned from a union-typed
-// function, or printed; anything else must narrow it first (coming with match).
+// function, or printed; anything else must narrow it first with a match.
 fn check_no_union(e, what: str) {
     var t <- typeof_expr(e);
     if (t.kind = "union") {
@@ -2379,9 +2637,44 @@ fn check_no_union(e, what: str) {
     }
 }
 fn check_expr(e) {
+    if (e.node = "MatchExpr") {
+        check_expr(e.scrutinee);
+        var mut <- typeof_expr(e.scrutinee);
+        if (mut.kind != "union") {
+            report_error(e.line, e.col, "match requires a union value, got " + T.type_str(mut));
+        } else {
+            check_match_coverage(e.line, e.col, e.scrutinee, mut, e.arms);
+            var mxi <- 0;
+            while (mxi < len(e.arms)) {
+                var marm <- e.arms[mxi];
+                var mbn <- "";
+                if (!marm.wild) { mbn <- match_bind_name(marm, e.scrutinee); }
+                var msaved <- T.mk_none();
+                if (mbn != "") { msaved <- get_var_type(mbn); set_var_type(mbn, marm.ptype); }
+                check_expr(marm.value);
+                var mavt <- typeof_expr(marm.value);
+                if (mavt.kind = "union") {
+                    report_error(e.line, e.col, "match-expression arm cannot itself yield a union (" + T.type_str(mavt) + "); narrow it to a single type");
+                }
+                if (mbn != "") { set_var_type(mbn, msaved); }
+                mxi <- mxi + 1;
+            }
+        }
+    }
     if (e.node = "BinOp") { check_no_union(e.left, "in arithmetic or comparison"); check_no_union(e.right, "in arithmetic or comparison"); check_expr(e.left); check_expr(e.right); }
     if (e.node = "UnaryOp") { check_no_union(e.operand, "in a unary operation"); check_expr(e.operand); }
     if (e.node = "CallExpr") {
+        if (e.callee.node = "Identifier" && e.callee.name = "push" && len(e.args) >= 2) {
+            var pat0 <- typeof_expr(e.args[0]);
+            if (pat0.kind = "array" && pat0.elem.kind = "union") {
+                var pvt <- typeof_expr(e.args[1]);
+                if (pvt.kind != "union") {
+                    if (union_member_index(pat0.elem, pvt) = -1) {
+                        report_error(e.line, e.col, T.type_str(pvt) + " is not a member of the array element type " + T.type_str(pat0.elem));
+                    }
+                }
+            }
+        }
         if (e.callee.node = "Identifier") {
             var fi <- find_fn(e.callee.name);
             // If the direct lookup failed, the callee may be a variable holding
@@ -2398,8 +2691,14 @@ fn check_expr(e) {
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "none") {
                             var actual <- typeof_expr(e.args[j]);
-                            if (!T.types_compat(ann, actual)) {
-                                report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
+                            if (ann.kind = "array" && ann.elem.kind = "union") {
+                                if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
+                                }
+                            } else {
+                                if (!T.types_compat(ann, actual)) {
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
+                                }
                             }
                         }
                     }
@@ -2499,6 +2798,16 @@ fn find_captures(body, params, is_expr: int) {
             while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
             i <- 0;
             while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
+        }
+        if (nd.node = "MatchStmt") {
+            push(work, nd.scrutinee);
+            var mi <- 0;
+            while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+        }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
         }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
@@ -2603,6 +2912,15 @@ fn ir_collect_refs(body, params_in, is_expr: int) {
             var i <- 0; while (i < len(nd.then_body)) { push(work, nd.then_body[i]); i <- i + 1; }
             i <- 0; while (i < len(nd.else_body)) { push(work, nd.else_body[i]); i <- i + 1; }
         }
+        if (nd.node = "MatchStmt") {
+            push(work, nd.scrutinee);
+            var mi <- 0; while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+        }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
+        }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
             var i <- 0; while (i < len(nd.body)) { push(work, nd.body[i]); i <- i + 1; }
@@ -2698,6 +3016,15 @@ fn ir_find_my_captured_locals(b, body) {
             push(work, nd.cond);
             var k <- 0; while (k < len(nd.then_body)) { push(work, nd.then_body[k]); k <- k + 1; }
             k <- 0; while (k < len(nd.else_body)) { push(work, nd.else_body[k]); k <- k + 1; }
+        }
+        if (nd.node = "MatchStmt") {
+            push(work, nd.scrutinee);
+            var mi <- 0; while (mi < len(nd.arms)) { var mj <- 0; while (mj < len(nd.arms[mi].body)) { push(work, nd.arms[mi].body[mj]); mj <- mj + 1; } mi <- mi + 1; }
+        }
+        if (nd.node = "MatchExpr") {
+            push(work, nd.scrutinee);
+            var mxi <- 0;
+            while (mxi < len(nd.arms)) { push(work, nd.arms[mxi].value); mxi <- mxi + 1; }
         }
         if (nd.node = "WhileStmt") {
             push(work, nd.cond);
@@ -3861,601 +4188,6 @@ fn ii_lnot(dst: str, v)         { return ir_inst("lnot", dst, T.mk_int(), [v], f
 fn ii_ptrtoint(dst: str, v)     { return ir_inst("ptrtoint", dst, T.mk_int(), [v], false); }
 fn ii_inttoptr(dst: str, v)     { return ir_inst("inttoptr", dst, T.mk_any(), [v], false); }
 
-// ── LLVM rendering ──────────────────────────────────
-//
-// render_llvm(module) returns a string of LLVM IR equivalent to what the
-// existing string emitter produces. Type-to-LLVM translation is centralized
-// in ir_llvm_type(t): every Arrow Type becomes i64 (ints, pointers as
-// integers) or ptr (when we need ptr specifically, e.g. string constants).
-// The current runtime is i64-everywhere with inttoptr/ptrtoint as needed —
-// the renderer keeps that discipline.
-
-fn ir_llvm_type(t): str {
-    // For now: nearly everything is i64. The exceptions are rendered inline
-    // (alloca uses ptr types; string constants use [N x i8] arrays).
-    if (t.kind = "none") { return "void"; }
-    if (t.kind = "ptr")  { return "ptr"; }
-    if (t.kind = "i32")  { return "i32"; }
-    return "i64";
-}
-
-// Render a Value as an LLVM operand (no type prefix).
-fn ir_render_operand(v): str {
-    if (v.kind = "reg")         { return v.name; }
-    if (v.kind = "const_int")   { return "" + v.val; }  // force int→str coercion via concat
-    if (v.kind = "const_float") { return v.val; }       // LLVM accepts "1.5" in double operand
-    if (v.kind = "const_str")   { return "@" + v.id; }  // caller typically ptrtoints it
-    if (v.kind = "label")       { return "label %" + v.name; }
-    if (v.kind = "global")      { return "@g_" + v.name; }
-    return "<?>";
-}
-
-// Render a Value as a typed LLVM operand ("i64 %r", "i64 42", etc.).
-// String constants render as "ptr @id" since LLVM wants a pointer type at
-// call sites (printf / puts / our runtime helpers).
-fn ir_render_typed_operand(v): str {
-    if (v.kind = "const_str") { return "ptr @" + v.id; }
-    return ir_llvm_type(v.type) + " " + ir_render_operand(v);
-}
-
-// Render one instruction as a single LLVM IR line (no leading indent; caller
-// handles that). Terminators are rendered separately by ir_render_block.
-fn ir_render_inst(inst): str {
-    var op <- inst.op;
-    // Arithmetic: dst = <op> i64 %a, %b
-    if (op = "add" || op = "sub" || op = "mul" || op = "sdiv" || op = "srem") {
-        return inst.dst + " = " + op + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
-    }
-    if (op = "neg") {
-        return inst.dst + " = sub i64 0, " + ir_render_operand(inst.operands[0]);
-    }
-    // Float arithmetic: dst is a double-typed register; operands are double-typed.
-    // The binop emitter is responsible for casting i64 storage to double before
-    // calling fadd/fsub/etc, and casting the result back via bc_d_to_i.
-    if (op = "fadd" || op = "fsub" || op = "fmul" || op = "fdiv") {
-        return inst.dst + " = " + op + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
-    }
-    if (op = "fneg") {
-        return inst.dst + " = fneg double " + ir_render_operand(inst.operands[0]);
-    }
-    if (op = "fcmp") {
-        // extra is the predicate: oeq, one, olt, ole, ogt, oge.
-        var tmp <- inst.dst + ".cmp";
-        return inst.dst + ".cmp = fcmp " + inst.extra + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
-    }
-    if (op = "bc_i_to_d") {
-        return inst.dst + " = bitcast i64 " + ir_render_operand(inst.operands[0]) + " to double";
-    }
-    if (op = "bc_d_to_i") {
-        return inst.dst + " = bitcast double " + ir_render_operand(inst.operands[0]) + " to i64";
-    }
-    if (op = "sitofp") {
-        return inst.dst + " = sitofp i64 " + ir_render_operand(inst.operands[0]) + " to double";
-    }
-    if (op = "fptosi") {
-        return inst.dst + " = fptosi double " + ir_render_operand(inst.operands[0]) + " to i64";
-    }
-    if (op = "zext_i1") {
-        return inst.dst + " = zext i1 " + ir_render_operand(inst.operands[0]) + " to i64";
-    }
-    if (op = "icmp") {
-        var tmp <- inst.dst + ".cmp";
-        return inst.dst + ".cmp = icmp " + inst.extra + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
-    }
-    if (op = "strcmp") {
-        // Compare two string pointers via @arrow_safe_strcmp, then icmp the
-        // result against 0 with the requested cmp op (eq/ne/slt/sle/sgt/sge).
-        // Renders multiple lines in one go — same trick the icmp branch uses.
-        // operands[0] and operands[1] are both i64 pointer values (str-typed).
-        var s1 <- inst.dst + ".lp";
-        var s2 <- inst.dst + ".rp";
-        var sc <- inst.dst + ".sc";
-        var sc64 <- inst.dst + ".sc64";
-        var cmp <- inst.dst + ".cmp";
-        return s1 + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + s2 + " = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  " + sc + " = call i32 @arrow_safe_strcmp(ptr " + s1 + ", ptr " + s2 + ")\n  " + sc64 + " = sext i32 " + sc + " to i64\n  " + cmp + " = icmp " + inst.extra + " i64 " + sc64 + ", 0\n  " + inst.dst + " = zext i1 " + cmp + " to i64";
-    }
-    if (op = "alloca") {
-        return inst.dst + " = alloca i64";
-    }
-    // heap-allocate an 8-byte cell and return its address as i64.
-    // Used to box captured locals so closures share writable state with
-    // the outer function. Two LLVM instructions: arena_alloc then a
-    // ptrtoint into the destination register so it can flow as an i64.
-    if (op = "box_alloc") {
-        return inst.dst + ".p = call ptr @arena_alloc(i64 8)\n  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
-    }
-    // dereference a box pointer (held as i64) to read the boxed
-    // value. inttoptr first so LLVM's `load i64, ptr` type-checks.
-    if (op = "box_load") {
-        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = load i64, ptr " + inst.dst + ".bp";
-    }
-    // write a value through a box pointer (held as i64). The dst
-    // register is just a scratch name for the inttoptr conversion — the
-    // store itself has no SSA result. Convention: caller supplies a fresh
-    // tmp via ir_fresh_tmp(b, "bsp").
-    if (op = "box_store") {
-        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + inst.dst + ".bp";
-    }
-    if (op = "load") {
-        return inst.dst + " = load i64, ptr " + ir_render_operand(inst.operands[0]);
-    }
-    if (op = "store") {
-        return "store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + ir_render_operand(inst.operands[1]);
-    }
-    if (op = "call") {
-        var args <- "";
-        var i <- 0;
-        while (i < len(inst.operands)) {
-            if (i > 0) { args <- args + ", "; }
-            args <- args + ir_render_typed_operand(inst.operands[i]);
-            i <- i + 1;
-        }
-        if (inst.dst = "") {
-            return "call " + ir_llvm_type(inst.dst_type) + " @" + inst.extra + "(" + args + ")";
-        }
-        return inst.dst + " = call i64 @" + inst.extra + "(" + args + ")";
-    }
-    if (op = "strcat") {
-        return inst.dst + " = call i64 @arrow_strcat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
-    }
-    if (op = "strlen") {
-        var tmp <- inst.dst + ".p";
-        return tmp + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = call i64 @strlen(ptr " + tmp + ")";
-    }
-    if (op = "int_to_str") {
-        return inst.dst + " = call i64 @arrow_itoa(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print") {
-        // Lowering placeholder: actual print has type-dependent code paths.
-        // The translator routes user prints through print_int / print_str
-        // directly; this op exists for backends that prefer a single hook.
-        return "call void @arrow_print(" + ir_render_typed_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print_int") {
-        // printf("%lld\n", val) followed by fflush(NULL)
-        return "call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + ir_render_operand(inst.operands[0]) + ")\n  call i32 @fflush(ptr null)";
-    }
-    if (op = "print_str") {
-        // The operand is an i64 holding a string pointer; cast to ptr then
-        // call puts. inst.dst is the fresh name for the cast register.
-        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  call i32 @puts(ptr " + inst.dst + ")\n  call i32 @fflush(ptr null)";
-    }
-    if (op = "print_bool") {
-        return "call void @arrow_print_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print_float") {
-        return "call void @arrow_print_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "format_int") {
-        return "call void @arrow_format_int(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "format_str_q") {
-        return "call void @arrow_format_str_q(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "format_bool") {
-        return "call void @arrow_format_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "format_float") {
-        return "call void @arrow_format_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print_any") {
-        return "call void @arrow_print_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "format_any") {
-        return "call void @arrow_format_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print_lit") {
-        return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "print_newline") {
-        return "call void @arrow_print_newline()";
-    }
-    if (op = "lnot") {
-        // dst.lc = icmp eq i64 v, 0 ; dst = zext i1 dst.lc to i64
-        return inst.dst + ".lc = icmp eq i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  " + inst.dst + " = zext i1 " + inst.dst + ".lc to i64";
-    }
-    if (op = "br") {
-        return "br " + ir_render_operand(inst.operands[0]);
-    }
-    if (op = "cond_br") {
-        // inst.dst is the fresh i1 register name supplied by the builder.
-        // This makes the intermediate register explicit rather than trying to
-        // synthesize one in the renderer (which can collide in the void case).
-        return inst.dst + " = icmp ne i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  br i1 " + inst.dst + ", " + ir_render_operand(inst.operands[1]) + ", " + ir_render_operand(inst.operands[2]);
-    }
-    if (op = "ret") {
-        return "ret i64 " + ir_render_operand(inst.operands[0]);
-    }
-    if (op = "ret_void") {
-        return "ret void";
-    }
-    if (op = "unreachable") {
-        return "unreachable";
-    }
-    if (op = "ptrtoint") {
-        return inst.dst + " = ptrtoint ptr " + ir_render_operand(inst.operands[0]) + " to i64";
-    }
-    if (op = "inttoptr") {
-        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr";
-    }
-    if (op = "gep_i64") {
-        // operands = [base_i64, index]; computes base+index*8 as i64.
-        // Used by closure capture loading where we need GEP into an env array.
-        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".ep to i64";
-        return s;
-    }
-    if (op = "closure_load_cap") {
-        // operands = [env_i64, index]; loads the i64 at env_ptr + index*8.
-        // Single op so we don't have to chain gep+inttoptr+load.
-        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
-        return s;
-    }
-
-    // ── Collection ops ──
-    // Each lowering uses the same layout as the runtime helpers
-    // (@arrow_push, @arrow_pop, @arrow_keys, @arrow_struct_find,
-    // @arena_alloc, @malloc), which are emitted as inline LLVM IR text
-    // alongside the user code.
-
-    if (op = "array_new") {
-        // operands = [elem0, elem1, ...]
-        // Layout: [len (i64), cap (i64), e0 (i64), e1 (i64), ...]
-        // Allocate cap = max(n, 4096) slots; only fill the first n.
-        var n <- len(inst.operands);
-        var cap <- n;
-        if (cap < 4096) { cap <- 4096; }
-        var total <- 2 + cap;
-        var bytes <- total * 8;
-        var s <- inst.dst + ".sz = mul i64 " + bytes + ", 1\n";
-        s <- s + "  " + inst.dst + ".p = call ptr @malloc(i64 " + bytes + ")\n";
-        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
-        s <- s + "  " + inst.dst + ".cp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
-        s <- s + "  store i64 " + cap + ", ptr " + inst.dst + ".cp\n";
-        var i <- 0;
-        while (i < n) {
-            var slot <- i + 2;
-            s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
-            s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
-            i <- i + 1;
-        }
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
-        return s;
-    }
-    if (op = "array_len") {
-        // The array's len is the first slot. Cast i64→ptr, load i64.
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
-        return s;
-    }
-    if (op = "array_get") {
-        // operands = [arr, idx]; element at slot idx+2.
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
-        return s;
-    }
-    if (op = "array_set") {
-        // operands = [arr, idx, val]; void.
-        // dst is the synth-name prefix (caller picks something like "%aset1").
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
-        s <- s + "  store i64 " + ir_render_operand(inst.operands[2]) + ", ptr " + inst.dst + ".ep";
-        return s;
-    }
-    if (op = "array_push") {
-        // operands = [arr, val]; runtime call returns updated arr pointer (realloc may move it).
-        return inst.dst + " = call i64 @arrow_push(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
-    }
-    if (op = "array_concat") {
-        // operands = [arr_a, arr_b]; runtime call allocates a fresh array.
-        return inst.dst + " = call i64 @arrow_array_concat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
-    }
-    if (op = "array_pop") {
-        return inst.dst + " = call i64 @arrow_pop(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "struct_new") {
-        // extra = [{key: str, val: Value}, ...]; layout = [count, v0..v_{n-1}, name0..name_{n-1}]
-        var fields <- inst.extra;
-        var n <- len(fields);
-        var total <- 1 + n * 2;
-        var bytes <- total * 8;
-        var s <- inst.dst + ".p = call ptr @arena_alloc(i64 " + bytes + ")\n";
-        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
-        var i <- 0;
-        while (i < n) {
-            var slot <- i + 1;
-            s <- s + "  " + inst.dst + ".vp" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
-            s <- s + "  store i64 " + ir_render_operand(fields[i].val) + ", ptr " + inst.dst + ".vp" + i + "\n";
-            i <- i + 1;
-        }
-        // Field names: each `key` is a plain Arrow string → must already be in the module's
-        // string table. The struct_new builder pools them with ir_mod_add_str, returning the
-        // generated id which gets stored in fields[i].key_id (a const_str-like id reference).
-        i <- 0;
-        while (i < n) {
-            var slot <- 1 + n + i;
-            s <- s + "  " + inst.dst + ".ni" + i + " = ptrtoint ptr @" + fields[i].key_id + " to i64\n";
-            s <- s + "  " + inst.dst + ".np" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
-            s <- s + "  store i64 " + inst.dst + ".ni" + i + ", ptr " + inst.dst + ".np" + i + "\n";
-            i <- i + 1;
-        }
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
-        return s;
-    }
-    if (op = "struct_get") {
-        // operands = [s_ptr, name_id_value]; extra = field_name_id (string-table id)
-        // Lower: cast obj to ptr, find field via @arrow_struct_find, GEP at slot count+1+idx, load.
-        // We need the count too (slot 0). Simpler: lower exactly like emit_dot_expr.
-        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
-        s <- s + "  " + inst.dst + ".cn = load i64, ptr " + inst.dst + ".op\n";
-        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
-        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".vp";
-        return s;
-    }
-    if (op = "struct_set") {
-        // operands = [s_ptr, val]; extra = field_name_id
-        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
-        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
-        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
-        s <- s + "  store i64 " + ir_render_operand(inst.operands[1]) + ", ptr " + inst.dst + ".vp";
-        return s;
-    }
-    if (op = "struct_keys") {
-        return inst.dst + " = call i64 @arrow_keys(i64 " + ir_render_operand(inst.operands[0]) + ")";
-    }
-    if (op = "union_new") {
-        // operands = [tag, payload]; a 2-word arena cell [tag, payload].
-        var s <- inst.dst + ".p = call ptr @arena_alloc(i64 16)\n";
-        s <- s + "  store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + inst.dst + ".p\n";
-        s <- s + "  " + inst.dst + ".pp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
-        s <- s + "  store i64 " + ir_render_operand(inst.operands[1]) + ", ptr " + inst.dst + ".pp\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
-        return s;
-    }
-    if (op = "union_tag") {
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
-        return s;
-    }
-    if (op = "union_payload") {
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".pp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".pp";
-        return s;
-    }
-
-    // ── Cluster-3 string + IO ops ──
-
-    if (op = "char_code") {
-        // operand = string ptr (i64); load first byte and zext to i64.
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".v = load i8, ptr " + inst.dst + ".p\n";
-        s <- s + "  " + inst.dst + " = zext i8 " + inst.dst + ".v to i64";
-        return s;
-    }
-    if (op = "char_at") {
-        // operands = [s_ptr, idx]; allocate 2-byte arena buffer with [byte, 0].
-        var s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i8, ptr " + inst.dst + ".sp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
-        s <- s + "  " + inst.dst + ".ch = load i8, ptr " + inst.dst + ".ep\n";
-        s <- s + "  " + inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
-        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
-        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
-        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
-        return s;
-    }
-    if (op = "from_char_code") {
-        // operand = code (i64); allocate a 2-byte buffer with [low_byte, 0].
-        var s <- inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
-        s <- s + "  " + inst.dst + ".ch = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i8\n";
-        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
-        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
-        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
-        return s;
-    }
-    if (op = "substring") {
-        // Delegate to a runtime helper. Operands = [s, start, end].
-        return inst.dst + " = call i64 @arrow_substring(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ", i64 " + ir_render_operand(inst.operands[2]) + ")";
-    }
-    if (op = "read_file") {
-        // operand = path (i64 holding ptr); helper returns a ptr.
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".r = call ptr @arrow_read_file(ptr " + inst.dst + ".p)\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
-        return s;
-    }
-    if (op = "write_file") {
-        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
-        s <- s + "  " + inst.dst + " = call i64 @arrow_write_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
-        return s;
-    }
-    if (op = "append_file") {
-        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
-        s <- s + "  " + inst.dst + " = call i64 @arrow_append_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
-        return s;
-    }
-    if (op = "exec_cmd") {
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".r32 = call i32 @system(ptr " + inst.dst + ".p)\n";
-        s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".r32 to i64";
-        return s;
-    }
-    if (op = "input") {
-        // No-prompt form: just call the helper. With-prompt: emit a printf
-        // first using the operand as the format string.
-        if (len(inst.operands) > 0) {
-            var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-            s <- s + "  call i32 (ptr, ...) @printf(ptr " + inst.dst + ".pp)\n";
-            s <- s + "  " + inst.dst + ".r = call ptr @arrow_input()\n";
-            s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
-            return s;
-        }
-        var s <- inst.dst + ".r = call ptr @arrow_input()\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
-        return s;
-    }
-    if (op = "args_count") {
-        // Mirror the existing emit_call args() with no-args path: argc - 1.
-        var s <- inst.dst + ".ac = load i64, ptr @g_argc\n";
-        s <- s + "  " + inst.dst + " = sub i64 " + inst.dst + ".ac, 1";
-        return s;
-    }
-    if (op = "args_get") {
-        // operand = N (i64); return argv[N+1] as string ptr (i64).
-        var s <- inst.dst + ".ai = add i64 " + ir_render_operand(inst.operands[0]) + ", 1\n";
-        s <- s + "  " + inst.dst + ".av = load i64, ptr @g_argv\n";
-        s <- s + "  " + inst.dst + ".avp = inttoptr i64 " + inst.dst + ".av to ptr\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr ptr, ptr " + inst.dst + ".avp, i64 " + inst.dst + ".ai\n";
-        s <- s + "  " + inst.dst + ".sp = load ptr, ptr " + inst.dst + ".ep\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".sp to i64";
-        return s;
-    }
-
-    // ── Closure ops ──
-    // Layout: heap pair [fn_ptr, env_ptr], where env_ptr points at an
-    // arena-allocated array of i64s holding captures.
-    if (op = "closure_make") {
-        // operands = captured Values (already evaluated by the caller).
-        // extra    = fn_name (the top-level IR Function for this closure).
-        // Allocate env (8 bytes per capture, or 0-len env_ptr=null if no captures)
-        // and pair (16 bytes), store [fn_ptr, env_ptr], return pair pointer i64.
-        var n <- len(inst.operands);
-        var s <- "";
-        if (n > 0) {
-            var ebytes <- n * 8;
-            s <- inst.dst + ".env = call ptr @arena_alloc(i64 " + ebytes + ")\n";
-            var i <- 0;
-            while (i < n) {
-                s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".env, i64 " + i + "\n";
-                s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
-                i <- i + 1;
-            }
-            s <- s + "  " + inst.dst + ".envi = ptrtoint ptr " + inst.dst + ".env to i64\n";
-        } else {
-            // No captures — env_ptr = 0 (null sentinel).
-            s <- inst.dst + ".envi = add i64 0, 0\n";
-        }
-        // Pair: [fn_ptr_i64, env_ptr_i64]
-        s <- s + "  " + inst.dst + ".pair = call ptr @arena_alloc(i64 16)\n";
-        s <- s + "  " + inst.dst + ".fnpi = ptrtoint ptr @" + inst.extra + " to i64\n";
-        s <- s + "  store i64 " + inst.dst + ".fnpi, ptr " + inst.dst + ".pair\n";
-        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pair, i64 1\n";
-        s <- s + "  store i64 " + inst.dst + ".envi, ptr " + inst.dst + ".envslot\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".pair to i64";
-        return s;
-    }
-    if (op = "closure_call") {
-        // operands = [pair_val, arg0, arg1, ...]
-        // Load fn_ptr and env_ptr from the pair, then indirect-call
-        // (i64, ...args) returning i64.
-        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".fni = load i64, ptr " + inst.dst + ".pp\n";
-        s <- s + "  " + inst.dst + ".fnp = inttoptr i64 " + inst.dst + ".fni to ptr\n";
-        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pp, i64 1\n";
-        s <- s + "  " + inst.dst + ".envi = load i64, ptr " + inst.dst + ".envslot\n";
-        // Build arg list: env first, then user args.
-        var args_str <- "i64 " + inst.dst + ".envi";
-        var i <- 1;
-        while (i < len(inst.operands)) {
-            args_str <- args_str + ", i64 " + ir_render_operand(inst.operands[i]);
-            i <- i + 1;
-        }
-        s <- s + "  " + inst.dst + " = call i64 " + inst.dst + ".fnp(" + args_str + ")";
-        return s;
-    }
-
-    return "; UNHANDLED OP: " + op;
-}
-
-fn ir_render_block(bb): str {
-    var s <- bb.label + ":\n";
-    var i <- 0;
-    while (i < len(bb.insts)) {
-        s <- s + "  " + ir_render_inst(bb.insts[i]) + "\n";
-        i <- i + 1;
-    }
-    if (bb.terminator != false) {
-        s <- s + "  " + ir_render_inst(bb.terminator) + "\n";
-    }
-    return s;
-}
-
-fn ir_render_function(f): str {
-    // Signature
-    var params_s <- "";
-    var i <- 0;
-    while (i < len(f.params)) {
-        if (i > 0) { params_s <- params_s + ", "; }
-        params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
-        i <- i + 1;
-    }
-    var s <- "define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {\n";
-    i <- 0;
-    while (i < len(f.blocks)) {
-        s <- s + ir_render_block(f.blocks[i]);
-        i <- i + 1;
-    }
-    s <- s + "}\n";
-    return s;
-}
-
-fn ir_render_module(m): str {
-    var s <- "";
-    // Externs
-    var i <- 0;
-    while (i < len(m.externs)) {
-        var ex <- m.externs[i];
-        ps <- "";
-        var j <- 0;
-        while (j < len(ex.params)) {
-            if (j > 0) { ps <- ps + ", "; }
-            ps <- ps + ir_llvm_type(ex.params[j]);
-            j <- j + 1;
-        }
-        if (ex.is_variadic = 1) {
-            if (len(ex.params) > 0) { ps <- ps + ", "; }
-            ps <- ps + "...";
-        }
-        s <- s + "declare " + ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")\n";
-        i <- i + 1;
-    }
-    // String table
-    i <- 0;
-    while (i < len(m.str_table)) {
-        var ste <- m.str_table[i];
-        var bytelen <- ir_str_len(ste.text);  // already includes the null terminator
-        s <- s + "@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"\n";
-        i <- i + 1;
-    }
-    // Globals
-    i <- 0;
-    while (i < len(m.globals)) {
-        s <- s + "@g_" + m.globals[i].name + " = global i64 0\n";
-        i <- i + 1;
-    }
-    if (len(m.externs) + len(m.str_table) + len(m.globals) > 0) { s <- s + "\n"; }
-    // Functions
-    i <- 0;
-    while (i < len(m.functions)) {
-        s <- s + ir_render_function(m.functions[i]) + "\n";
-        i <- i + 1;
-    }
-    return s;
-}
-
 // Render a Module by pushing line-by-line into ir_lines. Avoids the O(N²)
 // string-concat blowup that ir_render_module hits for large modules like
 // compiler.arrow itself. Output is functionally identical — just streamed
@@ -4469,22 +4201,22 @@ fn ir_render_module_to_lines(m) {
         var j <- 0;
         while (j < len(ex.params)) {
             if (j > 0) { ps <- ps + ", "; }
-            ps <- ps + ir_llvm_type(ex.params[j]);
+            ps <- ps + irr.ir_llvm_type(ex.params[j]);
             j <- j + 1;
         }
         if (ex.is_variadic = 1) {
             if (len(ex.params) > 0) { ps <- ps + ", "; }
             ps <- ps + "...";
         }
-        emit("declare " + ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")");
+        emit("declare " + irr.ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")");
         i <- i + 1;
     }
     // String table
     i <- 0;
     while (i < len(m.str_table)) {
         var ste <- m.str_table[i];
-        var bytelen <- ir_str_len(ste.text);
-        emit("@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"");
+        var bytelen <- irr.ir_str_len(ste.text);
+        emit("@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + irr.ir_escape(ste.text) + "\\00\"");
         i <- i + 1;
     }
     // Globals
@@ -4511,7 +4243,7 @@ fn ir_render_function_to_lines(f) {
         params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
         i <- i + 1;
     }
-    emit("define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {");
+    emit("define " + irr.ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {");
     i <- 0;
     while (i < len(f.blocks)) {
         ir_render_block_to_lines(f.blocks[i]);
@@ -4524,11 +4256,11 @@ fn ir_render_block_to_lines(bb) {
     emit(bb.label + ":");
     var i <- 0;
     while (i < len(bb.insts)) {
-        emit("  " + ir_render_inst(bb.insts[i]));
+        emit("  " + irr.ir_render_inst(bb.insts[i]));
         i <- i + 1;
     }
     if (bb.terminator != false) {
-        emit("  " + ir_render_inst(bb.terminator));
+        emit("  " + irr.ir_render_inst(bb.terminator));
     }
 }
 
@@ -4869,6 +4601,130 @@ fn ir_emit_expr(b, nd) {
         }
         return ir_reg(tmp, T.mk_int());
     }
+    if (nd.node = "MatchExpr") {
+        var cell <- ir_emit_expr(b, nd.scrutinee);
+        var ut <- typeof_expr(nd.scrutinee);
+        var R <- match_expr_result_type(nd);
+        var r_is_union <- false;
+        if (R.kind = "union") { r_is_union <- true; }
+        var res_slot <- ir_fresh_tmp(b, "mres");
+        ir_push_inst(b.func.blocks[0], ii_alloca(res_slot, T.mk_int()));
+        var tag <- ir_fresh_tmp(b, "mtag");
+        ir_push_inst(b.cur_block, ii_union_tag(tag, cell));
+        var join_lbl <- ir_fresh_block_lbl(b, "mxjoin");
+        var mi <- 0;
+        while (mi < len(nd.arms)) {
+            var arm <- nd.arms[mi];
+            if (arm.wild) {
+                var wv <- ir_emit_expr(b, arm.value);
+                var wavt <- typeof_expr(arm.value);
+                if (r_is_union) { wv <- ir_union_wrap(b, wv, wavt, R); }
+                ir_push_inst(b.cur_block, ii_store(wv, ir_reg(res_slot, T.mk_int())));
+                if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            } else {
+            var idx <- union_member_index(ut, arm.ptype);
+            var do_lbl <- ir_fresh_block_lbl(b, "mxarm");
+            var next_lbl <- join_lbl;
+            if (mi + 1 < len(nd.arms)) { next_lbl <- ir_fresh_block_lbl(b, "mxnext"); }
+            var cmp <- ir_fresh_tmp(b, "mxcmp");
+            ir_push_inst(b.cur_block, ii_icmp(cmp, "eq", ir_reg(tag, T.mk_int()), ir_const_int(idx)));
+            if (arm.is_lit) {
+                var vchk_lbl <- ir_fresh_block_lbl(b, "mxval");
+                var brt <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brt, ir_reg(cmp, T.mk_int()), vchk_lbl, next_lbl));
+                var vchk_bb <- ir_block(vchk_lbl);
+                ir_fn_add_block(b.func, vchk_bb);
+                b.cur_block <- vchk_bb;
+                var lpay <- ir_fresh_tmp(b, "mxlpay");
+                ir_push_inst(b.cur_block, ii_union_payload(lpay, cell));
+                var veq <- ir_fresh_tmp(b, "mxveq");
+                if (arm.lit_kind = "str") {
+                    var sid <- ir_mod_add_str(b.mod, arm.lit);
+                    var lptr <- ir_fresh_tmp(b, "mxls");
+                    ir_push_inst(b.cur_block, ii_ptrtoint(lptr, ir_const_str(sid)));
+                    ir_push_inst(b.cur_block, ii_strcmp(veq, "eq", ir_reg(lpay, T.mk_str()), ir_reg(lptr, T.mk_str())));
+                } else {
+                    var kconst <- ir_const_int(0);
+                    if (arm.lit_kind = "bool") {
+                        if (arm.lit = "true") { kconst <- ir_const_int(1); }
+                    } else {
+                        kconst <- ir_const_int(arm.lit);
+                    }
+                    ir_push_inst(b.cur_block, ii_icmp(veq, "eq", ir_reg(lpay, T.mk_int()), kconst));
+                }
+                var brv <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brv, ir_reg(veq, T.mk_int()), do_lbl, next_lbl));
+            } else {
+                var brc <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brc, ir_reg(cmp, T.mk_int()), do_lbl, next_lbl));
+            }
+            var do_bb <- ir_block(do_lbl);
+            ir_fn_add_block(b.func, do_bb);
+            b.cur_block <- do_bb;
+            var bn <- match_bind_name(arm, nd.scrutinee);
+            var swapped <- false;
+            var swap_i <- -1;
+            var add_idx <- -1;
+            var saved_reg <- "";
+            var saved_boxed <- false;
+            var saved_vt <- T.mk_none();
+            if (bn != "") {
+                var payload <- ir_fresh_tmp(b, "mxpay");
+                ir_push_inst(b.cur_block, ii_union_payload(payload, cell));
+                var slot <- ir_fresh_tmp(b, "mxbind");
+                ir_push_inst(b.func.blocks[0], ii_alloca(slot, T.mk_int()));
+                ir_push_inst(b.cur_block, ii_store(ir_reg(payload, arm.ptype), ir_reg(slot, T.mk_int())));
+                var li <- 0;
+                var found <- false;
+                while (li < len(b.locals)) {
+                    if (b.locals[li].name = bn) { found <- true; swap_i <- li; }
+                    li <- li + 1;
+                }
+                if (found) {
+                    saved_reg <- b.locals[swap_i].reg;
+                    saved_boxed <- b.locals[swap_i].boxed;
+                    b.locals[swap_i].reg <- slot;
+                    b.locals[swap_i].boxed <- false;
+                    swapped <- true;
+                } else {
+                    add_idx <- len(b.locals);
+                    push(b.locals, {name: bn, reg: slot, boxed: false, box_owned: false});
+                }
+                saved_vt <- get_var_type(bn);
+                set_var_type(bn, arm.ptype);
+            }
+            var av <- ir_emit_expr(b, arm.value);
+            var avt <- typeof_expr(arm.value);
+            if (r_is_union) { av <- ir_union_wrap(b, av, avt, R); }
+            ir_push_inst(b.cur_block, ii_store(av, ir_reg(res_slot, T.mk_int())));
+            if (bn != "") {
+                set_var_type(bn, saved_vt);
+                if (swapped) {
+                    b.locals[swap_i].reg <- saved_reg;
+                    b.locals[swap_i].boxed <- saved_boxed;
+                } else {
+                    var nl <- [];
+                    var ri <- 0;
+                    while (ri < len(b.locals)) { if (ri != add_idx) { push(nl, b.locals[ri]); } ri <- ri + 1; }
+                    b.locals <- nl;
+                }
+            }
+            if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            if (mi + 1 < len(nd.arms)) {
+                var next_bb <- ir_block(next_lbl);
+                ir_fn_add_block(b.func, next_bb);
+                b.cur_block <- next_bb;
+            }
+            }
+            mi <- mi + 1;
+        }
+        var join_bb <- ir_block(join_lbl);
+        ir_fn_add_block(b.func, join_bb);
+        b.cur_block <- join_bb;
+        var result <- ir_fresh_tmp(b, "mxresv");
+        ir_push_inst(b.cur_block, ii_load(result, T.mk_int(), ir_reg(res_slot, T.mk_int())));
+        return ir_reg(result, R);
+    }
     if (nd.node = "BinOp") {
         return ir_emit_binop(b, nd);
     }
@@ -4935,6 +4791,11 @@ fn ir_emit_expr(b, nd) {
         if (nm = "push") {
             var arr <- ir_emit_expr(b, nd.args[0]);
             var val <- ir_emit_expr(b, nd.args[1]);
+            var parrt <- typeof_expr(nd.args[0]);
+            if (parrt.kind = "array" && parrt.elem.kind = "union") {
+                var pvalt <- typeof_expr(nd.args[1]);
+                if (pvalt.kind != "union") { val <- ir_union_wrap(b, val, pvalt, parrt.elem); }
+            }
             var tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;
@@ -5156,14 +5017,13 @@ fn ir_emit_expr(b, nd) {
         var args <- [];
         var i <- 0;
         while (i < len(nd.args)) {
-            var av <- ir_emit_expr(b, nd.args[i]);
-            if (cfi != false && i < len(cfi.param_types_ann)) {
-                var pann <- cfi.param_types_ann[i];
-                if (pann.kind = "union") {
-                    var avt <- typeof_expr(nd.args[i]);
-                    if (avt.kind != "union") {
-                        av <- ir_union_wrap(b, av, avt, pann);
-                    }
+            var pann <- T.mk_none();
+            if (cfi != false && i < len(cfi.param_types_ann)) { pann <- cfi.param_types_ann[i]; }
+            var av <- ir_emit_value_for_slot(b, nd.args[i], pann);
+            if (pann.kind = "union") {
+                var avt <- typeof_expr(nd.args[i]);
+                if (avt.kind != "union") {
+                    av <- ir_union_wrap(b, av, avt, pann);
                 }
             }
             push(args, av);
@@ -5469,8 +5329,8 @@ fn ir_emit_expr(b, nd) {
     }
 
     // Fallback — unsupported node. Return a sentinel const_int(0) so that
-    // we at least produce valid (but semantically wrong) IR. Future phases
-    // will extend this with the full node set.
+    // we at least produce valid (but semantically wrong) IR for any node the
+    // emitter doesn't explicitly handle, rather than crashing.
     print("ir_emit_expr: unsupported node " + nd.node);
     return ir_const_int(0);
 }
@@ -5713,6 +5573,10 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
         return 0;
     }
+    if (t.kind = "union") {
+        ir_emit_format_union(b, val, t.members, top_level);
+        return 0;
+    }
     // Fallback for any/struct/unknown — use the runtime any-dispatcher,
     // which heuristically picks int vs string based on the value's
     // magnitude. Catches cases where static inference couldn't recover an
@@ -5720,10 +5584,6 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
     // type joined across mixed-shape literals to `any`. For untyped structs
     // (the `struct` kind, distinct from `struct_lit`) we still fall back to
     // int — there's no general way to walk an opaque struct at runtime.
-    if (t.kind = "union") {
-        ir_emit_format_union(b, val, t.members, top_level);
-        return 0;
-    }
     if (t.kind = "any") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_any(val)); }
         else { ir_push_inst(b.cur_block, ii_format_any(val)); }
@@ -5837,13 +5697,10 @@ fn ir_emit_format_struct(b, struct_val, fields) {
 // Wrap a member value in a {tag, payload} union cell. tag = the member's
 // index in the normalized union, found by kind (membership is kind-exact).
 fn ir_union_wrap(b, val, member_type, union_type) {
-    var ms <- T.union_normalize(union_type.members);
-    var tag <- 0;
-    var i <- 0;
-    while (i < len(ms)) {
-        if (ms[i].kind = member_type.kind) { tag <- i; }
-        i <- i + 1;
+    if (member_type.kind = "any") {
+        report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
     }
+    var tag <- union_member_index(union_type, member_type);
     var dst <- ir_fresh_tmp(b, "umk");
     ir_push_inst(b.cur_block, ii_union_new(dst, ir_const_int(tag), val));
     return ir_reg(dst, union_type);
@@ -5886,23 +5743,77 @@ fn ir_emit_format_union(b, cell_val, members, top_level: int) {
     return 0;
 }
 
+// Build `expr` as a value for a slot of type `slot_t`. If the slot is itself a
+// union, a member value is wrapped into a {tag, payload} cell here; container
+// slots (arrays/structs holding unions) are built by ir_emit_value_for_slot.
+fn ir_coerce_slot_value(b, expr, slot_t) {
+    // A union *leaf* (this position is itself a union member): wrap the value
+    // into a {tag, payload} cell. Otherwise descend through any container.
+    if (slot_t.kind = "union") {
+        var vt <- typeof_expr(expr);
+        if (vt.kind != "union") {
+            var raw <- ir_emit_expr(b, expr);
+            return ir_union_wrap(b, raw, vt, slot_t);
+        }
+        return ir_emit_expr(b, expr);
+    }
+    return ir_emit_value_for_slot(b, expr, slot_t);
+}
+
+// Recursively build `expr` as a value for `slot_t`, wrapping every union-typed
+// position that sits *inside* a container (a struct field or array element, at
+// any depth) into a {tag, payload} cell. A whole-value (top-level) union is not
+// wrapped here — the var-decl/return/arg sites wrap that themselves. Slots with
+// no nested union emit through the normal expression path unchanged.
+fn ir_emit_value_for_slot(b, expr, slot_t) {
+    if (slot_t.kind = "array" && expr.node = "ArrayLit" && T.union_in_container(slot_t)) {
+        var welems <- [];
+        var wi <- 0;
+        while (wi < len(expr.elements)) {
+            push(welems, ir_coerce_slot_value(b, expr.elements[wi], slot_t.elem));
+            wi <- wi + 1;
+        }
+        var atmp <- ir_fresh_tmp(b, "uarr");
+        ir_push_inst(b.cur_block, ii_array_new(atmp, T.mk_int(), welems));
+        return ir_reg(atmp, slot_t);
+    }
+    if (slot_t.kind = "struct_lit" && expr.node = "StructLit" && T.union_in_container(slot_t)) {
+        var fields <- [];
+        var fi <- 0;
+        while (fi < len(expr.fields)) {
+            var fkey <- expr.fields[fi].key;
+            var fslot <- T.struct_field_type(slot_t.fields, fkey);
+            var fval <- ir_coerce_slot_value(b, expr.fields[fi].val, fslot);
+            var fkid <- ir_mod_add_str(b.mod, fkey);
+            push(fields, {key_id: fkid, val: fval});
+            fi <- fi + 1;
+        }
+        var stmp <- ir_fresh_tmp(b, "sl");
+        ir_push_inst(b.cur_block, ir_inst("struct_new", stmp, T.mk_struct(), [], fields));
+        return ir_reg(stmp, T.mk_struct());
+    }
+    return ir_emit_expr(b, expr);
+}
 fn ir_emit_stmt(b, stmt) {
     if (stmt.node = "ReturnStmt") {
         if (stmt.expr = false) {
             // bare `return;` — still require a terminator for well-formed IR.
             ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
         } else {
-            var v <- ir_emit_expr(b, stmt.expr);
+            var rfn <- find_fn(b.func.name);
+            var rslot <- T.mk_none();
+            if (rfn != false) { rslot <- rfn.ret_type_ann; }
+            var v <- ir_emit_value_for_slot(b, stmt.expr, rslot);
             // Return coercion: a member value returned from a union-typed
             // function is wrapped in a {tag, payload} cell, so callers (which
-            // type the call as the union) receive a real union value.
-            var rfn <- find_fn(b.func.name);
-            if (rfn != false) {
-                if (rfn.ret_type_ann.kind = "union") {
-                    var rvt <- typeof_expr(stmt.expr);
-                    if (rvt.kind != "union") {
-                        v <- ir_union_wrap(b, v, rvt, rfn.ret_type_ann);
-                    }
+            // type the call as the union) receive a real union value. A struct
+            // or array return whose fields hold unions is wrapped field-wise by
+            // ir_emit_value_for_slot above; values already of union type pass
+            // through unchanged.
+            if (rslot.kind = "union") {
+                var rvt <- typeof_expr(stmt.expr);
+                if (rvt.kind != "union") {
+                    v <- ir_union_wrap(b, v, rvt, rslot);
                 }
             }
             ir_set_terminator(b.cur_block, ii_ret(v));
@@ -5910,12 +5821,6 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "Assignment") {
-        var v <- ir_emit_expr(b, stmt.expr);
-        // If the slot is annotated `float` (or already known to be float from a
-        // prior annotation) and the RHS is int-typed, we need to numerically
-        // promote int→float at storage time. Without this, storing the raw
-        // i64 bits of an int into a float slot would later be bitcast to
-        // double, producing a tiny denormal instead of the intended value.
         var slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
@@ -5923,6 +5828,11 @@ fn ir_emit_stmt(b, stmt) {
             // Look up existing var type — same name may have been declared earlier.
             slot_t <- get_var_type(stmt.name);
         }
+        // An array-of-union literal wraps each element into the union at
+        // construction (ir_emit_value_for_slot); all other RHS forms emit
+        // normally. The float promotion below still applies for float slots:
+        // storing raw int bits into a float slot would bitcast to a denormal.
+        var v <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
         var rhs_t <- typeof_expr(stmt.expr);
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
@@ -6023,7 +5933,13 @@ fn ir_emit_stmt(b, stmt) {
     }
     if (stmt.node = "DotAssign") {
         var obj <- ir_emit_expr(b, stmt.obj);
-        var val <- ir_emit_expr(b, stmt.value);
+        // Coerce the new value to the field's declared type: a union-typed
+        // field stores a {tag,payload} cell, so a member value is wrapped
+        // (and a nested container has its own unions wrapped, recursively).
+        var ot <- typeof_expr(stmt.obj);
+        var fslot <- T.mk_none();
+        if (ot.kind = "struct_lit") { fslot <- T.struct_field_type(ot.fields, stmt.field); }
+        var val <- ir_coerce_slot_value(b, stmt.value, fslot);
         var fid <- ir_mod_add_str(b.mod, stmt.field);
         var prefix <- ir_fresh_tmp(b, "sset");
         ir_push_inst(b.cur_block, ii_struct_set(prefix, obj, fid, val));
@@ -6039,6 +5955,120 @@ fn ir_emit_stmt(b, stmt) {
         // walk; for scalars it dispatches to print_int / print_str / print_bool.
         var et <- typeof_expr(stmt.expr);
         ir_emit_format_value(b, v, et, true);
+        return 0;
+    }
+    if (stmt.node = "MatchStmt") {
+        var cell <- ir_emit_expr(b, stmt.scrutinee);
+        var ut <- typeof_expr(stmt.scrutinee);
+        if (ut.kind != "union") { return 0; }
+        var tag <- ir_fresh_tmp(b, "mtag");
+        ir_push_inst(b.cur_block, ii_union_tag(tag, cell));
+        var join_lbl <- ir_fresh_block_lbl(b, "mjoin");
+        var mi <- 0;
+        while (mi < len(stmt.arms)) {
+            var arm <- stmt.arms[mi];
+            if (arm.wild) {
+                var wbi <- 0;
+                while (wbi < len(arm.body)) { ir_emit_stmt(b, arm.body[wbi]); wbi <- wbi + 1; }
+                if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            } else {
+            var idx <- union_member_index(ut, arm.ptype);
+            var do_lbl <- ir_fresh_block_lbl(b, "marm");
+            var next_lbl <- join_lbl;
+            if (mi + 1 < len(stmt.arms)) { next_lbl <- ir_fresh_block_lbl(b, "mnext"); }
+            var cmp <- ir_fresh_tmp(b, "mcmp");
+            ir_push_inst(b.cur_block, ii_icmp(cmp, "eq", ir_reg(tag, T.mk_int()), ir_const_int(idx)));
+            if (arm.is_lit) {
+                var vchk_lbl <- ir_fresh_block_lbl(b, "mval");
+                var brt <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brt, ir_reg(cmp, T.mk_int()), vchk_lbl, next_lbl));
+                var vchk_bb <- ir_block(vchk_lbl);
+                ir_fn_add_block(b.func, vchk_bb);
+                b.cur_block <- vchk_bb;
+                var lpay <- ir_fresh_tmp(b, "mlpay");
+                ir_push_inst(b.cur_block, ii_union_payload(lpay, cell));
+                var veq <- ir_fresh_tmp(b, "mveq");
+                if (arm.lit_kind = "str") {
+                    var sid <- ir_mod_add_str(b.mod, arm.lit);
+                    var lptr <- ir_fresh_tmp(b, "mls");
+                    ir_push_inst(b.cur_block, ii_ptrtoint(lptr, ir_const_str(sid)));
+                    ir_push_inst(b.cur_block, ii_strcmp(veq, "eq", ir_reg(lpay, T.mk_str()), ir_reg(lptr, T.mk_str())));
+                } else {
+                    var kconst <- ir_const_int(0);
+                    if (arm.lit_kind = "bool") {
+                        if (arm.lit = "true") { kconst <- ir_const_int(1); }
+                    } else {
+                        kconst <- ir_const_int(arm.lit);
+                    }
+                    ir_push_inst(b.cur_block, ii_icmp(veq, "eq", ir_reg(lpay, T.mk_int()), kconst));
+                }
+                var brv <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brv, ir_reg(veq, T.mk_int()), do_lbl, next_lbl));
+            } else {
+                var brc <- ir_fresh_tmp(b, "br");
+                ir_set_terminator(b.cur_block, ii_cond_br(brc, ir_reg(cmp, T.mk_int()), do_lbl, next_lbl));
+            }
+            var do_bb <- ir_block(do_lbl);
+            ir_fn_add_block(b.func, do_bb);
+            b.cur_block <- do_bb;
+            var bn <- match_bind_name(arm, stmt.scrutinee);
+            var swapped <- false;
+            var swap_i <- -1;
+            var add_idx <- -1;
+            var saved_reg <- "";
+            var saved_boxed <- false;
+            var saved_vt <- T.mk_none();
+            if (bn != "") {
+                var payload <- ir_fresh_tmp(b, "mpay");
+                ir_push_inst(b.cur_block, ii_union_payload(payload, cell));
+                var slot <- ir_fresh_tmp(b, "mbind");
+                ir_push_inst(b.func.blocks[0], ii_alloca(slot, T.mk_int()));
+                ir_push_inst(b.cur_block, ii_store(ir_reg(payload, arm.ptype), ir_reg(slot, T.mk_int())));
+                var li <- 0;
+                var found <- false;
+                while (li < len(b.locals)) {
+                    if (b.locals[li].name = bn) { found <- true; swap_i <- li; }
+                    li <- li + 1;
+                }
+                if (found) {
+                    saved_reg <- b.locals[swap_i].reg;
+                    saved_boxed <- b.locals[swap_i].boxed;
+                    b.locals[swap_i].reg <- slot;
+                    b.locals[swap_i].boxed <- false;
+                    swapped <- true;
+                } else {
+                    add_idx <- len(b.locals);
+                    push(b.locals, {name: bn, reg: slot, boxed: false, box_owned: false});
+                }
+                saved_vt <- get_var_type(bn);
+                set_var_type(bn, arm.ptype);
+            }
+            var bi <- 0;
+            while (bi < len(arm.body)) { ir_emit_stmt(b, arm.body[bi]); bi <- bi + 1; }
+            if (bn != "") {
+                set_var_type(bn, saved_vt);
+                if (swapped) {
+                    b.locals[swap_i].reg <- saved_reg;
+                    b.locals[swap_i].boxed <- saved_boxed;
+                } else {
+                    var nl <- [];
+                    var ri <- 0;
+                    while (ri < len(b.locals)) { if (ri != add_idx) { push(nl, b.locals[ri]); } ri <- ri + 1; }
+                    b.locals <- nl;
+                }
+            }
+            if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
+            if (mi + 1 < len(stmt.arms)) {
+                var next_bb <- ir_block(next_lbl);
+                ir_fn_add_block(b.func, next_bb);
+                b.cur_block <- next_bb;
+            }
+            }
+            mi <- mi + 1;
+        }
+        var join_bb <- ir_block(join_lbl);
+        ir_fn_add_block(b.func, join_bb);
+        b.cur_block <- join_bb;
         return 0;
     }
     if (stmt.node = "IfStmt") {
@@ -6691,7 +6721,7 @@ if (args() > 0) {
 
     var source <- read_file(input_file);
 
-    toks <- tokenize(source);
+    toks <- lex.tokenize(source);
     pos[0] <- 0;
     parse_src_file[0] <- input_file;
     var main_ast <- pp();
@@ -6771,7 +6801,7 @@ if (args() > 0) {
             if (len(sub_src) = 0) {
                 push(import_errors, "import: cannot read file (missing or empty): " + item.path);
             } else {
-                toks <- tokenize(sub_src);
+                toks <- lex.tokenize(sub_src);
                 pos[0] <- 0;
                 parse_src_file[0] <- resolved_path;
                 var sub_stmts <- pp();
@@ -6810,7 +6840,7 @@ if (args() > 0) {
     // Skip if the parse already failed: an Assignment with no name, or an
     // if with no condition, can drop scope_check into states (empty arrays,
     // unexpected node shapes) that crash before parse errors get reported.
-    // Parse errors take priority anyway; we'll surface them next.
+    // Parse errors take priority anyway and are surfaced next.
     if (len(parse_errors) = 0) {
         scope_check_program(combined);
     }

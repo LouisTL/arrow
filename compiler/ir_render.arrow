@@ -1,0 +1,650 @@
+// Arrow Lang compiler — LLVM IR rendering module
+//
+// Pure renderers that turn the in-memory IR (Module / Function / BasicBlock /
+// Inst, built by the ir_*/ii_* constructors in compiler.arrow) into LLVM IR
+// text. State-free: every function takes IR nodes and returns strings. The
+// streaming *_to_lines variants — which push into the global ir_lines buffer
+// to avoid O(N²) concatenation — stay in compiler.arrow and call in here.
+//
+// ir_escape / ir_str_len are the low-level string utilities the renderer needs
+// (LLVM constant escaping, escaped-byte length); they live here because
+// nothing else uses them.
+//
+// Convention: imported as `irr` in compiler.arrow. Internal calls between
+// these functions stay unqualified (rename_module mangles them uniformly).
+
+// Escape string for LLVM IR constant
+fn ir_escape(s: str): str {
+    var result <- "";
+    var i <- 0;
+    var total_len <- 0;
+    while (i < str_len(s)) {
+        var ch <- char_code(char_at(s, i));
+        if (ch = 10) { result <- result + "\\0A"; }
+        else if (ch = 9) { result <- result + "\\09"; }
+        else if (ch = 34) { result <- result + "\\22"; }
+        else if (ch = 92) { result <- result + "\\5C"; }
+        else if (ch = 0) { result <- result + "\\00"; }
+        else { result <- result + char_at(s, i); }
+        total_len <- total_len + 1;
+        i <- i + 1;
+    }
+    return result;
+}
+
+fn ir_str_len(s: str): int {
+    // Count actual bytes in the escaped string
+    // Each \XX escape = 1 byte, each regular char = check byte length
+    // Simple approach: iterate and count char_code > 127 as multi-byte
+    var count <- 0;
+    var i <- 0;
+    while (i < str_len(s)) {
+        var ch <- char_code(char_at(s, i));
+        if (ch >= 128) {
+            // Multi-byte UTF-8: determine byte count from leading byte
+            if (ch >= 240) { count <- count + 4; }
+            else if (ch >= 224) { count <- count + 3; }
+            else if (ch >= 192) { count <- count + 2; }
+            else { count <- count + 1; } // continuation byte (shouldn't happen at start)
+        } else {
+            count <- count + 1;
+        }
+        i <- i + 1;
+    }
+    return count + 1; // +1 for null terminator
+}
+
+// ── LLVM rendering ──────────────────────────────────
+//
+// render_llvm(module) returns a string of LLVM IR equivalent to what the
+// existing string emitter produces. Type-to-LLVM translation is centralized
+// in ir_llvm_type(t): every Arrow Type becomes i64 (ints, pointers as
+// integers) or ptr (when we need ptr specifically, e.g. string constants).
+// The current runtime is i64-everywhere with inttoptr/ptrtoint as needed —
+// the renderer keeps that discipline.
+
+fn ir_llvm_type(t): str {
+    // For now: nearly everything is i64. The exceptions are rendered inline
+    // (alloca uses ptr types; string constants use [N x i8] arrays).
+    if (t.kind = "none") { return "void"; }
+    if (t.kind = "ptr")  { return "ptr"; }
+    if (t.kind = "i32")  { return "i32"; }
+    return "i64";
+}
+
+// Render a Value as an LLVM operand (no type prefix).
+fn ir_render_operand(v): str {
+    if (v.kind = "reg")         { return v.name; }
+    if (v.kind = "const_int")   { return "" + v.val; }  // force int→str coercion via concat
+    if (v.kind = "const_float") { return v.val; }       // LLVM accepts "1.5" in double operand
+    if (v.kind = "const_str")   { return "@" + v.id; }  // caller typically ptrtoints it
+    if (v.kind = "label")       { return "label %" + v.name; }
+    if (v.kind = "global")      { return "@g_" + v.name; }
+    return "<?>";
+}
+
+// Render a Value as a typed LLVM operand ("i64 %r", "i64 42", etc.).
+// String constants render as "ptr @id" since LLVM wants a pointer type at
+// call sites (printf / puts / our runtime helpers).
+fn ir_render_typed_operand(v): str {
+    if (v.kind = "const_str") { return "ptr @" + v.id; }
+    return ir_llvm_type(v.type) + " " + ir_render_operand(v);
+}
+
+// Render one instruction as a single LLVM IR line (no leading indent; caller
+// handles that). Terminators are rendered separately by ir_render_block.
+fn ir_render_inst(inst): str {
+    var op <- inst.op;
+    // Arithmetic: dst = <op> i64 %a, %b
+    if (op = "add" || op = "sub" || op = "mul" || op = "sdiv" || op = "srem") {
+        return inst.dst + " = " + op + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "neg") {
+        return inst.dst + " = sub i64 0, " + ir_render_operand(inst.operands[0]);
+    }
+    // Float arithmetic: dst is a double-typed register; operands are double-typed.
+    // The binop emitter is responsible for casting i64 storage to double before
+    // calling fadd/fsub/etc, and casting the result back via bc_d_to_i.
+    if (op = "fadd" || op = "fsub" || op = "fmul" || op = "fdiv") {
+        return inst.dst + " = " + op + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "fneg") {
+        return inst.dst + " = fneg double " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "fcmp") {
+        // extra is the predicate: oeq, one, olt, ole, ogt, oge.
+        var tmp <- inst.dst + ".cmp";
+        return inst.dst + ".cmp = fcmp " + inst.extra + " double " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
+    }
+    if (op = "bc_i_to_d") {
+        return inst.dst + " = bitcast i64 " + ir_render_operand(inst.operands[0]) + " to double";
+    }
+    if (op = "bc_d_to_i") {
+        return inst.dst + " = bitcast double " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "sitofp") {
+        return inst.dst + " = sitofp i64 " + ir_render_operand(inst.operands[0]) + " to double";
+    }
+    if (op = "fptosi") {
+        return inst.dst + " = fptosi double " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "zext_i1") {
+        return inst.dst + " = zext i1 " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "icmp") {
+        var tmp <- inst.dst + ".cmp";
+        return inst.dst + ".cmp = icmp " + inst.extra + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]) + "\n  " + inst.dst + " = zext i1 " + inst.dst + ".cmp to i64";
+    }
+    if (op = "strcmp") {
+        // Compare two string pointers via @arrow_safe_strcmp, then icmp the
+        // result against 0 with the requested cmp op (eq/ne/slt/sle/sgt/sge).
+        // Renders multiple lines in one go — same trick the icmp branch uses.
+        // operands[0] and operands[1] are both i64 pointer values (str-typed).
+        var s1 <- inst.dst + ".lp";
+        var s2 <- inst.dst + ".rp";
+        var sc <- inst.dst + ".sc";
+        var sc64 <- inst.dst + ".sc64";
+        var cmp <- inst.dst + ".cmp";
+        return s1 + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + s2 + " = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  " + sc + " = call i32 @arrow_safe_strcmp(ptr " + s1 + ", ptr " + s2 + ")\n  " + sc64 + " = sext i32 " + sc + " to i64\n  " + cmp + " = icmp " + inst.extra + " i64 " + sc64 + ", 0\n  " + inst.dst + " = zext i1 " + cmp + " to i64";
+    }
+    if (op = "alloca") {
+        return inst.dst + " = alloca i64";
+    }
+    // heap-allocate an 8-byte cell and return its address as i64.
+    // Used to box captured locals so closures share writable state with
+    // the outer function. Two LLVM instructions: arena_alloc then a
+    // ptrtoint into the destination register so it can flow as an i64.
+    if (op = "box_alloc") {
+        return inst.dst + ".p = call ptr @arena_alloc(i64 8)\n  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+    }
+    // dereference a box pointer (held as i64) to read the boxed
+    // value. inttoptr first so LLVM's `load i64, ptr` type-checks.
+    if (op = "box_load") {
+        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = load i64, ptr " + inst.dst + ".bp";
+    }
+    // write a value through a box pointer (held as i64). The dst
+    // register is just a scratch name for the inttoptr conversion — the
+    // store itself has no SSA result. Convention: caller supplies a fresh
+    // tmp via ir_fresh_tmp(b, "bsp").
+    if (op = "box_store") {
+        return inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n  store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + inst.dst + ".bp";
+    }
+    if (op = "load") {
+        return inst.dst + " = load i64, ptr " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "store") {
+        return "store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "call") {
+        var args <- "";
+        var i <- 0;
+        while (i < len(inst.operands)) {
+            if (i > 0) { args <- args + ", "; }
+            args <- args + ir_render_typed_operand(inst.operands[i]);
+            i <- i + 1;
+        }
+        if (inst.dst = "") {
+            return "call " + ir_llvm_type(inst.dst_type) + " @" + inst.extra + "(" + args + ")";
+        }
+        return inst.dst + " = call i64 @" + inst.extra + "(" + args + ")";
+    }
+    if (op = "strcat") {
+        return inst.dst + " = call i64 @arrow_strcat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "strlen") {
+        var tmp <- inst.dst + ".p";
+        return tmp + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  " + inst.dst + " = call i64 @strlen(ptr " + tmp + ")";
+    }
+    if (op = "int_to_str") {
+        return inst.dst + " = call i64 @arrow_itoa(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print") {
+        // Lowering placeholder: actual print has type-dependent code paths.
+        // The translator routes user prints through print_int / print_str
+        // directly; this op exists for backends that prefer a single hook.
+        return "call void @arrow_print(" + ir_render_typed_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_int") {
+        // printf("%lld\n", val) followed by fflush(NULL)
+        return "call i32 (ptr, ...) @printf(ptr @fmt_int, i64 " + ir_render_operand(inst.operands[0]) + ")\n  call i32 @fflush(ptr null)";
+    }
+    if (op = "print_str") {
+        // The operand is an i64 holding a string pointer; cast to ptr then
+        // call puts. inst.dst is the fresh name for the cast register.
+        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n  call i32 @puts(ptr " + inst.dst + ")\n  call i32 @fflush(ptr null)";
+    }
+    if (op = "print_bool") {
+        return "call void @arrow_print_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_float") {
+        return "call void @arrow_print_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_int") {
+        return "call void @arrow_format_int(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_str_q") {
+        return "call void @arrow_format_str_q(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_bool") {
+        return "call void @arrow_format_bool(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_float") {
+        return "call void @arrow_format_float(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_any") {
+        return "call void @arrow_print_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_any") {
+        return "call void @arrow_format_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_lit") {
+        return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "print_newline") {
+        return "call void @arrow_print_newline()";
+    }
+    if (op = "lnot") {
+        // dst.lc = icmp eq i64 v, 0 ; dst = zext i1 dst.lc to i64
+        return inst.dst + ".lc = icmp eq i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  " + inst.dst + " = zext i1 " + inst.dst + ".lc to i64";
+    }
+    if (op = "br") {
+        return "br " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "cond_br") {
+        // inst.dst is the fresh i1 register name supplied by the builder.
+        // This makes the intermediate register explicit rather than trying to
+        // synthesize one in the renderer (which can collide in the void case).
+        return inst.dst + " = icmp ne i64 " + ir_render_operand(inst.operands[0]) + ", 0\n  br i1 " + inst.dst + ", " + ir_render_operand(inst.operands[1]) + ", " + ir_render_operand(inst.operands[2]);
+    }
+    if (op = "ret") {
+        return "ret i64 " + ir_render_operand(inst.operands[0]);
+    }
+    if (op = "ret_void") {
+        return "ret void";
+    }
+    if (op = "unreachable") {
+        return "unreachable";
+    }
+    if (op = "ptrtoint") {
+        return inst.dst + " = ptrtoint ptr " + ir_render_operand(inst.operands[0]) + " to i64";
+    }
+    if (op = "inttoptr") {
+        return inst.dst + " = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr";
+    }
+    if (op = "gep_i64") {
+        // operands = [base_i64, index]; computes base+index*8 as i64.
+        // Used by closure capture loading where we need GEP into an env array.
+        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".ep to i64";
+        return s;
+    }
+    if (op = "closure_load_cap") {
+        // operands = [env_i64, index]; loads the i64 at env_ptr + index*8.
+        // Single op so we don't have to chain gep+inttoptr+load.
+        var s <- inst.dst + ".bp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".bp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
+        return s;
+    }
+
+    // ── Collection ops ──
+    // Each lowering uses the same layout as the runtime helpers
+    // (@arrow_push, @arrow_pop, @arrow_keys, @arrow_struct_find,
+    // @arena_alloc, @malloc), which are emitted as inline LLVM IR text
+    // alongside the user code.
+
+    if (op = "array_new") {
+        // operands = [elem0, elem1, ...]
+        // Layout: [len (i64), cap (i64), e0 (i64), e1 (i64), ...]
+        // Allocate cap = max(n, 4096) slots; only fill the first n.
+        var n <- len(inst.operands);
+        var cap <- n;
+        if (cap < 4096) { cap <- 4096; }
+        var total <- 2 + cap;
+        var bytes <- total * 8;
+        var s <- inst.dst + ".sz = mul i64 " + bytes + ", 1\n";
+        s <- s + "  " + inst.dst + ".p = call ptr @malloc(i64 " + bytes + ")\n";
+        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
+        s <- s + "  " + inst.dst + ".cp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
+        s <- s + "  store i64 " + cap + ", ptr " + inst.dst + ".cp\n";
+        var i <- 0;
+        while (i < n) {
+            var slot <- i + 2;
+            s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+        return s;
+    }
+    if (op = "array_len") {
+        // The array's len is the first slot. Cast i64→ptr, load i64.
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
+        return s;
+    }
+    if (op = "array_get") {
+        // operands = [arr, idx]; element at slot idx+2.
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
+        return s;
+    }
+    if (op = "array_set") {
+        // operands = [arr, idx, val]; void.
+        // dst is the synth-name prefix (caller picks something like "%aset1").
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[2]) + ", ptr " + inst.dst + ".ep";
+        return s;
+    }
+    if (op = "array_push") {
+        // operands = [arr, val]; runtime call returns updated arr pointer (realloc may move it).
+        return inst.dst + " = call i64 @arrow_push(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "array_concat") {
+        // operands = [arr_a, arr_b]; runtime call allocates a fresh array.
+        return inst.dst + " = call i64 @arrow_array_concat(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "array_pop") {
+        return inst.dst + " = call i64 @arrow_pop(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "struct_new") {
+        // extra = [{key: str, val: Value}, ...]; layout = [count, v0..v_{n-1}, name0..name_{n-1}]
+        var fields <- inst.extra;
+        var n <- len(fields);
+        var total <- 1 + n * 2;
+        var bytes <- total * 8;
+        var s <- inst.dst + ".p = call ptr @arena_alloc(i64 " + bytes + ")\n";
+        s <- s + "  store i64 " + n + ", ptr " + inst.dst + ".p\n";
+        var i <- 0;
+        while (i < n) {
+            var slot <- i + 1;
+            s <- s + "  " + inst.dst + ".vp" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + ir_render_operand(fields[i].val) + ", ptr " + inst.dst + ".vp" + i + "\n";
+            i <- i + 1;
+        }
+        // Field names: each `key` is a plain Arrow string → must already be in the module's
+        // string table. The struct_new builder pools them with ir_mod_add_str, returning the
+        // generated id which gets stored in fields[i].key_id (a const_str-like id reference).
+        i <- 0;
+        while (i < n) {
+            var slot <- 1 + n + i;
+            s <- s + "  " + inst.dst + ".ni" + i + " = ptrtoint ptr @" + fields[i].key_id + " to i64\n";
+            s <- s + "  " + inst.dst + ".np" + i + " = getelementptr i64, ptr " + inst.dst + ".p, i64 " + slot + "\n";
+            s <- s + "  store i64 " + inst.dst + ".ni" + i + ", ptr " + inst.dst + ".np" + i + "\n";
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+        return s;
+    }
+    if (op = "struct_get") {
+        // operands = [s_ptr, name_id_value]; extra = field_name_id (string-table id)
+        // Lower: cast obj to ptr, find field via @arrow_struct_find, GEP at slot count+1+idx, load.
+        // We need the count too (slot 0). Simpler: lower exactly like emit_dot_expr.
+        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
+        s <- s + "  " + inst.dst + ".cn = load i64, ptr " + inst.dst + ".op\n";
+        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
+        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".vp";
+        return s;
+    }
+    if (op = "struct_set") {
+        // operands = [s_ptr, val]; extra = field_name_id
+        var s <- inst.dst + ".op = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".idx = call i64 @arrow_struct_find(ptr " + inst.dst + ".op, ptr @" + inst.extra + ")\n";
+        s <- s + "  " + inst.dst + ".so = add i64 " + inst.dst + ".idx, 1\n";
+        s <- s + "  " + inst.dst + ".vp = getelementptr i64, ptr " + inst.dst + ".op, i64 " + inst.dst + ".so\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[1]) + ", ptr " + inst.dst + ".vp";
+        return s;
+    }
+    if (op = "struct_keys") {
+        return inst.dst + " = call i64 @arrow_keys(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "union_new") {
+        // operands = [tag, payload]; a 2-word arena cell [tag, payload].
+        var s <- inst.dst + ".p = call ptr @arena_alloc(i64 16)\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[0]) + ", ptr " + inst.dst + ".p\n";
+        s <- s + "  " + inst.dst + ".pp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
+        s <- s + "  store i64 " + ir_render_operand(inst.operands[1]) + ", ptr " + inst.dst + ".pp\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".p to i64";
+        return s;
+    }
+    if (op = "union_tag") {
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".p";
+        return s;
+    }
+    if (op = "union_payload") {
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".pp = getelementptr i64, ptr " + inst.dst + ".p, i64 1\n";
+        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".pp";
+        return s;
+    }
+
+    // ── Cluster-3 string + IO ops ──
+
+    if (op = "char_code") {
+        // operand = string ptr (i64); load first byte and zext to i64.
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".v = load i8, ptr " + inst.dst + ".p\n";
+        s <- s + "  " + inst.dst + " = zext i8 " + inst.dst + ".v to i64";
+        return s;
+    }
+    if (op = "char_at") {
+        // operands = [s_ptr, idx]; allocate 2-byte arena buffer with [byte, 0].
+        var s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr i8, ptr " + inst.dst + ".sp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
+        s <- s + "  " + inst.dst + ".ch = load i8, ptr " + inst.dst + ".ep\n";
+        s <- s + "  " + inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
+        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
+        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
+        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
+        return s;
+    }
+    if (op = "from_char_code") {
+        // operand = code (i64); allocate a 2-byte buffer with [low_byte, 0].
+        var s <- inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
+        s <- s + "  " + inst.dst + ".ch = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i8\n";
+        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
+        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
+        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
+        return s;
+    }
+    if (op = "substring") {
+        // Delegate to a runtime helper. Operands = [s, start, end].
+        return inst.dst + " = call i64 @arrow_substring(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ", i64 " + ir_render_operand(inst.operands[2]) + ")";
+    }
+    if (op = "read_file") {
+        // operand = path (i64 holding ptr); helper returns a ptr.
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".r = call ptr @arrow_read_file(ptr " + inst.dst + ".p)\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+        return s;
+    }
+    if (op = "write_file") {
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = call i64 @arrow_write_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
+        return s;
+    }
+    if (op = "append_file") {
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";
+        s <- s + "  " + inst.dst + " = call i64 @arrow_append_file(ptr " + inst.dst + ".pp, ptr " + inst.dst + ".cp)";
+        return s;
+    }
+    if (op = "exec_cmd") {
+        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".r32 = call i32 @system(ptr " + inst.dst + ".p)\n";
+        s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".r32 to i64";
+        return s;
+    }
+    if (op = "input") {
+        // No-prompt form: just call the helper. With-prompt: emit a printf
+        // first using the operand as the format string.
+        if (len(inst.operands) > 0) {
+            var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+            s <- s + "  call i32 (ptr, ...) @printf(ptr " + inst.dst + ".pp)\n";
+            s <- s + "  " + inst.dst + ".r = call ptr @arrow_input()\n";
+            s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+            return s;
+        }
+        var s <- inst.dst + ".r = call ptr @arrow_input()\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
+        return s;
+    }
+    if (op = "args_count") {
+        // Mirror the existing emit_call args() with no-args path: argc - 1.
+        var s <- inst.dst + ".ac = load i64, ptr @g_argc\n";
+        s <- s + "  " + inst.dst + " = sub i64 " + inst.dst + ".ac, 1";
+        return s;
+    }
+    if (op = "args_get") {
+        // operand = N (i64); return argv[N+1] as string ptr (i64).
+        var s <- inst.dst + ".ai = add i64 " + ir_render_operand(inst.operands[0]) + ", 1\n";
+        s <- s + "  " + inst.dst + ".av = load i64, ptr @g_argv\n";
+        s <- s + "  " + inst.dst + ".avp = inttoptr i64 " + inst.dst + ".av to ptr\n";
+        s <- s + "  " + inst.dst + ".ep = getelementptr ptr, ptr " + inst.dst + ".avp, i64 " + inst.dst + ".ai\n";
+        s <- s + "  " + inst.dst + ".sp = load ptr, ptr " + inst.dst + ".ep\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".sp to i64";
+        return s;
+    }
+
+    // ── Closure ops ──
+    // Layout: heap pair [fn_ptr, env_ptr], where env_ptr points at an
+    // arena-allocated array of i64s holding captures.
+    if (op = "closure_make") {
+        // operands = captured Values (already evaluated by the caller).
+        // extra    = fn_name (the top-level IR Function for this closure).
+        // Allocate env (8 bytes per capture, or 0-len env_ptr=null if no captures)
+        // and pair (16 bytes), store [fn_ptr, env_ptr], return pair pointer i64.
+        var n <- len(inst.operands);
+        var s <- "";
+        if (n > 0) {
+            var ebytes <- n * 8;
+            s <- inst.dst + ".env = call ptr @arena_alloc(i64 " + ebytes + ")\n";
+            var i <- 0;
+            while (i < n) {
+                s <- s + "  " + inst.dst + ".ep" + i + " = getelementptr i64, ptr " + inst.dst + ".env, i64 " + i + "\n";
+                s <- s + "  store i64 " + ir_render_operand(inst.operands[i]) + ", ptr " + inst.dst + ".ep" + i + "\n";
+                i <- i + 1;
+            }
+            s <- s + "  " + inst.dst + ".envi = ptrtoint ptr " + inst.dst + ".env to i64\n";
+        } else {
+            // No captures — env_ptr = 0 (null sentinel).
+            s <- inst.dst + ".envi = add i64 0, 0\n";
+        }
+        // Pair: [fn_ptr_i64, env_ptr_i64]
+        s <- s + "  " + inst.dst + ".pair = call ptr @arena_alloc(i64 16)\n";
+        s <- s + "  " + inst.dst + ".fnpi = ptrtoint ptr @" + inst.extra + " to i64\n";
+        s <- s + "  store i64 " + inst.dst + ".fnpi, ptr " + inst.dst + ".pair\n";
+        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pair, i64 1\n";
+        s <- s + "  store i64 " + inst.dst + ".envi, ptr " + inst.dst + ".envslot\n";
+        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".pair to i64";
+        return s;
+    }
+    if (op = "closure_call") {
+        // operands = [pair_val, arg0, arg1, ...]
+        // Load fn_ptr and env_ptr from the pair, then indirect-call
+        // (i64, ...args) returning i64.
+        var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
+        s <- s + "  " + inst.dst + ".fni = load i64, ptr " + inst.dst + ".pp\n";
+        s <- s + "  " + inst.dst + ".fnp = inttoptr i64 " + inst.dst + ".fni to ptr\n";
+        s <- s + "  " + inst.dst + ".envslot = getelementptr i64, ptr " + inst.dst + ".pp, i64 1\n";
+        s <- s + "  " + inst.dst + ".envi = load i64, ptr " + inst.dst + ".envslot\n";
+        // Build arg list: env first, then user args.
+        var args_str <- "i64 " + inst.dst + ".envi";
+        var i <- 1;
+        while (i < len(inst.operands)) {
+            args_str <- args_str + ", i64 " + ir_render_operand(inst.operands[i]);
+            i <- i + 1;
+        }
+        s <- s + "  " + inst.dst + " = call i64 " + inst.dst + ".fnp(" + args_str + ")";
+        return s;
+    }
+
+    return "; UNHANDLED OP: " + op;
+}
+
+fn ir_render_block(bb): str {
+    var s <- bb.label + ":\n";
+    var i <- 0;
+    while (i < len(bb.insts)) {
+        s <- s + "  " + ir_render_inst(bb.insts[i]) + "\n";
+        i <- i + 1;
+    }
+    if (bb.terminator != false) {
+        s <- s + "  " + ir_render_inst(bb.terminator) + "\n";
+    }
+    return s;
+}
+
+fn ir_render_function(f): str {
+    // Signature
+    var params_s <- "";
+    var i <- 0;
+    while (i < len(f.params)) {
+        if (i > 0) { params_s <- params_s + ", "; }
+        params_s <- params_s + "i64 %" + f.params[i].name + ".arg";
+        i <- i + 1;
+    }
+    var s <- "define " + ir_llvm_type(f.ret_type) + " @" + f.name + "(" + params_s + ") {\n";
+    i <- 0;
+    while (i < len(f.blocks)) {
+        s <- s + ir_render_block(f.blocks[i]);
+        i <- i + 1;
+    }
+    s <- s + "}\n";
+    return s;
+}
+
+fn ir_render_module(m): str {
+    var s <- "";
+    // Externs
+    var i <- 0;
+    while (i < len(m.externs)) {
+        var ex <- m.externs[i];
+        ps <- "";
+        var j <- 0;
+        while (j < len(ex.params)) {
+            if (j > 0) { ps <- ps + ", "; }
+            ps <- ps + ir_llvm_type(ex.params[j]);
+            j <- j + 1;
+        }
+        if (ex.is_variadic = 1) {
+            if (len(ex.params) > 0) { ps <- ps + ", "; }
+            ps <- ps + "...";
+        }
+        s <- s + "declare " + ir_llvm_type(ex.ret_type) + " @" + ex.name + "(" + ps + ")\n";
+        i <- i + 1;
+    }
+    // String table
+    i <- 0;
+    while (i < len(m.str_table)) {
+        var ste <- m.str_table[i];
+        var bytelen <- ir_str_len(ste.text);  // already includes the null terminator
+        s <- s + "@" + ste.id + " = private constant [" + bytelen + " x i8] c\"" + ir_escape(ste.text) + "\\00\"\n";
+        i <- i + 1;
+    }
+    // Globals
+    i <- 0;
+    while (i < len(m.globals)) {
+        s <- s + "@g_" + m.globals[i].name + " = global i64 0\n";
+        i <- i + 1;
+    }
+    if (len(m.externs) + len(m.str_table) + len(m.globals) > 0) { s <- s + "\n"; }
+    // Functions
+    i <- 0;
+    while (i < len(m.functions)) {
+        s <- s + ir_render_function(m.functions[i]) + "\n";
+        i <- i + 1;
+    }
+    return s;
+}

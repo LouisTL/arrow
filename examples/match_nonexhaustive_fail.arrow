@@ -1,0 +1,7 @@
+// EXPECT: type_fail
+//ERR: non-exhaustive match
+// Every union member needs a type arm (the wildcard arrives in a later phase).
+var x: int | str <- 5;
+match (x) {
+    int => { print(x); },
+}

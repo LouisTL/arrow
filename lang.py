@@ -34,6 +34,7 @@ class TokenType(Enum):
     PERCENT   = auto()  # %
     ARROW     = auto()  # <-
     FAT_ARROW = auto()  # =>
+    MATCH     = auto()  # match keyword
     EQ        = auto()  # =
     NEQ       = auto()  # !=
     LT        = auto()  # <
@@ -85,6 +86,7 @@ class Token:
 #  LEXER
 # ─────────────────────────────────────────────
 KEYWORDS = {
+    "match": TokenType.MATCH,
     "if": TokenType.IF, "else": TokenType.ELSE, "while": TokenType.WHILE,
     "for": TokenType.FOR, "in": TokenType.IN,
     "print": TokenType.PRINT, "fn": TokenType.FN, "return": TokenType.RETURN,
@@ -315,6 +317,34 @@ class PrintStmt:
     expr: Any
 
 @dataclass
+class MatchArm:
+    ptype_kind: str
+    name: str | None
+    body: list
+    lit_kind: str | None = None
+    lit_val: Any = None
+    pfields: list | None = None
+
+@dataclass
+class MatchStmt:
+    scrutinee: Any
+    arms: list
+
+@dataclass
+class MatchExprArm:
+    ptype_kind: str
+    name: str | None
+    value: Any
+    lit_kind: str | None = None
+    lit_val: Any = None
+    pfields: list | None = None
+
+@dataclass
+class MatchExpr:
+    scrutinee: Any
+    arms: list
+
+@dataclass
 class IfStmt:
     condition: Any
     then_body: list
@@ -470,6 +500,8 @@ class Parser:
             return self._if_stmt()
         if tok.type == TokenType.WHILE:
             return self._while_stmt()
+        if tok.type == TokenType.MATCH:
+            return self._match_stmt()
         if tok.type == TokenType.FOR:
             return self._for_in_stmt()
         if tok.type == TokenType.PRINT:
@@ -669,6 +701,94 @@ class Parser:
         self._eat(TokenType.RPAREN)
         return params
 
+    def _parse_type_kind(self):
+        """Parse a single (non-union) type for a match arm; return
+        (kind, pfields). pfields is the list of field names for a struct
+        pattern (used for structural arm dispatch), else None."""
+        t = self._current().type
+        if t == TokenType.LBRACKET:
+            self._eat(TokenType.LBRACKET)
+            self._skip_type_ann()
+            self._eat(TokenType.RBRACKET)
+            return "array", None
+        if t == TokenType.LBRACE:
+            self._eat(TokenType.LBRACE)
+            fnames = []
+            if self._current().type != TokenType.RBRACE:
+                fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
+                while self._match(TokenType.COMMA):
+                    if self._current().type == TokenType.RBRACE: break
+                    fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
+            self._eat(TokenType.RBRACE)
+            return "struct", fnames
+        return self._eat(TokenType.IDENT).value, None
+
+    def _parse_arm_pattern(self):
+        """Parse one arm pattern (shared by statement and expression match).
+        Returns (ptype_kind, name, lit_kind, lit_val, pfields); does not consume `=>`."""
+        name = None
+        lit_kind = None
+        lit_val = None
+        pfields = None
+        cur = self._current()
+        nxt_tok = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+        nxt = nxt_tok.type if nxt_tok else None
+        if cur.type == TokenType.IDENT and cur.value == "_" and nxt == TokenType.FAT_ARROW:
+            self._eat(TokenType.IDENT)  # consume the _
+            ptype_kind = "_"
+        elif cur.type == TokenType.NUMBER and isinstance(cur.value, int) and not isinstance(cur.value, bool):
+            ptype_kind = "int"; lit_kind = "int"
+            lit_val = self._eat(TokenType.NUMBER).value
+        elif cur.type == TokenType.STRING:
+            ptype_kind = "str"; lit_kind = "str"
+            lit_val = self._eat(TokenType.STRING).value
+        elif cur.type == TokenType.BOOL:
+            ptype_kind = "bool"; lit_kind = "bool"
+            lit_val = self._eat(TokenType.BOOL).value
+        elif cur.type == TokenType.MINUS and nxt == TokenType.NUMBER and isinstance(nxt_tok.value, int) and not isinstance(nxt_tok.value, bool):
+            self._eat(TokenType.MINUS)
+            ptype_kind = "int"; lit_kind = "int"
+            lit_val = -self._eat(TokenType.NUMBER).value
+        else:
+            if cur.type == TokenType.IDENT and nxt == TokenType.COLON:
+                name = self._eat(TokenType.IDENT).value
+                self._eat(TokenType.COLON)
+            ptype_kind, pfields = self._parse_type_kind()
+        return ptype_kind, name, lit_kind, lit_val, pfields
+
+    def _match_stmt(self) -> MatchStmt:
+        self._eat(TokenType.MATCH)
+        self._eat(TokenType.LPAREN)
+        scrutinee = self._expression()
+        self._eat(TokenType.RPAREN)
+        self._eat(TokenType.LBRACE)
+        arms = []
+        while self._current().type != TokenType.RBRACE:
+            ptype_kind, name, lit_kind, lit_val, pfields = self._parse_arm_pattern()
+            self._eat(TokenType.FAT_ARROW)
+            body = self._block()
+            arms.append(MatchArm(ptype_kind, name, body.statements, lit_kind, lit_val, pfields))
+            self._match(TokenType.COMMA)
+        self._eat(TokenType.RBRACE)
+        return MatchStmt(scrutinee, arms)
+
+    def _match_expr(self) -> MatchExpr:
+        self._eat(TokenType.MATCH)
+        self._eat(TokenType.LPAREN)
+        scrutinee = self._expression()
+        self._eat(TokenType.RPAREN)
+        self._eat(TokenType.LBRACE)
+        arms = []
+        while self._current().type != TokenType.RBRACE:
+            ptype_kind, name, lit_kind, lit_val, pfields = self._parse_arm_pattern()
+            self._eat(TokenType.FAT_ARROW)
+            value = self._expression()
+            arms.append(MatchExprArm(ptype_kind, name, value, lit_kind, lit_val, pfields))
+            if self._current().type != TokenType.RBRACE:
+                self._eat(TokenType.COMMA)
+        self._eat(TokenType.RBRACE)
+        return MatchExpr(scrutinee, arms)
+
     def _if_stmt(self) -> IfStmt:
         self._eat(TokenType.IF)
         self._eat(TokenType.LPAREN)
@@ -821,6 +941,8 @@ class Parser:
     def _primary(self):
         tok = self._current()
 
+        if tok.type == TokenType.MATCH:
+            return self._match_expr()
         if tok.type == TokenType.NUMBER:
             self.pos += 1
             return NumberLit(tok.value)
@@ -1070,6 +1192,32 @@ class Interpreter:
                 print(text)
                 self.output.append(text)
 
+            case MatchStmt(scrutinee, arms):
+                # Dynamically typed: a union value is just the underlying
+                # value, so dispatch on its runtime type. bool is checked
+                # before int (Python bool is an int subclass) — exactly the
+                # native tag order. The matching arm runs in a fresh scope
+                # with the binding (named, or the scrutinee variable shadowed)
+                # bound to the value.
+                val = self._eval(scrutinee)
+                chosen = self._match_pick(arms, val)
+                if chosen is not None:
+                    outer = self.env
+                    self.env = Environment(parent=outer)
+                    try:
+                        # A wildcard binds nothing — the scrutinee keeps its
+                        # full union value, so no shadow is introduced.
+                        if chosen.ptype_kind != "_":
+                            bn = chosen.name
+                            if bn is None and isinstance(scrutinee, Identifier):
+                                bn = scrutinee.name
+                            if bn is not None:
+                                self.env.declare(bn, val)
+                        for s in chosen.body:
+                            self._exec(s)
+                    finally:
+                        self.env = outer
+
             case IfStmt(cond, then_body, else_body):
                 # The condition is evaluated in the enclosing scope. Each
                 # branch body is its own block, so declarations inside it
@@ -1123,6 +1271,35 @@ class Interpreter:
             case _:
                 self._eval(node)
 
+    def _match_pick(self, arms, val):
+        """Select the matching arm for `val` (shared by statement and
+        expression match), or None. bool is checked before int (Python bool
+        subclasses int), matching the native tag order."""
+        if isinstance(val, bool): kind = "bool"
+        elif isinstance(val, int): kind = "int"
+        elif isinstance(val, str): kind = "str"
+        elif isinstance(val, float): kind = "float"
+        elif isinstance(val, list): kind = "array"
+        else: kind = "struct"
+        for arm in arms:
+            if arm.ptype_kind == "_":
+                return arm
+            if arm.lit_kind is not None:
+                if kind == arm.lit_kind and val == arm.lit_val:
+                    return arm
+                continue
+            if arm.ptype_kind == kind:
+                if kind == "struct":
+                    # Distinct struct shapes are told apart by their exact
+                    # field-name set — the runtime analogue of the native tag
+                    # that encodes which struct member the value inhabits.
+                    if isinstance(val, Struct) and arm.pfields is not None \
+                            and set(arm.pfields) == set(val.fields().keys()):
+                        return arm
+                    continue
+                return arm
+        return None
+
     def _eval(self, node) -> Any:
         match node:
             case NumberLit(v): return v
@@ -1171,6 +1348,24 @@ class Interpreter:
 
             case CallExpr(callee, args):
                 return self._eval_call(callee, args)
+
+            case MatchExpr(scrutinee, arms):
+                val = self._eval(scrutinee)
+                chosen = self._match_pick(arms, val)
+                if chosen is None:
+                    raise RuntimeError_("match expression had no matching arm")
+                outer = self.env
+                self.env = Environment(parent=outer)
+                try:
+                    if chosen.ptype_kind != "_":
+                        bn = chosen.name
+                        if bn is None and isinstance(scrutinee, Identifier):
+                            bn = scrutinee.name
+                        if bn is not None:
+                            self.env.declare(bn, val)
+                    return self._eval(chosen.value)
+                finally:
+                    self.env = outer
 
             case _:
                 raise RuntimeError_(f"Cannot evaluate node: {node}")
@@ -1513,6 +1708,11 @@ def _mod_rewrite(node, top_names: set, scope: set, mod_name: str):
         else:
             _mod_rewrite(node.body, top_names, sub, mod_name)
         return
+    if isinstance(node, MatchExpr):
+        _mod_rewrite(node.scrutinee, top_names, scope, mod_name)
+        for arm in node.arms:
+            _mod_rewrite(arm.value, top_names, scope, mod_name)
+        return
     if isinstance(node, Assignment):
         _mod_rewrite(node.expr, top_names, scope, mod_name)
         return
@@ -1522,6 +1722,12 @@ def _mod_rewrite(node, top_names: set, scope: set, mod_name: str):
         return
     if isinstance(node, PrintStmt):
         _mod_rewrite(node.expr, top_names, scope, mod_name)
+        return
+    if isinstance(node, MatchStmt):
+        _mod_rewrite(node.scrutinee, top_names, scope, mod_name)
+        for arm in node.arms:
+            for s in arm.body:
+                _mod_rewrite_stmt(s, top_names, scope, mod_name)
         return
     if isinstance(node, IfStmt):
         _mod_rewrite(node.condition, top_names, scope, mod_name)
@@ -1614,6 +1820,11 @@ def _main_rewrite(node, mod_names: set, canonical_for: dict):
         else:
             node.body = _main_rewrite(node.body, mod_names, canonical_for)
         return node
+    if isinstance(node, MatchExpr):
+        node.scrutinee = _main_rewrite(node.scrutinee, mod_names, canonical_for)
+        for arm in node.arms:
+            arm.value = _main_rewrite(arm.value, mod_names, canonical_for)
+        return node
     return node
 
 
@@ -1632,6 +1843,12 @@ def _main_rewrite_stmt(s, mod_names: set, canonical_for: dict):
         return s
     if isinstance(s, PrintStmt):
         s.expr = _main_rewrite(s.expr, mod_names, canonical_for)
+        return s
+    if isinstance(s, MatchStmt):
+        s.scrutinee = _main_rewrite(s.scrutinee, mod_names, canonical_for)
+        for arm in s.arms:
+            for i, sub in enumerate(arm.body):
+                arm.body[i] = _main_rewrite_stmt(sub, mod_names, canonical_for)
         return s
     if isinstance(s, IfStmt):
         s.condition = _main_rewrite(s.condition, mod_names, canonical_for)

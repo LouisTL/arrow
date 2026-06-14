@@ -1,0 +1,36 @@
+// EXPECT: type_fail
+//ERR: exactly matching [union] argument
+//ERR: cannot itself yield a union
+//ERR: bool is not a member of int | str
+//ERR: is not a member of the array element type
+//ERR: exactly matching [union] source
+
+// All the ways a [union] array rejects unsound values: no implicit widening of
+// a [int] argument, elements must be concrete members (not themselves unions),
+// literal/push elements must be members, and reassignment requires an exactly
+// matching [union] source.
+
+// (1) passing a [int] array where [int | str] is expected — no implicit widening
+fn f1(items: [int | str]): int { return 0; }
+var zs1: [int] <- [1, 2];
+print(f1(zs1));
+
+// (2) an element may not itself be a union value
+var u1: int | str <- 5;
+var xs1: [int | str] <- [u1, 1];
+print(len(xs1));
+
+// (3) a literal element that isn't a member of the union
+var xs2: [int | str] <- [1, true];
+print(len(xs2));
+
+// (4) pushing a non-member into a [union] array
+var xs3: [int | str] <- [1];
+push(xs3, true);
+print(len(xs3));
+
+// (5) reassigning from a [int] array — would store raw, untagged cells
+var ys1: [int | str] <- [1, "a"];
+var zs2: [int] <- [1, 2];
+ys1 <- zs2;
+print(len(ys1));

@@ -43,7 +43,7 @@ print(1.5);
 print(2.0);
 print(0.5);
 print(3.14);
-print(0.1);                  // 0.1   ← Grisu-light yields shortest round-trip
+print(0.1);                  // 0.1   ← shortest round-trip decimal
 print(-1.5);
 
 // ── Arithmetic ──────────────────────────
