@@ -1,0 +1,10 @@
+// EXPECT: type_fail
+//ERR: cannot assign str to 'x'
+
+// Fixed-type rule (3b): a variable's type is fixed at its declaration. A bare
+// reassignment must FIT that type; retyping an int variable to str is a
+// conformance error, not a silent widen. (Use an explicit `: any` or a union
+// annotation if a variable genuinely needs to hold more than one type.)
+var x <- 1;
+x <- "two";
+print(x);

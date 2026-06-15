@@ -759,6 +759,11 @@ var alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
 // Track variable types: var_name -> "int" or "str"
 var var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 
+// Track each variable's DECLARED type (fixed-type rule, 3b). Unlike
+// var_types this is NOT refined by later reassignments: it is the fixed
+// type a bare reassignment must fit. any/union declared types accept all.
+var decl_types <- [[]]; // decl_types[0] is list of [{name, dtype}]
+
 // Track global variables (top-level)
 var global_vars <- []; // list of variable name strings
 
@@ -812,6 +817,30 @@ fn get_var_type(name: str) {
         i <- i - 1;
     }
     return T.mk_any();
+}
+
+fn set_decl_type(name: str, t) {
+    var types <- decl_types[0];
+    var i <- 0;
+    while (i < len(types)) {
+        if (types[i].name = name) {
+            types[i] <- {name: name, dtype: t};
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(decl_types[0], {name: name, dtype: t});
+    return false;
+}
+
+fn get_decl_type(name: str) {
+    var types <- decl_types[0];
+    var i <- len(types) - 1;
+    while (i >= 0) {
+        if (types[i].name = name) { return types[i].dtype; }
+        i <- i - 1;
+    }
+    return T.mk_none();
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
@@ -1822,7 +1851,7 @@ fn typeof_expr(nd) {
         // composite shapes recurse field/elem-wise. So
         //   [{value: 1}, {value: "a"}, {value: 2}]
         // types as `[{value: any}]` instead of `[{value: int}]`.
-        var et <- typeof_expr(nd.elements[0]);
+        var et: any <- typeof_expr(nd.elements[0]);
         var i <- 1;
         while (i < len(nd.elements)) {
             et <- T.types_join(et, typeof_expr(nd.elements[i]));
@@ -2002,6 +2031,7 @@ fn infer_body(stmts) {
             // Use explicit type annotation if present (already a Type), otherwise infer
             if (s.type_ann.kind != "none") {
                 set_var_type(s.name, s.type_ann);
+                if (s.is_decl) { set_decl_type(s.name, s.type_ann); }
             } else {
                 // A reassignment (no annotation) must not downgrade a variable
                 // whose declared type carries a union — a top-level union or a
@@ -2009,8 +2039,20 @@ fn infer_body(stmts) {
                 // nested). The stored value is coerced to the declared type, which
                 // the variable keeps for the whole function.
                 var existing <- get_var_type(s.name);
+                var ty <- typeof_expr(s.expr);
+                if (s.is_decl) {
+                    set_decl_type(s.name, ty);
+                } else {
+                    // Fixed-type rule (3b): a bare reassignment must fit the
+                    // variable's declared type. any/union/union-container and
+                    // not-yet-known (none) declared types are permissive.
+                    var dt <- get_decl_type(s.name);
+                    if (dt.kind != "none" && dt.kind != "any" && dt.kind != "union"
+                        && !T.union_in_container(dt) && !T.types_compat(dt, ty)) {
+                        report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + s.name + "' of type " + T.type_str(dt));
+                    }
+                }
                 if (!T.union_in_container(existing) && existing.kind != "union") {
-                    var ty <- typeof_expr(s.expr);
                     set_var_type(s.name, ty);
                 }
             }
@@ -5535,8 +5577,8 @@ fn ir_emit_binop(b, nd) {
         var lt <- typeof_expr(nd.left);
         var rt <- typeof_expr(nd.right);
         if (lt.kind = "str" || rt.kind = "str") {
-            var lhs_s <- lhs;
-            var rhs_s <- rhs;
+            var lhs_s: any <- lhs;
+            var rhs_s: any <- rhs;
             if (lt.kind = "int") {
                 var t <- ir_fresh_tmp(b, "i2s");
                 ir_push_inst(b.cur_block, ii_int_to_str(t, lhs));
@@ -5924,7 +5966,7 @@ fn ir_emit_stmt(b, stmt) {
             var rfn <- find_fn(b.func.name);
             var rslot <- T.mk_none();
             if (rfn != false) { rslot <- rfn.ret_type_ann; }
-            var v <- ir_emit_value_for_slot(b, stmt.expr, rslot);
+            var v: any <- ir_emit_value_for_slot(b, stmt.expr, rslot);
             // Return coercion: a member value returned from a union-typed
             // function is wrapped in a {tag, payload} cell, so callers (which
             // type the call as the union) receive a real union value. A struct
@@ -5953,7 +5995,7 @@ fn ir_emit_stmt(b, stmt) {
         // construction (ir_emit_value_for_slot); all other RHS forms emit
         // normally. The float promotion below still applies for float slots:
         // storing raw int bits into a float slot would bitcast to a denormal.
-        var v <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
+        var v: any <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
         var rhs_t <- typeof_expr(stmt.expr);
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
