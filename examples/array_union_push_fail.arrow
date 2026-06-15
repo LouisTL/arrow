@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: is not a member of the array element type
+
+// Pushing a value that matches no member of the array element union must be a
+// clean type error, not a native crash (the codegen gate skips ill-typed
+// bodies). flag is declared int, so {flag: "7"} matches neither member.
+var arr: [{tag: int | str} | {flag: int}] <- [];
+push(arr, {flag: "7"});
+print(arr);

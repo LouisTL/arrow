@@ -1,0 +1,21 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: 7
+//OUT: 4
+
+// C1: pushing a struct-with-union-field into a [union] array. Each pushed
+// value's inner union field (tag: int | str) must be stored as a real cell so
+// it can be re-matched after being read back out of the array.
+var arr: [{tag: int | str} | {flag: int}] <- [];
+push(arr, {tag: 42});
+push(arr, {flag: 7});
+push(arr, {tag: "abcd"});
+var i <- 0;
+while (i < len(arr)) {
+    var el <- arr[i];
+    match (el) {
+        {tag: int | str} => { match (tag) { n: int => { print(n); } s: str => { print(str_len(s)); } } }
+        {flag: int} => { print(flag); }
+    }
+    i <- i + 1;
+}

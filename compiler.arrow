@@ -4752,9 +4752,8 @@ fn ir_emit_expr(b, nd) {
         while (mi < len(nd.arms)) {
             var arm <- nd.arms[mi];
             if (arm.wild) {
-                var wv <- ir_emit_expr(b, arm.value);
-                var wavt <- typeof_expr(arm.value);
-                if (r_is_union) { wv <- ir_union_wrap(b, wv, wavt, R); }
+                // Coerce the arm value into the result type (3c).
+                var wv <- ir_coerce_slot_value(b, arm.value, R);
                 ir_push_inst(b.cur_block, ii_store(wv, ir_reg(res_slot, T.mk_int())));
                 if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
             } else {
@@ -4831,9 +4830,8 @@ fn ir_emit_expr(b, nd) {
                 set_var_type(bn, arm.ptype);
                 fld_rec <- arm_destructure_emit_bind(b, bn, arm.ptype);
             }
-            var av <- ir_emit_expr(b, arm.value);
-            var avt <- typeof_expr(arm.value);
-            if (r_is_union) { av <- ir_union_wrap(b, av, avt, R); }
+            // Coerce the arm value into the result type (3c).
+            var av <- ir_coerce_slot_value(b, arm.value, R);
             ir_push_inst(b.cur_block, ii_store(av, ir_reg(res_slot, T.mk_int())));
             if (bn != "") {
                 arm_destructure_emit_restore(b, fld_rec);
@@ -4929,12 +4927,13 @@ fn ir_emit_expr(b, nd) {
         }
         if (nm = "push") {
             var arr <- ir_emit_expr(b, nd.args[0]);
-            var val <- ir_emit_expr(b, nd.args[1]);
             var parrt <- typeof_expr(nd.args[0]);
-            if (parrt.kind = "array" && parrt.elem.kind = "union") {
-                var pvalt <- typeof_expr(nd.args[1]);
-                if (pvalt.kind != "union") { val <- ir_union_wrap(b, val, pvalt, parrt.elem); }
-            }
+            // Coerce the pushed value into the array element type so a
+            // struct-with-union-field (and a union element's own tag) is
+            // stored as a real cell, not a raw value (3c).
+            var pelem <- T.mk_any();
+            if (parrt.kind = "array") { pelem <- parrt.elem; }
+            var val <- ir_coerce_slot_value(b, nd.args[1], pelem);
             var tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;
@@ -6484,6 +6483,22 @@ fn emit_function_via_ir(nd, mod) {
 
     // Type-check the body against any user annotations.
     check_body(nd.body);
+
+    // Type errors detected (here or in an earlier function): skip codegen of
+    // this body. Emitting IR for ill-typed code can feed malformed values into
+    // the IR builders (e.g. a push whose value matches no union member) and
+    // crash the native compiler. The driver suppresses the IR write and link
+    // when type_errors is non-empty, so this stub body is never used; it just
+    // keeps the in-memory module well-formed while the errors are reported.
+    if (len(type_errors) > 0) {
+        ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
+        alloc_vars[0] <- old_vars;
+        var_types[0] <- old_types;
+        struct_layouts[0] <- old_layouts;
+        array_elem_types[0] <- old_arr_types;
+        current_fn[0] <- old_fn;
+        return f;
+    }
 
     // Prologue: allocate each param's local slot and store the arg into it.
     i <- 0;
