@@ -1,0 +1,6 @@
+// EXPECT: type_fail
+//ERR: unknown type 'Widget'
+
+// An unrecognized type name is now a clean error (3d), not a silent any.
+var w: Widget <- 5;
+print(w);

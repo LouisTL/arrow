@@ -22,6 +22,7 @@ import "compiler/ir_render" as irr;
 
 // ── Parser ──────────────────────────────
 var toks<-[];var pos<-[0];
+var type_aliases<-[[]]; // structural type aliases (3d): [{name, atype}]
 
 // Parse errors are accumulated rather than printed. Like type_errors and
 // import_errors, they're flushed at the end of compilation; if any are
@@ -79,17 +80,27 @@ fn pp(){
         var start_pos <- pos[0];
         var start_errs <- len(parse_errors);
         panic_mode[0] <- false;  // fresh statement → fresh error budget
-        var s <- ps();
-        if (len(parse_errors) > start_errs) {
-            // This statement registered new parse errors. Skip whatever the
-            // sub-parsers consumed and resync to the next statement so we
-            // can report independent errors instead of a cascade. Force one
-            // advance if the parser didn't move at all (defensive against
-            // an infinite loop on a corrupt token stream).
-            if (pos[0] = start_pos) { adv(); }
-            sync_to_stmt_boundary();
+        if (ci("IDENT") && cv() = "type" && pi(1, "IDENT") && pi(2, "ARROW")) {
+            // type Name <- Type;  register the structural alias (3d); it
+            // yields no AST node, so nothing downstream needs to handle it.
+            ptype_decl();
+            if (len(parse_errors) > start_errs) {
+                if (pos[0] = start_pos) { adv(); }
+                sync_to_stmt_boundary();
+            }
         } else {
-            push(ss, s);
+            var s <- ps();
+            if (len(parse_errors) > start_errs) {
+                // This statement registered new parse errors. Skip whatever the
+                // sub-parsers consumed and resync to the next statement so we
+                // can report independent errors instead of a cascade. Force one
+                // advance if the parser didn't move at all (defensive against
+                // an infinite loop on a corrupt token stream).
+                if (pos[0] = start_pos) { adv(); }
+                sync_to_stmt_boundary();
+            } else {
+                push(ss, s);
+            }
         }
     }
     return ss;
@@ -143,7 +154,12 @@ fn pim(){
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return{kind:"union",members:ms};}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}return{kind:"any"};}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!="none"){return al;}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
+fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
+fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:"none"};}
+// type Name <- Type;  structural alias (3d). Registers the alias and is
+// elided from the AST (handled in pp), so no later pass sees a new node.
+fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-ev("IDENT");eat("ARROW");var ty<-pty();eat("SEMI");set_type_alias(name,ty);return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
 fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},is_decl:false,line:ln,col:cl};}
 fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the

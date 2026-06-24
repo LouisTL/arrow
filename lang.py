@@ -416,6 +416,8 @@ class Parser:
     def __init__(self, tokens: list[Token], src_file: str = "<unknown>"):
         self.tokens = tokens
         self.pos = 0
+        # Structural type aliases (3d): name -> (kind, pfields) for match dispatch.
+        self.type_aliases = {}
         # Accumulated parse errors for batch reporting. `parse()` returns
         # the program AND this list, so callers can decide whether to halt.
         self.errors: list[str] = []
@@ -477,7 +479,13 @@ class Parser:
             start_pos = self.pos
             self._panic = False
             try:
-                stmts.append(self._statement())
+                cur = self._current()
+                if (cur.type == TokenType.IDENT and cur.value == "type"
+                        and self._peek_type(1) == TokenType.IDENT
+                        and self._peek_type(2) == TokenType.ARROW):
+                    self._type_decl()   # register alias; produces no AST node
+                else:
+                    stmts.append(self._statement())
             except ParseError as e:
                 tok = self._current()
                 msg = str(e)
@@ -701,6 +709,20 @@ class Parser:
         self._eat(TokenType.RPAREN)
         return params
 
+    def _type_decl(self):
+        """type Name <- Type; register a structural alias. Runtime-typed, so
+        only (kind, pfields) is needed, for match-arm dispatch."""
+        self._eat(TokenType.IDENT)            # 'type'
+        name = self._eat(TokenType.IDENT).value
+        self._eat(TokenType.ARROW)
+        kind, pfields = self._parse_type_kind()   # resolves nested aliases
+        if self._current().type == TokenType.PIPE:
+            while self._match(TokenType.PIPE):
+                self._parse_type_kind()
+            kind, pfields = "union", None
+        self._eat(TokenType.SEMI)
+        self.type_aliases[name] = (kind, pfields)
+
     def _parse_type_kind(self):
         """Parse a single (non-union) type for a match arm; return
         (kind, pfields). pfields is the list of field names for a struct
@@ -721,7 +743,10 @@ class Parser:
                     fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
             self._eat(TokenType.RBRACE)
             return "struct", fnames
-        return self._eat(TokenType.IDENT).value, None
+        name = self._eat(TokenType.IDENT).value
+        if name in self.type_aliases:
+            return self.type_aliases[name]
+        return name, None
 
     def _parse_arm_pattern(self):
         """Parse one arm pattern (shared by statement and expression match).
