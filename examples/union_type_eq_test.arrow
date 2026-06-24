@@ -1,5 +1,5 @@
 // EXPECT: ok
-// Regression for the 3a type_eq fix (compiler/types.arrow): unions compare
+// Regression for the type_eq fix (compiler/types.arrow): unions compare
 // member-wise and order-insensitively, with arity and member identity checked.
 // Before the fix, type_eq returned true for ANY two unions. It lives in the
 // compiler's T module, so we import it directly. We branch on the result and
