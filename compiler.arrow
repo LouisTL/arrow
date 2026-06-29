@@ -6859,7 +6859,7 @@ fn compile_via_ir(stmts, backend) {
 // ═══════════════════════════════════════════
 
 if (args() < 1) {
-    print("Usage: arrow <file.arrow> [-o output]");
+    print("Usage: arrow <file.arrow> [-o output] [--keep-ll]");
     print("  Compiles Arrow Lang source to a native executable.");
 }
 
@@ -6872,6 +6872,17 @@ if (args() > 0) {
         if (args(1) = "-o") {
             out_name <- args(2);
         }
+    }
+
+    // --keep-ll: retain the generated .ll instead of deleting it after
+    // linking — useful for inspecting IR or running the self-host
+    // fixed-point check without a no-op rm shim. Scanned position-
+    // independently so it may follow an -o argument in any order.
+    var keep_ll <- false;
+    var ka <- 1;
+    while (ka < args()) {
+        if (args(ka) = "--keep-ll") { keep_ll <- true; }
+        ka <- ka + 1;
     }
 
     // Construct the backend. Today there's only one; future flags would
@@ -7080,8 +7091,11 @@ if (args() > 0) {
             var rc <- backend_link(backend, ir_file, exe_file);
             if (rc = 0) {
                 print("Compiled " + exe_file + " successfully!");
-                // Clean up intermediate file (platform-dependent delete command)
-                if (is_win[0] = 1) {
+                // Remove the intermediate .ll unless asked to keep it
+                // (platform-dependent delete command).
+                if (keep_ll) {
+                    print("IR kept at " + ir_file);
+                } else if (is_win[0] = 1) {
                     exec_cmd("del " + ir_file);
                 } else {
                     exec_cmd("rm " + ir_file);
