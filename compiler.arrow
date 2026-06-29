@@ -6866,23 +6866,25 @@ if (args() < 1) {
 if (args() > 0) {
     var input_file <- args(0);
 
-    // Parse -o flag
+    // Parse arguments after the input file (args(0)). Both flags are scanned
+    // position-independently, so -o and --keep-ll may appear in any order:
+    //   -o <output>  set the output path
+    //   --keep-ll    keep the generated .ll instead of deleting it after the
+    //               link step (useful for inspecting IR, or for the self-host
+    //               fixed-point check without a no-op rm shim)
     var out_name <- "";
-    if (args() > 2) {
-        if (args(1) = "-o") {
-            out_name <- args(2);
-        }
-    }
-
-    // --keep-ll: retain the generated .ll instead of deleting it after
-    // linking — useful for inspecting IR or running the self-host
-    // fixed-point check without a no-op rm shim. Scanned position-
-    // independently so it may follow an -o argument in any order.
     var keep_ll <- false;
     var ka <- 1;
     while (ka < args()) {
-        if (args(ka) = "--keep-ll") { keep_ll <- true; }
-        ka <- ka + 1;
+        if (args(ka) = "-o" && ka + 1 < args()) {
+            out_name <- args(ka + 1);
+            ka <- ka + 2;
+        } else if (args(ka) = "--keep-ll") {
+            keep_ll <- true;
+            ka <- ka + 1;
+        } else {
+            ka <- ka + 1;
+        }
     }
 
     // Construct the backend. Today there's only one; future flags would
