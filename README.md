@@ -9,8 +9,8 @@ fn fib(n: int): int {
         return 1;
     }
 
-    nums <- [0,1];
-    i <- 2;
+    var nums <- [0,1];
+    var i <- 2;
     while (i <= n){
         push(nums, nums[i-1] + nums[i-2]);
         i <- i + 1;
@@ -18,7 +18,7 @@ fn fib(n: int): int {
     return nums[n];
 }
 
-x: int <- fib(6);
+var x: int <- fib(6);
 print(x);
 ```
 Comme vous pouvez voir dans l'exemple, <- est utilisé pour assigner à des variables et c'est de là que vient le nom du langage.
@@ -52,14 +52,14 @@ Pour le moment, Arrow possède trois manières d'exécuter des programmes.
     arrow.exe fichier.arrow
     .\fichier.exe
     ```
-    Comme compiler.py, compiler.arrow transforme aussi le code Arrow en LLVM IR. Ce qui diffère par contre, c'est que pour le moment compiler.arrow génère un fichier .ll temporaire avec le IR de LLVM écrit en texte. Ensuite, une commande shell est exécutée pour appeler clang qui va optimiser le code IR et le compiler en langage machine. Le fichier .ll est supprimé automatiquement après que notre backend, c'est-à-dire clang, complète la compilation.
+    Comme compiler.py, compiler.arrow transforme aussi le code Arrow en LLVM IR. Ce qui diffère par contre, c'est que pour le moment compiler.arrow génère un fichier .ll temporaire avec le IR de LLVM écrit en texte. Ensuite, une commande shell est exécutée pour appeler clang qui va optimiser le code IR et le compiler en langage machine. Le fichier .ll est supprimé automatiquement après que notre backend, c'est-à-dire clang, complète la compilation (on peut le conserver avec le flag `--keep-ll`).
     
     Fait intéressant à noter : le langage a la "fixed-point compilation". Cela veut dire qu'on peut recompiler le compilateur autant de fois qu'on veut et que le fichier .ll généré sera identique. On peut générer un deuxième compilateur natif à partir du premier en exécutant ceci : 
     ```
     arrow.exe compiler.arrow -o arrow2.exe
     ```
 
-Pour vérifier que tout fonctionne, vous pouvez lancer `python run_tests.py` pour exécuter tous les exemples avec l'interpréteur et le compilateur natif et comparer les sorties. Il y a quelques différences connues en ce moment, principalement liées au formatage de print() pour les types composés.
+Pour vérifier que tout fonctionne, vous pouvez lancer `python run_tests.py` pour exécuter tous les exemples avec l'interpréteur et le compilateur natif et comparer les sorties. Présentement, tous les exemples passent.
  ## Dépendances
 - Python 3.10+
 - Clang 15+
@@ -67,20 +67,20 @@ Pour vérifier que tout fonctionne, vous pouvez lancer `python run_tests.py` pou
 Le langage a un nombre limité de fonctionnalités pour le moment, mais ce nombre risque d'augmenter dans le futur.
 ### types
 Arrow supporte les types suivants :
-int, string, struct, array et function. Voici un exemple de définition pour chacun:
+int, float, str, bool, struct, array, union et function (plus `any`, une échappatoire au typage). Voici un exemple de définition pour quelques-uns :
 ```
-num <- 42;
-hello <- "world";
-token <- {type: "struct", nom: "token"};
-liste <- [1,2,3];
-fleche <- (x) => {return x+1;};
+var num <- 42;
+var hello <- "world";
+var token <- {type: "struct", nom: "token"};
+var liste <- [1,2,3];
+var fleche <- (x) => {return x+1;};
 ```
-Il y a certaines règles de typage qui existent. Par exemple, la compilation va échouer si on tente de passer un int à une fn explicitement typée pour accepter un string. Cela étant dit, les règles de typage ne sont pas très strictes à ce moment-ci et les annotations de type ne sont pas obligatoires.
+Il y a certaines règles de typage qui existent. Par exemple, la compilation va échouer si on tente de passer un int à une fn explicitement typée pour accepter un str. Cela étant dit, les règles de typage ne sont pas très strictes à ce moment-ci et les annotations de type ne sont pas obligatoires.
 
 Le système de types supporte aussi les types structurés comme ceux-ci :
 ```
-liste: [string] <- ["alpha", "bravo", "charlie"];
-point: {x: int, y: int} <- {x: 3, y: 4};
+var liste: [str] <- ["alpha", "bravo", "charlie"];
+var point: {x: int, y: int} <- {x: 3, y: 4};
 ```
 ### instructions
 Quelques instructions de base sont supportées, comme celles-ci : 
@@ -111,7 +111,74 @@ Des fonctions de base existent dépendamment des types utilisés. Voici une peti
 - keys() peut être utilisé pour obtenir les clés de struct
 ### I/O
 Le langage supporte read_file pour lire un fichier, write_file pour écrire dans un fichier, append_file pour ajouter à un fichier et input() pour lire stdin (comme input() en Python).
+### floats
+Arrow supporte les nombres à virgule flottante (`float`). Un littéral avec un point décimal est un float, et l'arithmétique fait la promotion automatiquement : si l'un des deux opérandes est un float, le résultat l'est aussi.
+```
+var pi <- 3.14;
+var moitie <- 10.0 / 4.0;       // 2.5
+print(1 + 1.5);                 // 2.5   (int promu en float)
+print(10 / 3.0);                // 3.3333333333333335
+
+var xs: [float] <- [0.5, 1.5, 2.5];
+print(xs[1]);                   // 1.5
+```
+L'affichage suit le même format que le `repr` de Python : la représentation décimale la plus courte qui fait un aller-retour exact, avec un ".0" final pour les floats de valeur entière.
+### unions et pattern matching
+Un type union `A | B` accepte une valeur de l'un ou l'autre type. On inspecte une union avec `match`, qui vérifie l'exhaustivité à la compilation : chaque membre doit être couvert par un bras typé ou par le bras joker `_`.
+```
+fn describe(v: int | str | bool) {
+    match (v) {
+        42  => { print("le nombre 42"); }   // motif littéral (raffine int)
+        int => { print("un autre int"); }   // bras typé, lie v (int)
+        _   => { print(v); }                 // joker : couvre str et bool
+    }
+}
+describe(42);       // le nombre 42
+describe(7);        // un autre int
+describe("allo");   // allo
+describe(true);     // true
+```
+`match` s'utilise aussi comme expression qui retourne une valeur :
+```
+fn nom(v: int | str): str {
+    return match (v) {
+        int => "c'est un entier",
+        str => "c'est une chaine"
+    };
+}
+```
+Un bras littéral (comme `42`) raffine un membre mais ne compte pas pour l'exhaustivité; un bras typé ou `_` doit quand même couvrir chaque membre. Le bras joker `_`, s'il est présent, doit être le dernier.
+### alias de types
+On peut nommer un type structurel avec `type Nom <- Type;`. L'alias se résout à sa structure sous-jacente (le typage demeure structurel) :
+```
+type Point <- {x: int, y: int};
+type Shape <- {radius: int} | {side: int};
+type IntList <- [int];
+
+var p: Point <- {x: 1, y: 2};
+print(p.x);                     // 1
+```
+Un nom de type inconnu est une erreur de compilation
+### modules et imports
+Un fichier peut en importer un autre avec `import "chemin";`. Chaque fonction et variable globale du fichier importé devient accessible via `chemin.<nom>`, où l'espace de noms est le nom de base du fichier (renommable avec `as`).
+```
+import "mathlib" as m;         // charge ./mathlib.arrow
+
+print(m.square(7));            // 49
+print(m.cube(3));              // 27
+```
+Le résolveur cherche d'abord le fichier relativement à celui qui l'importe, puis dans le répertoire de l'exécutable arrow (où se trouve `std/`). C'est ce qui permet à `import "std/math"` de fonctionner de n'importe où (voir la librairie standard ci-dessous).
+### librairie standard
+La librairie standard ne fait que commencer, avec le module `std/math` (`abs`, `min`, `max`) :
+```
+import "std/math";
+
+print(math.abs(-5));           // 5
+print(math.min(3, 8));         // 3
+print(math.max(3, 8));         // 8
+```
+Elle grandira à mesure que le langage gagnera en fonctionnalités.
 ### examples
 Il y a beaucoup d'exemples de code dans le répertoire examples du repo. Vous pouvez les consulter pour plus vous familiariser avec Arrow.
 ### fonctionnalités manquantes
-La liste est longue, beaucoup plus longue que la liste de fonctionnalités présentes. Il n'y a pas encore de floats, de OOP (pas certain que je vais l'ajouter par contre), de généricité, de librairie standard, de dates, de structures de données comme des dictionnaires, de modules/imports, etc.
+Plusieurs fonctionnalités restent à ajouter. Il n'y a pas encore de OOP (pas certain que je vais l'ajouter par contre), de généricité, de dates, ni de structures de données comme des dictionnaires, etc.
