@@ -1,0 +1,11 @@
+// EXPECT: type_fail
+//ERR: pushed str to array of int
+//ERR: 1 type error(s)
+
+// push must conform to the declared element type. Previously a mismatched
+// push silently degraded the element type to `any` -- even overriding an
+// explicit annotation like this one. Mixed-type arrays are opt-in:
+// annotate [int | str] (sound, tagged) or [any] (unchecked escape hatch).
+var xs: [int] <- [30];
+push(xs, "s");
+print(xs);

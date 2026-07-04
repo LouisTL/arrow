@@ -2621,6 +2621,20 @@ fn array_union_src_ok(ut, actual, src): int {
     if (src.node = "ArrayLit") { if (len(src.elements) = 0) { return true; } }
     return false;
 }
+// Declaration-anchored static type of a store-target base expression. For
+// identifiers, the declaration type wins over the narrowed/joined tracked
+// type: an explicitly declared `[any]` array must stay an unchecked escape
+// hatch even after push-refinement narrows what var_types reports.
+// Everything else falls back to typeof_expr, which derives from
+// declarations and annotations anyway.
+fn declared_base_type(e) {
+    if (e.node = "Identifier") {
+        var dt <- get_decl_type(e.name);
+        if (dt.kind != "none") { return dt; }
+    }
+    return typeof_expr(e);
+}
+
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "none") {
@@ -2748,17 +2762,38 @@ fn check_stmt(s) {
         check_expr(s.obj);
         check_expr(s.index);
         check_expr(s.value);
+        // An element store must fit the array's declared element type
+        // (declaration-anchored). `any`/`none` element types are the
+        // unchecked escape hatch; a union element type accepts exactly its
+        // members, mirroring the push rule.
+        var ibt <- declared_base_type(s.obj);
+        if (ibt.kind = "array") {
+            var ivt <- typeof_expr(s.value);
+            if (ibt.elem.kind = "union") {
+                if (ivt.kind != "union") {
+                    if (union_member_index(ibt.elem, ivt) = -1) {
+                        report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), T.type_str(ivt) + " is not a member of the array element type " + T.type_str(ibt.elem));
+                    }
+                }
+            } else if (ibt.elem.kind != "any" && ibt.elem.kind != "none") {
+                if (!T.types_compat(ibt.elem, ivt)) {
+                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: array element is " + T.type_str(ibt.elem) + " but assigned " + T.type_str(ivt));
+                }
+            }
+        }
     }
     if (s.node = "DotAssign") {
         check_expr(s.obj);
         check_expr(s.value);
-        // A union-typed field accepts only its members: validate the new
-        // value against the field's declared type, like a declaration. Plain
-        // (non-union) fields keep the loosely-typed self-host's behavior.
-        var dot <- typeof_expr(s.obj);
+        // A field store must fit the field's declared type, like a
+        // declaration. Declaration-anchored on the base; `any`/`none` field
+        // types are the unchecked escape hatch. Union-typed fields pass
+        // through types_compat's member acceptance and are wrapped at
+        // codegen.
+        var dot <- declared_base_type(s.obj);
         if (dot.kind = "struct_lit") {
             var fft <- T.struct_field_type(dot.fields, s.field);
-            if (fft.kind = "union" || T.union_in_container(fft)) {
+            if (fft.kind != "any" && fft.kind != "none") {
                 var dval <- typeof_expr(s.value);
                 if (!T.types_compat(fft, dval)) {
                     report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
@@ -2771,11 +2806,15 @@ fn check_stmt(s) {
 fn expr_pos_line(e): int {
     if (e.node = "Identifier") { return e.line; }
     if (e.node = "CallExpr") { return e.line; }
+    if (e.node = "IndexExpr") { return expr_pos_line(e.obj); }
+    if (e.node = "DotExpr") { return expr_pos_line(e.obj); }
     return 0;
 }
 fn expr_pos_col(e): int {
     if (e.node = "Identifier") { return e.col; }
     if (e.node = "CallExpr") { return e.col; }
+    if (e.node = "IndexExpr") { return expr_pos_col(e.obj); }
+    if (e.node = "DotExpr") { return expr_pos_col(e.obj); }
     return 0;
 }
 // Reject using a union value where a single concrete type is required. A union
@@ -2824,6 +2863,19 @@ fn check_expr(e) {
                     if (union_member_index(pat0.elem, pvt) = -1) {
                         report_error(e.line, e.col, T.type_str(pvt) + " is not a member of the array element type " + T.type_str(pat0.elem));
                     }
+                }
+            }
+            // Conformance for concrete element types: the pushed value must
+            // fit the array's declared element type. Declaration-anchored so
+            // an explicit `[any]` (and the empty-literal `[any]`) stays an
+            // unchecked escape hatch even after push-refinement narrows the
+            // tracked type; union elements are handled by the member check
+            // above.
+            var pdb <- declared_base_type(e.args[0]);
+            if (pdb.kind = "array" && pdb.elem.kind != "union" && pdb.elem.kind != "any" && pdb.elem.kind != "none") {
+                var pvd <- typeof_expr(e.args[1]);
+                if (!T.types_compat(pdb.elem, pvd)) {
+                    report_error(e.line, e.col, "type mismatch: pushed " + T.type_str(pvd) + " to array of " + T.type_str(pdb.elem));
                 }
             }
         }
@@ -6104,7 +6156,14 @@ fn ir_emit_stmt(b, stmt) {
     if (stmt.node = "IndexAssign") {
         var obj <- ir_emit_expr(b, stmt.obj);
         var idx <- ir_emit_expr(b, stmt.index);
-        var val <- ir_emit_expr(b, stmt.value);
+        // Coerce the new value to the array's element type: a union
+        // element stores a {tag,payload} cell, so a member value is
+        // wrapped (and a nested container has its own unions wrapped,
+        // recursively) instead of landing as a raw word.
+        var at <- typeof_expr(stmt.obj);
+        var eslot <- T.mk_none();
+        if (at.kind = "array") { eslot <- at.elem; }
+        var val <- ir_coerce_slot_value(b, stmt.value, eslot);
         var prefix <- ir_fresh_tmp(b, "aset");
         ir_push_inst(b.cur_block, ii_array_set(prefix, obj, idx, val));
         return 0;
@@ -6386,7 +6445,9 @@ fn ir_emit_stmt(b, stmt) {
             type_ann: T.mk_none(),
             is_decl: false
         };
-        var new_body <- [bind_x];
+        // Statement nodes of mixed shapes go in here, so the element
+        // type must be the explicit escape hatch.
+        var new_body: [any] <- [bind_x];
         var i <- 0;
         while (i < len(stmt.body)) {
             push(new_body, stmt.body[i]);

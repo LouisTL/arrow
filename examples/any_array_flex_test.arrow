@@ -1,0 +1,23 @@
+// EXPECT: ok
+//OUT: [1, 2]
+//OUT: 2
+//OUT: [1, "s"]
+//OUT: done
+
+// The escape hatches stay open. An empty literal types as [any] and the
+// first push narrows it (the `items <- []` idiom keeps its precise
+// formatting); an explicitly annotated [any] array accepts mixed pushes,
+// with printing falling back to the runtime heuristic. Conformance checks
+// are anchored to the *declared* type, so the narrowed tracked type never
+// causes a false error here.
+var xs <- [];
+push(xs, 1);
+push(xs, 2);
+print(xs);
+print(xs[0] + 1);
+
+var ys: [any] <- [];
+push(ys, 1);
+push(ys, "s");
+print(ys);
+print("done");

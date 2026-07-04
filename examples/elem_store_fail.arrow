@@ -1,0 +1,16 @@
+// EXPECT: type_fail
+//ERR: array element is str but assigned int
+//ERR: array element is int but assigned str
+//ERR: 2 type error(s)
+
+// Element stores must fit the array's declared element type; the compiler
+// formats and coerces by that type, so an unchecked store produces typed
+// garbage (or a native crash) at every read site. Both directions fail:
+// an int into a [str] slot and a str into an [int] slot.
+var a <- ["10"];
+a[0] <- 20;
+print(a);
+
+var b <- [30];
+b[0] <- "40";
+print(b);

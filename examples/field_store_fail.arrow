@@ -1,0 +1,10 @@
+// EXPECT: type_fail
+//ERR: field 'n' is int but assigned str
+//ERR: 1 type error(s)
+
+// A field store must fit the field's declared type. Union-typed fields
+// already wrapped their values at codegen; this closes the other half --
+// a plain int field silently accepting a string pointer.
+var p <- {n: 1};
+p.n <- "s";
+print(p);

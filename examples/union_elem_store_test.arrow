@@ -1,0 +1,25 @@
+// EXPECT: ok
+//OUT: ["40", "a"]
+//OUT: ["40", 7]
+//OUT: int elem
+//OUT: [{v: "s"}]
+//OUT: done
+
+// Element stores into union-element arrays must produce real {tag,payload}
+// cells, exactly as push and match arms do. A raw word in a cell slot made
+// print show an empty array and corrupted match dispatch. The nested case
+// exercises the recursive wrap: a struct value stored by index has its own
+// union field wrapped on the way in.
+var x: [int | str] <- [30, "a"];
+x[0] <- "40";
+print(x);
+x[1] <- 7;
+print(x);
+match (x[1]) {
+    n: int => { print("int elem"); }
+    n: str => { print("str elem"); }
+}
+var g: [{v: int | str}] <- [{v: 1}];
+g[0] <- {v: "s"};
+print(g);
+print("done");
