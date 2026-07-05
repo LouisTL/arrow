@@ -1,0 +1,24 @@
+// EXPECT: type_fail
+//ERR: 'p' annotated as {x: int, y: int} but assigned [int]
+//ERR: 'q' annotated as Point but assigned [int]
+//ERR: non-exhaustive match: missing arm for Circle
+//ERR: 3 type error(s)
+
+// Alias names in messages come from provenance, not structural lookup: a
+// type prints as its alias only where the alias was actually written.
+// `p`'s annotation spells the structure out, so its error stays structural
+// even though Point is structurally identical; `q` wrote Point, so its
+// error says Point. Names survive nesting and union membership: Shape's
+// first member was written as Circle, so the missing-arm message names it.
+type Point <- {x: int, y: int};
+type Circle <- {radius: int};
+type Shape <- Circle | {side: int};
+
+var p: {x: int, y: int} <- [1, 2];
+var q: Point <- [1, 2];
+
+fn f(s: Shape) {
+    match (s) {
+        n: {side: int} => { print(n.side); }
+    }
+}

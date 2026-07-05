@@ -20,10 +20,23 @@ fn mk_ptr(): any { return {kind: "ptr"}; }
 fn mk_i32(): any { return {kind: "i32"}; }
 fn mk_fn(): any { return {kind: "fn"}; }
 fn mk_none(): any { return {kind: "none"}; }
-fn mk_array(elem): any { return {kind: "array", elem: elem}; }
-fn mk_struct_lit(fields): any { return {kind: "struct_lit", fields: fields}; }
+fn mk_array(elem): any { return {kind: "array", elem: elem, tname: ""}; }
+fn mk_struct_lit(fields): any { return {kind: "struct_lit", fields: fields, tname: ""}; }
 
-fn mk_union(members): any { return {kind: "union", members: members}; }
+fn mk_union(members): any { return {kind: "union", members: members, tname: ""}; }
+
+// Wrap an alias-resolved type with the name the user wrote. Shallow copy,
+// so the stored alias itself stays unnamed and later uses of the same
+// alias each get their own named wrapper. Primitives pass through
+// unnamed: `type Meters <- int;` must not relabel every int in every
+// message. Derived types (joins, normalizations) are built by the plain
+// constructors and are therefore unnamed by construction.
+fn mk_named(t, name: str): any {
+    if (t.kind = "array") { return {kind: "array", elem: t.elem, tname: name}; }
+    if (t.kind = "struct_lit") { return {kind: "struct_lit", fields: t.fields, tname: name}; }
+    if (t.kind = "union") { return {kind: "union", members: t.members, tname: name}; }
+    return t;
+}
 
 // Canonical ordering rank for union members. Arrow's `<` lowers to integer
 // comparison, so sorting by kind string would compare pointers; a fixed rank
@@ -144,26 +157,22 @@ fn union_in_container(t): int {
 }
 
 // Render a Type as surface syntax for error messages.
-// Render a type for messages. `aliases` is a [{name, atype}] list; when a
-// composite type is structurally equal to an alias, the alias name is shown
-// instead of the expanded structure, at any nesting depth. Primitive kinds
-// are never renamed: `type Meters <- int;` should not relabel every int in
-// every message. First match in declaration order wins.
-fn type_str_al(t, aliases): str {
+// Render a type for messages. A composite type written as an alias carries
+// the alias name (tname) and prints as that name, at any nesting depth;
+// a structurally identical type written out longhand stays longhand, and
+// derived/inferred types are unnamed by construction. Primitives never
+// carry names.
+fn type_str(t): str {
     if (t.kind = "array" || t.kind = "struct_lit" || t.kind = "union") {
-        var ai <- 0;
-        while (ai < len(aliases)) {
-            if (type_eq(aliases[ai].atype, t)) { return aliases[ai].name; }
-            ai <- ai + 1;
-        }
+        if (t.tname != "") { return t.tname; }
     }
-    if (t.kind = "array") { return "[" + type_str_al(t.elem, aliases) + "]"; }
+    if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
     if (t.kind = "struct_lit") {
         var s <- "{";
         var i <- 0;
         while (i < len(t.fields)) {
             if (i > 0) { s <- s + ", "; }
-            s <- s + t.fields[i].name + ": " + type_str_al(t.fields[i].type, aliases);
+            s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
             i <- i + 1;
         }
         return s + "}";
@@ -174,15 +183,13 @@ fn type_str_al(t, aliases): str {
         var i <- 0;
         while (i < len(ms)) {
             if (i > 0) { s2 <- s2 + " | "; }
-            s2 <- s2 + type_str_al(ms[i], aliases);
+            s2 <- s2 + type_str(ms[i]);
             i <- i + 1;
         }
         return s2;
     }
     return t.kind;
 }
-
-fn type_str(t): str { return type_str_al(t, []); }
 
 // Look up a field's type in a struct_lit fields list. Returns mk_none()
 // if no field with that name exists — callers treat none as "missing".
@@ -255,7 +262,7 @@ fn types_join(a, b): any {
             push(out_fields, {name: af.name, type: types_join(af.type, bf.type)});
             i <- i + 1;
         }
-        return {kind: "struct_lit", fields: out_fields};
+        return mk_struct_lit(out_fields);
     }
     return mk_any();
 }

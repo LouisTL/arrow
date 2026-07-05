@@ -153,8 +153,8 @@ fn pim(){
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
-fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return{kind:"union",members:ms};}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return{kind:"array",elem:et};}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{kind:"struct_lit",fields:fs};}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return{kind:"struct_lit",fields:fs};}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!="none"){return al;}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
+fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!="none"){return T.mk_named(al,n);}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
 fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:"none"};}
 // type Name <- Type;  structural alias (3d). Registers the alias and is
@@ -1724,16 +1724,16 @@ fn check_match_coverage(ln, col, scrutinee, ut, arms) {
             var all_cov <- true;
             var wc <- 0;
             while (wc < len(covered)) { if (!match_eff_covered(covered, ms, wc, seen_lits)) { all_cov <- false; } wc <- wc + 1; }
-            if (all_cov) { report_error(ln, col, "unreachable wildcard arm '_': all members of " + type_disp(ut) + " are already covered"); }
+            if (all_cov) { report_error(ln, col, "unreachable wildcard arm '_': all members of " + T.type_str(ut) + " are already covered"); }
         } else {
             var pt <- arms[mi].ptype;
             var idx <- union_member_index(ut, pt);
             if (arms[mi].is_lit) {
                 if (idx = -1) {
-                    report_error(ln, col, "literal pattern of type " + type_disp(pt) + " is not a member of " + type_disp(ut));
+                    report_error(ln, col, "literal pattern of type " + T.type_str(pt) + " is not a member of " + T.type_str(ut));
                 } else {
                     if (covered[idx]) {
-                        report_error(ln, col, "unreachable literal pattern: " + type_disp(pt) + " is already fully covered by an earlier arm");
+                        report_error(ln, col, "unreachable literal pattern: " + T.type_str(pt) + " is already fully covered by an earlier arm");
                     } else {
                         var lkey <- arms[mi].lit_kind + ":" + arms[mi].lit;
                         if (name_in(seen_lits, lkey)) {
@@ -1745,13 +1745,13 @@ fn check_match_coverage(ln, col, scrutinee, ut, arms) {
                 }
             } else {
                 if (idx = -1) {
-                    report_error(ln, col, type_disp(pt) + " is not a member of " + type_disp(ut));
+                    report_error(ln, col, T.type_str(pt) + " is not a member of " + T.type_str(ut));
                 } else {
-                    if (covered[idx]) { report_error(ln, col, "duplicate match arm for " + type_disp(pt)); }
+                    if (covered[idx]) { report_error(ln, col, "duplicate match arm for " + T.type_str(pt)); }
                     covered[idx] <- true;
                 }
                 if (arms[mi].name = "" && scrutinee.node != "Identifier") {
-                    report_error(ln, col, "matching an expression requires a binding name (use 'name: " + type_disp(pt) + "')");
+                    report_error(ln, col, "matching an expression requires a binding name (use 'name: " + T.type_str(pt) + "')");
                 }
             }
         }
@@ -1760,7 +1760,7 @@ fn check_match_coverage(ln, col, scrutinee, ut, arms) {
     if (!has_wild) {
         var ei <- 0;
         while (ei < len(covered)) {
-            if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(ln, col, "non-exhaustive match: missing arm for " + type_disp(ms[ei])); }
+            if (!match_eff_covered(covered, ms, ei, seen_lits)) { report_error(ln, col, "non-exhaustive match: missing arm for " + T.type_str(ms[ei])); }
             ei <- ei + 1;
         }
     }
@@ -2065,7 +2065,7 @@ fn infer_body(stmts) {
                     var dt <- get_decl_type(s.name);
                     if (dt.kind != "none" && dt.kind != "any" && dt.kind != "union"
                         && !T.union_in_container(dt) && !T.types_compat(dt, ty)) {
-                        report_error(s.line, s.col, "cannot assign " + type_disp(ty) + " to '" + s.name + "' of type " + type_disp(dt));
+                        report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + s.name + "' of type " + T.type_str(dt));
                     }
                 }
                 if (!T.union_in_container(existing) && existing.kind != "union") {
@@ -2196,11 +2196,6 @@ fn infer_body(stmts) {
 
 var type_errors <- [];
 var src_filename <- ["<unknown>"];
-
-// Render a type for error messages, alias-aware: a composite type that is
-// structurally equal to a declared alias prints as its name (`Shape`
-// rather than `{radius: int} | {side: int}`), at any nesting depth.
-fn type_disp(t): str { return T.type_str_al(t, type_aliases[0]); }
 
 fn report_error(line: int, col: int, msg: str) {
     push(type_errors, {line: line, col: col, msg: msg});
@@ -2608,10 +2603,10 @@ fn check_array_union_elements(ln, col, ut, lit) {
     while (i < len(lit.elements)) {
         var et <- typeof_expr(lit.elements[i]);
         if (et.kind = "union") {
-            report_error(ln, col, "array element cannot itself yield a union (" + type_disp(et) + "); each element must be a concrete member of " + type_disp(ut));
+            report_error(ln, col, "array element cannot itself yield a union (" + T.type_str(et) + "); each element must be a concrete member of " + T.type_str(ut));
         } else {
             if (union_member_index(ut, et) = -1) {
-                report_error(ln, col, type_disp(et) + " is not a member of " + type_disp(ut));
+                report_error(ln, col, T.type_str(et) + " is not a member of " + T.type_str(ut));
             }
         }
         i <- i + 1;
@@ -2654,13 +2649,13 @@ fn check_stmt(s) {
                 } else {
                     var aactual <- typeof_expr(s.expr);
                     if (!array_union_src_ok(s.type_ann.elem, aactual, s.expr)) {
-                        report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + type_disp(s.type_ann) + " but assigned " + type_disp(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
+                        report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
                     }
                 }
             } else {
                 var actual <- typeof_expr(s.expr);
                 if (!T.types_compat(s.type_ann, actual)) {
-                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + type_disp(s.type_ann) + " but assigned " + type_disp(actual));
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
                 }
             }
         }
@@ -2677,7 +2672,7 @@ fn check_stmt(s) {
                 } else {
                     var rsa <- typeof_expr(s.expr);
                     if (!array_union_src_ok(lvt.elem, rsa, s.expr)) {
-                        report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + type_disp(lvt) + ") from " + type_disp(rsa) + " (an array-of-union requires an exactly matching [union] source)");
+                        report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
                     }
                 }
             } else if (T.union_in_container(lvt)) {
@@ -2687,7 +2682,7 @@ fn check_stmt(s) {
                 // construction; types_compat enforces that each value is a real member.
                 var rsv <- typeof_expr(s.expr);
                 if (!T.types_compat(lvt, rsv)) {
-                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' (declared " + type_disp(lvt) + ") reassigned " + type_disp(rsv));
+                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' (declared " + T.type_str(lvt) + ") reassigned " + T.type_str(rsv));
                 }
             }
         }
@@ -2710,11 +2705,11 @@ fn check_stmt(s) {
                         var actual <- typeof_expr(s.expr);
                         if (fi.ret_type_ann.kind = "array" && fi.ret_type_ann.elem.kind = "union") {
                             if (!array_union_src_ok(fi.ret_type_ann.elem, actual, s.expr)) {
-                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + type_disp(fi.ret_type_ann) + " but returning " + type_disp(actual) + " (an array-of-union requires an exactly matching [union] value or an empty array literal)");
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] value or an empty array literal)");
                             }
                         } else {
                             if (!T.types_compat(fi.ret_type_ann, actual)) {
-                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + type_disp(fi.ret_type_ann) + " but returning " + type_disp(actual));
+                                report_error(s.line, s.col, "return type mismatch in '" + current_fn[0] + "': declared " + T.type_str(fi.ret_type_ann) + " but returning " + T.type_str(actual));
                             }
                         }
                     }
@@ -2731,7 +2726,7 @@ fn check_stmt(s) {
         check_expr(s.scrutinee);
         var ut <- typeof_expr(s.scrutinee);
         if (ut.kind != "union") {
-            report_error(s.line, s.col, "match requires a union value, got " + type_disp(ut));
+            report_error(s.line, s.col, "match requires a union value, got " + T.type_str(ut));
         } else {
             check_match_coverage(s.line, s.col, s.scrutinee, ut, s.arms);
             var mi <- 0;
@@ -2777,12 +2772,12 @@ fn check_stmt(s) {
             if (ibt.elem.kind = "union") {
                 if (ivt.kind != "union") {
                     if (union_member_index(ibt.elem, ivt) = -1) {
-                        report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), type_disp(ivt) + " is not a member of the array element type " + type_disp(ibt.elem));
+                        report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), T.type_str(ivt) + " is not a member of the array element type " + T.type_str(ibt.elem));
                     }
                 }
             } else if (ibt.elem.kind != "any" && ibt.elem.kind != "none") {
                 if (!T.types_compat(ibt.elem, ivt)) {
-                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: array element is " + type_disp(ibt.elem) + " but assigned " + type_disp(ivt));
+                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: array element is " + T.type_str(ibt.elem) + " but assigned " + T.type_str(ivt));
                 }
             }
         }
@@ -2800,11 +2795,11 @@ fn check_stmt(s) {
         if (dot.kind = "struct_lit") {
             var fft <- T.struct_field_type(dot.fields, s.field);
             if (fft.kind = "none") {
-                report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "unknown field '" + s.field + "' on " + type_disp(dot));
+                report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "unknown field '" + s.field + "' on " + T.type_str(dot));
             } else if (fft.kind != "any") {
                 var dval <- typeof_expr(s.value);
                 if (!T.types_compat(fft, dval)) {
-                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + type_disp(fft) + " but assigned " + type_disp(dval));
+                    report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
                 }
             }
         }
@@ -2831,7 +2826,7 @@ fn expr_pos_col(e): int {
 fn check_no_union(e, what: str) {
     var t <- typeof_expr(e);
     if (t.kind = "union") {
-        report_error(expr_pos_line(e), expr_pos_col(e), "cannot use union value of type " + type_disp(t) + " " + what + "; narrow it to a single type first");
+        report_error(expr_pos_line(e), expr_pos_col(e), "cannot use union value of type " + T.type_str(t) + " " + what + "; narrow it to a single type first");
     }
 }
 fn check_expr(e) {
@@ -2839,7 +2834,7 @@ fn check_expr(e) {
         check_expr(e.scrutinee);
         var mut <- typeof_expr(e.scrutinee);
         if (mut.kind != "union") {
-            report_error(e.line, e.col, "match requires a union value, got " + type_disp(mut));
+            report_error(e.line, e.col, "match requires a union value, got " + T.type_str(mut));
         } else {
             check_match_coverage(e.line, e.col, e.scrutinee, mut, e.arms);
             var mxi <- 0;
@@ -2853,7 +2848,7 @@ fn check_expr(e) {
                 check_expr(marm.value);
                 var mavt <- typeof_expr(marm.value);
                 if (mavt.kind = "union") {
-                    report_error(e.line, e.col, "match-expression arm cannot itself yield a union (" + type_disp(mavt) + "); narrow it to a single type");
+                    report_error(e.line, e.col, "match-expression arm cannot itself yield a union (" + T.type_str(mavt) + "); narrow it to a single type");
                 }
                 if (mbn != "") { arm_destructure_restore_types(mfsv); set_var_type(mbn, msaved); }
                 mxi <- mxi + 1;
@@ -2869,7 +2864,7 @@ fn check_expr(e) {
                 var pvt <- typeof_expr(e.args[1]);
                 if (pvt.kind != "union") {
                     if (union_member_index(pat0.elem, pvt) = -1) {
-                        report_error(e.line, e.col, type_disp(pvt) + " is not a member of the array element type " + type_disp(pat0.elem));
+                        report_error(e.line, e.col, T.type_str(pvt) + " is not a member of the array element type " + T.type_str(pat0.elem));
                     }
                 }
             }
@@ -2883,7 +2878,7 @@ fn check_expr(e) {
             if (pdb.kind = "array" && pdb.elem.kind != "union" && pdb.elem.kind != "any" && pdb.elem.kind != "none") {
                 var pvd <- typeof_expr(e.args[1]);
                 if (!T.types_compat(pdb.elem, pvd)) {
-                    report_error(e.line, e.col, "type mismatch: pushed " + type_disp(pvd) + " to array of " + type_disp(pdb.elem));
+                    report_error(e.line, e.col, "type mismatch: pushed " + T.type_str(pvd) + " to array of " + T.type_str(pdb.elem));
                 }
             }
         }
@@ -2905,11 +2900,11 @@ fn check_expr(e) {
                             var actual <- typeof_expr(e.args[j]);
                             if (ann.kind = "array" && ann.elem.kind = "union") {
                                 if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
-                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_disp(ann) + " but got " + type_disp(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
                                 }
                             } else {
                                 if (!T.types_compat(ann, actual)) {
-                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + type_disp(ann) + " but got " + type_disp(actual));
+                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
                                 }
                             }
                         }
@@ -2945,7 +2940,7 @@ fn check_expr(e) {
         var dbt <- declared_base_type(e.obj);
         if (dbt.kind = "struct_lit") {
             if (T.struct_field_type(dbt.fields, e.field).kind = "none") {
-                report_error(expr_pos_line(e.obj), expr_pos_col(e.obj), "unknown field '" + e.field + "' on " + type_disp(dbt));
+                report_error(expr_pos_line(e.obj), expr_pos_col(e.obj), "unknown field '" + e.field + "' on " + T.type_str(dbt));
             }
         }
     }
@@ -5937,7 +5932,7 @@ fn ir_emit_format_struct(b, struct_val, fields) {
 // field types are narrower than the member's — see union_member_index).
 fn ir_union_wrap(b, val, member_type, union_type) {
     if (member_type.kind = "any") {
-        report_error(0, 0, "cannot widen a value of unknown type (any) into union " + type_disp(union_type) + "; give the source a concrete member type");
+        report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
     }
     var tag <- union_member_index(union_type, member_type);
     var dst <- ir_fresh_tmp(b, "umk");
