@@ -10,20 +10,20 @@
 // Convention: imported as `T` in compiler.arrow. Internal calls between
 // these functions stay unqualified (rename_module mangles them uniformly).
 
-fn mk_int() { return {kind: "int"}; }
-fn mk_str() { return {kind: "str"}; }
-fn mk_bool() { return {kind: "bool"}; }
-fn mk_float() { return {kind: "float"}; }
-fn mk_any() { return {kind: "any"}; }
-fn mk_struct() { return {kind: "struct"}; }
-fn mk_ptr() { return {kind: "ptr"}; }
-fn mk_i32() { return {kind: "i32"}; }
-fn mk_fn() { return {kind: "fn"}; }
-fn mk_none() { return {kind: "none"}; }
-fn mk_array(elem) { return {kind: "array", elem: elem}; }
-fn mk_struct_lit(fields) { return {kind: "struct_lit", fields: fields}; }
+fn mk_int(): any { return {kind: "int"}; }
+fn mk_str(): any { return {kind: "str"}; }
+fn mk_bool(): any { return {kind: "bool"}; }
+fn mk_float(): any { return {kind: "float"}; }
+fn mk_any(): any { return {kind: "any"}; }
+fn mk_struct(): any { return {kind: "struct"}; }
+fn mk_ptr(): any { return {kind: "ptr"}; }
+fn mk_i32(): any { return {kind: "i32"}; }
+fn mk_fn(): any { return {kind: "fn"}; }
+fn mk_none(): any { return {kind: "none"}; }
+fn mk_array(elem): any { return {kind: "array", elem: elem}; }
+fn mk_struct_lit(fields): any { return {kind: "struct_lit", fields: fields}; }
 
-fn mk_union(members) { return {kind: "union", members: members}; }
+fn mk_union(members): any { return {kind: "union", members: members}; }
 
 // Canonical ordering rank for union members. Arrow's `<` lowers to integer
 // comparison, so sorting by kind string would compare pointers; a fixed rank
@@ -186,7 +186,7 @@ fn type_str(t): str { return type_str_al(t, []); }
 
 // Look up a field's type in a struct_lit fields list. Returns mk_none()
 // if no field with that name exists — callers treat none as "missing".
-fn struct_field_type(fields, name: str) {
+fn struct_field_type(fields, name: str): any {
     var i <- 0;
     while (i < len(fields)) {
         if (fields[i].name = name) { return fields[i].type; }
@@ -228,7 +228,7 @@ fn type_eq(a, b): int {
 // Least upper bound on two types. Used to unify array element types and
 // to widen variable types across multiple writes. Falls back to `any` for
 // anything that can't be cleanly merged.
-fn types_join(a, b) {
+fn types_join(a, b): any {
     if (a.kind = "none") { return b; }
     if (b.kind = "none") { return a; }
     if (a.kind = "union" || b.kind = "union") {

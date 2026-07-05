@@ -1,0 +1,18 @@
+// EXPECT: ok
+//OUT: llvm
+//OUT: 42
+
+// Regression guard for declaration-type scoping: decl_types must reset per
+// function, mirroring var_types. Without the reset, mk_backend's local `b`
+// leaks its struct shape into read_dynamic's unrelated parameter `b`, and
+// the unknown-field check falsely rejects `b.other` on what is actually an
+// unchecked `any` parameter.
+fn mk_backend() {
+    var b <- {kind: "llvm", tool: "clang"};
+    print(b.kind);
+}
+fn read_dynamic(b) {
+    print(b.other);
+}
+mk_backend();
+read_dynamic({other: 42});

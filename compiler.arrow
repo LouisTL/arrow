@@ -825,7 +825,7 @@ fn set_var_type(name: str, vtype) {
     return false;
 }
 
-fn get_var_type(name: str) {
+fn get_var_type(name: str): any {
     var types <- var_types[0];
     var i <- len(types) - 1;
     while (i >= 0) {
@@ -849,7 +849,7 @@ fn set_decl_type(name: str, t) {
     return false;
 }
 
-fn get_decl_type(name: str) {
+fn get_decl_type(name: str): any {
     var types <- decl_types[0];
     var i <- len(types) - 1;
     while (i >= 0) {
@@ -1766,7 +1766,7 @@ fn check_match_coverage(ln, col, scrutinee, ut, arms) {
     }
 }
 
-fn typeof_expr(nd) {
+fn typeof_expr(nd): any {
     if (nd.node = "MatchExpr") { return match_expr_result_type(nd); }
     if (nd.node = "NumberLit") { return T.mk_int(); }
     if (nd.node = "FloatLit") { return T.mk_float(); }
@@ -2790,15 +2790,18 @@ fn check_stmt(s) {
     if (s.node = "DotAssign") {
         check_expr(s.obj);
         check_expr(s.value);
-        // A field store must fit the field's declared type, like a
-        // declaration. Declaration-anchored on the base; `any`/`none` field
-        // types are the unchecked escape hatch. Union-typed fields pass
-        // through types_compat's member acceptance and are wrapped at
-        // codegen.
+        // The field must exist on the base's declared struct type (a miss
+        // segfaults natively via the runtime name-search), and the stored
+        // value must fit its declared type. Declaration-anchored on the
+        // base; `any`-typed fields are the unchecked escape hatch, and
+        // union-typed fields pass through types_compat's member acceptance
+        // and are wrapped at codegen.
         var dot <- declared_base_type(s.obj);
         if (dot.kind = "struct_lit") {
             var fft <- T.struct_field_type(dot.fields, s.field);
-            if (fft.kind != "any" && fft.kind != "none") {
+            if (fft.kind = "none") {
+                report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "unknown field '" + s.field + "' on " + type_disp(dot));
+            } else if (fft.kind != "any") {
                 var dval <- typeof_expr(s.value);
                 if (!T.types_compat(fft, dval)) {
                     report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + type_disp(fft) + " but assigned " + type_disp(dval));
@@ -2931,7 +2934,21 @@ fn check_expr(e) {
         while (j < len(e.elements)) { check_expr(e.elements[j]); j <- j + 1; }
     }
     if (e.node = "IndexExpr") { check_no_union(e.obj, "as the target of an index"); check_no_union(e.index, "as an index"); check_expr(e.obj); check_expr(e.index); }
-    if (e.node = "DotExpr") { check_no_union(e.obj, "as the target of a field access"); check_expr(e.obj); }
+    if (e.node = "DotExpr") {
+        check_no_union(e.obj, "as the target of a field access");
+        check_expr(e.obj);
+        // Reading a field the base's declared struct type doesn't have is
+        // an error: natively the runtime name-search misses and the load
+        // reads garbage. The declared type is the interface, so a field
+        // hidden by width subtyping is inaccessible even when dynamically
+        // present; `any`-typed bases stay unchecked.
+        var dbt <- declared_base_type(e.obj);
+        if (dbt.kind = "struct_lit") {
+            if (T.struct_field_type(dbt.fields, e.field).kind = "none") {
+                report_error(expr_pos_line(e.obj), expr_pos_col(e.obj), "unknown field '" + e.field + "' on " + type_disp(dbt));
+            }
+        }
+    }
     if (e.node = "StructLit") {
         var j <- 0;
         while (j < len(e.fields)) { check_expr(e.fields[j].val); j <- j + 1; }
@@ -5335,6 +5352,7 @@ fn ir_emit_expr(b, nd) {
         var old_types <- var_types[0];
         var old_layouts <- struct_layouts[0];
         var old_arr_types <- array_elem_types[0];
+        var old_decl_types <- decl_types[0];
         var cap_outer_types <- [];
         i <- 0;
         while (i < len(captures)) {
@@ -5345,6 +5363,7 @@ fn ir_emit_expr(b, nd) {
         var_types[0] <- [];
         struct_layouts[0] <- [];
         array_elem_types[0] <- [];
+        decl_types[0] <- [];
 
         // Preserve type info for top-level globals into the arrow fn scope.
         // Inside a closure, references to top-level vars resolve to @g_<n>
@@ -5355,6 +5374,13 @@ fn ir_emit_expr(b, nd) {
         while (gi < len(old_types)) {
             if (is_global(old_types[gi].name)) {
                 push(var_types[0], old_types[gi]);
+            }
+            gi <- gi + 1;
+        }
+        gi <- 0;
+        while (gi < len(old_decl_types)) {
+            if (is_global(old_decl_types[gi].name)) {
+                push(decl_types[0], old_decl_types[gi]);
             }
             gi <- gi + 1;
         }
@@ -5486,6 +5512,7 @@ fn ir_emit_expr(b, nd) {
         var_types[0] <- old_types;
         struct_layouts[0] <- old_layouts;
         array_elem_types[0] <- old_arr_types;
+        decl_types[0] <- old_decl_types;
 
         // Add the new function to the module.
         ir_mod_add_function(b.mod, afn);
@@ -6513,10 +6540,12 @@ fn emit_function_via_ir(nd, mod) {
     var old_types <- var_types[0];
     var old_layouts <- struct_layouts[0];
     var old_arr_types <- array_elem_types[0];
+    var old_decl_types <- decl_types[0];
     alloc_vars[0] <- [];
     var_types[0] <- [];
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
+    decl_types[0] <- [];
     var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -6544,6 +6573,13 @@ fn emit_function_via_ir(nd, mod) {
     while (gi < len(old_layouts)) {
         if (is_global(old_layouts[gi].var_name)) {
             push(struct_layouts[0], old_layouts[gi]);
+        }
+        gi <- gi + 1;
+    }
+    gi <- 0;
+    while (gi < len(old_decl_types)) {
+        if (is_global(old_decl_types[gi].name)) {
+            push(decl_types[0], old_decl_types[gi]);
         }
         gi <- gi + 1;
     }
@@ -6578,6 +6614,7 @@ fn emit_function_via_ir(nd, mod) {
         var_types[0] <- old_types;
         struct_layouts[0] <- old_layouts;
         array_elem_types[0] <- old_arr_types;
+        decl_types[0] <- old_decl_types;
         current_fn[0] <- old_fn;
         return f;
     }
@@ -6661,6 +6698,7 @@ fn emit_function_via_ir(nd, mod) {
     var_types[0] <- old_types;
     struct_layouts[0] <- old_layouts;
     array_elem_types[0] <- old_arr_types;
+    decl_types[0] <- old_decl_types;
     current_fn[0] <- old_fn;
 
     return f;

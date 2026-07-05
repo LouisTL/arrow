@@ -1,0 +1,18 @@
+// EXPECT: type_fail
+//ERR: unknown field 'z' on Point
+//ERR: unknown field 'w' on {a: int}
+//ERR: 2 type error(s)
+
+// Accessing or assigning a field the base's declared struct type doesn't
+// have is a compile-time error. Previously this was an interpreter runtime
+// error but compiled natively into a garbage read (or a segfault on
+// write). The declared type is the interface: a field hidden by width
+// subtyping is inaccessible even when dynamically present. `any`-typed
+// bases stay unchecked.
+type Point <- {x: int, y: int};
+
+var p: Point <- {x: 1, y: 2};
+print(p.z);
+
+var q <- {a: 1};
+q.w <- 5;
