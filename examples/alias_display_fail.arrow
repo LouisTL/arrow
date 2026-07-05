@@ -1,0 +1,25 @@
+// EXPECT: type_fail
+//ERR: is not a member of the array element type Shape
+//ERR: pushed int to array of Point
+//ERR: annotated as [Point] but assigned [int]
+//ERR: cannot assign str to 'n' of type int
+//ERR: 4 type error(s)
+
+// Error messages print a declared alias name in place of the expanded
+// structure, at any nesting depth ([Point], not [{x: int, y: int}]).
+// Primitive aliases are excluded on purpose: declaring Meters must not
+// relabel every int in every message, which the last error pins down.
+type Shape <- {radius: int} | {side: int};
+type Point <- {x: int, y: int};
+type Meters <- int;
+
+var xs: [Shape] <- [{radius: 1}];
+xs[0] <- 5;
+
+var ps: [Point] <- [{x: 1, y: 2}];
+push(ps, 3);
+
+var qs: [Point] <- [3];
+
+var n <- 1;
+n <- "s";

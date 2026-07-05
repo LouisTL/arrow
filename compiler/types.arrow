@@ -144,14 +144,26 @@ fn union_in_container(t): int {
 }
 
 // Render a Type as surface syntax for error messages.
-fn type_str(t): str {
-    if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
+// Render a type for messages. `aliases` is a [{name, atype}] list; when a
+// composite type is structurally equal to an alias, the alias name is shown
+// instead of the expanded structure, at any nesting depth. Primitive kinds
+// are never renamed: `type Meters <- int;` should not relabel every int in
+// every message. First match in declaration order wins.
+fn type_str_al(t, aliases): str {
+    if (t.kind = "array" || t.kind = "struct_lit" || t.kind = "union") {
+        var ai <- 0;
+        while (ai < len(aliases)) {
+            if (type_eq(aliases[ai].atype, t)) { return aliases[ai].name; }
+            ai <- ai + 1;
+        }
+    }
+    if (t.kind = "array") { return "[" + type_str_al(t.elem, aliases) + "]"; }
     if (t.kind = "struct_lit") {
         var s <- "{";
         var i <- 0;
         while (i < len(t.fields)) {
             if (i > 0) { s <- s + ", "; }
-            s <- s + t.fields[i].name + ": " + type_str(t.fields[i].type);
+            s <- s + t.fields[i].name + ": " + type_str_al(t.fields[i].type, aliases);
             i <- i + 1;
         }
         return s + "}";
@@ -162,13 +174,15 @@ fn type_str(t): str {
         var i <- 0;
         while (i < len(ms)) {
             if (i > 0) { s2 <- s2 + " | "; }
-            s2 <- s2 + type_str(ms[i]);
+            s2 <- s2 + type_str_al(ms[i], aliases);
             i <- i + 1;
         }
         return s2;
     }
     return t.kind;
 }
+
+fn type_str(t): str { return type_str_al(t, []); }
 
 // Look up a field's type in a struct_lit fields list. Returns mk_none()
 // if no field with that name exists — callers treat none as "missing".
