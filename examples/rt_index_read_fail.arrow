@@ -1,0 +1,10 @@
+// EXPECT: runtime_fail
+//OUT: before
+//ERR: Error: Index 7 out of bounds (length 3)
+
+// Out-of-range array reads trap at runtime with the same message, exit
+// code, and output in both implementations. Natively this used to read
+// past the array header and print garbage.
+var xs <- [1, 2, 3];
+print("before");
+print(xs[7]);

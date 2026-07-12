@@ -1,0 +1,8 @@
+// EXPECT: runtime_fail
+//OUT: go
+//ERR: Error: Modulo by zero
+
+// Modulo by zero traps, with the interpreter's existing distinct message.
+var z <- 0;
+print("go");
+print(10 % z);

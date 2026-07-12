@@ -1546,8 +1546,12 @@ fn is_str_expr(nd): int {
 // Total slots = 1 + 2*N.  All i64.
 
 // Emit the struct_find helper function
-// arrow_struct_find(ptr %sptr, ptr %name) -> i64 index (or -1)
+// arrow_struct_find(ptr %sptr, ptr %name) -> i64 index. A missing field
+// traps (message + exit 1) instead of returning -1: the two callers
+// (struct_get / struct_set) would otherwise index with -1 and silently
+// read or write the wrong slot. The interpreter raises the same message.
 fn emit_struct_find_helper() {
+    emit("@.rt.field = private constant [33 x i8] c\"Error: Struct has no field '%s'\\0A\\00\"");
     emit("define i64 @arrow_struct_find(ptr %sptr, ptr %name) {");
     emit("entry:");
     emit("  %count = load i64, ptr %sptr");
@@ -1578,7 +1582,9 @@ fn emit_struct_find_helper() {
     emit("  store i64 %i4, ptr %idx");
     emit("  br label %cond");
     emit("notfound:");
-    emit("  ret i64 -1");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.field, ptr %name)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
     emit("}");
     emit("");
 }
@@ -3492,6 +3498,107 @@ fn emit_pop_helper() {
     emit("  %val = load i64, ptr %ep");
     emit("  store i64 %newlen, ptr %lenp");
     emit("  ret i64 %val");
+    emit("}");
+    emit("");
+}
+
+// ── Emit runtime trap helpers ───────────
+//
+// Bounds-checked element access, checked string indexing, and
+// zero-checked integer division/modulo. On an invalid operation each
+// helper prints the exact one-line message the interpreter prints and
+// exits with code 1, so interp/native parity extends to failing
+// programs. Array layout is the usual [len, cap, elems...]; strings
+// are NUL-terminated, so the string check pays a strlen.
+fn emit_trap_helpers() {
+    emit("@.rt.oob = private constant [47 x i8] c\"Error: Index %lld out of bounds (length %lld)\\0A\\00\"");
+    emit("@.rt.div0 = private constant [25 x i8] c\"Error: Division by zero\\0A\\00\"");
+    emit("@.rt.mod0 = private constant [23 x i8] c\"Error: Modulo by zero\\0A\\00\"");
+    emit("define i64 @arrow_index_get(i64 %arr.i, i64 %idx) {");
+    emit("entry:");
+    emit("  %arr = inttoptr i64 %arr.i to ptr");
+    emit("  %len = load i64, ptr %arr");
+    emit("  %neg = icmp slt i64 %idx, 0");
+    emit("  %big = icmp sge i64 %idx, %len");
+    emit("  %bad = or i1 %neg, %big");
+    emit("  br i1 %bad, label %trap, label %ok");
+    emit("trap:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.oob, i64 %idx, i64 %len)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %off = add i64 %idx, 2");
+    emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
+    emit("  %v = load i64, ptr %ep");
+    emit("  ret i64 %v");
+    emit("}");
+    emit("");
+    emit("define void @arrow_index_set(i64 %arr.i, i64 %idx, i64 %val) {");
+    emit("entry:");
+    emit("  %arr = inttoptr i64 %arr.i to ptr");
+    emit("  %len = load i64, ptr %arr");
+    emit("  %neg = icmp slt i64 %idx, 0");
+    emit("  %big = icmp sge i64 %idx, %len");
+    emit("  %bad = or i1 %neg, %big");
+    emit("  br i1 %bad, label %trap, label %ok");
+    emit("trap:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.oob, i64 %idx, i64 %len)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %off = add i64 %idx, 2");
+    emit("  %ep = getelementptr i64, ptr %arr, i64 %off");
+    emit("  store i64 %val, ptr %ep");
+    emit("  ret void");
+    emit("}");
+    emit("");
+    emit("define i64 @arrow_char_at(i64 %s.i, i64 %idx) {");
+    emit("entry:");
+    emit("  %sp = inttoptr i64 %s.i to ptr");
+    emit("  %len = call i64 @strlen(ptr %sp)");
+    emit("  %neg = icmp slt i64 %idx, 0");
+    emit("  %big = icmp sge i64 %idx, %len");
+    emit("  %bad = or i1 %neg, %big");
+    emit("  br i1 %bad, label %trap, label %ok");
+    emit("trap:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.oob, i64 %idx, i64 %len)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %ep = getelementptr i8, ptr %sp, i64 %idx");
+    emit("  %ch = load i8, ptr %ep");
+    emit("  %buf = call ptr @arena_alloc(i64 2)");
+    emit("  store i8 %ch, ptr %buf");
+    emit("  %np = getelementptr i8, ptr %buf, i64 1");
+    emit("  store i8 0, ptr %np");
+    emit("  %r = ptrtoint ptr %buf to i64");
+    emit("  ret i64 %r");
+    emit("}");
+    emit("");
+    emit("define i64 @arrow_div(i64 %a, i64 %b) {");
+    emit("entry:");
+    emit("  %z = icmp eq i64 %b, 0");
+    emit("  br i1 %z, label %trap, label %ok");
+    emit("trap:");
+    emit("  call i32 @printf(ptr @.rt.div0)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %q = sdiv i64 %a, %b");
+    emit("  ret i64 %q");
+    emit("}");
+    emit("");
+    emit("define i64 @arrow_rem(i64 %a, i64 %b) {");
+    emit("entry:");
+    emit("  %z = icmp eq i64 %b, 0");
+    emit("  br i1 %z, label %trap, label %ok");
+    emit("trap:");
+    emit("  call i32 @printf(ptr @.rt.mod0)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("ok:");
+    emit("  %q = srem i64 %a, %b");
+    emit("  ret i64 %q");
     emit("}");
     emit("");
 }
@@ -6831,6 +6938,7 @@ fn llvm_emit_runtime() {
     emit_push_helper();
     emit_array_concat_helper();
     emit_pop_helper();
+    emit_trap_helpers();
     emit_keys_helper();
     emit_struct_find_helper();
     emit_itoa_helper();

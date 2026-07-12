@@ -1358,13 +1358,13 @@ class Interpreter:
                     if not isinstance(idx, int):
                         raise RuntimeError_("Array index must be an integer")
                     if idx < 0 or idx >= len(target):
-                        raise RuntimeError_(f"Index {idx} out of bounds")
+                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
                     return target[idx]
                 elif isinstance(target, str):
                     if not isinstance(idx, int):
                         raise RuntimeError_("String index must be an integer")
                     if idx < 0 or idx >= len(target):
-                        raise RuntimeError_(f"Index {idx} out of bounds")
+                        raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
                     return target[idx]
                 else:
                     raise RuntimeError_("Cannot index into this type")
@@ -1594,7 +1594,7 @@ class Interpreter:
             if not isinstance(idx, int):
                 raise RuntimeError_("char_at() index must be an integer")
             if idx < 0 or idx >= len(s):
-                raise RuntimeError_(f"char_at() index {idx} out of bounds")
+                raise RuntimeError_(f"Index {idx} out of bounds (length {len(s)})")
             return s[idx]
 
         elif name == "str_len":

@@ -1,0 +1,9 @@
+// EXPECT: runtime_fail
+//OUT: go
+//ERR: Error: Division by zero
+
+// Integer division by zero traps. Natively this was undefined behavior
+// that happened to print garbage rather than crash.
+var z <- 0;
+print("go");
+print(10 / z);

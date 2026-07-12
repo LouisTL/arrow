@@ -1,0 +1,10 @@
+// EXPECT: runtime_fail
+//OUT: before
+//ERR: Error: Index 7 out of bounds (length 3)
+
+// Out-of-range array writes trap instead of silently scribbling past the
+// end of the allocation. The final print proves the trap stops execution.
+var xs <- [1, 2, 3];
+print("before");
+xs[7] <- 99;
+print("unreached");

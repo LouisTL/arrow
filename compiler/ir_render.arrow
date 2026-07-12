@@ -96,8 +96,15 @@ fn ir_render_typed_operand(v): str {
 fn ir_render_inst(inst): str {
     var op <- inst.op;
     // Arithmetic: dst = <op> i64 %a, %b
-    if (op = "add" || op = "sub" || op = "mul" || op = "sdiv" || op = "srem") {
+    if (op = "add" || op = "sub" || op = "mul") {
         return inst.dst + " = " + op + " i64 " + ir_render_operand(inst.operands[0]) + ", " + ir_render_operand(inst.operands[1]);
+    }
+    if (op = "sdiv") {
+        // Zero-checked in the runtime helper (traps: message + exit 1).
+        return inst.dst + " = call i64 @arrow_div(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
+    if (op = "srem") {
+        return inst.dst + " = call i64 @arrow_rem(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
     }
     if (op = "neg") {
         return inst.dst + " = sub i64 0, " + ir_render_operand(inst.operands[0]);
@@ -325,21 +332,14 @@ fn ir_render_inst(inst): str {
         return s;
     }
     if (op = "array_get") {
-        // operands = [arr, idx]; element at slot idx+2.
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
-        s <- s + "  " + inst.dst + " = load i64, ptr " + inst.dst + ".ep";
-        return s;
+        // operands = [arr, idx]; bounds-checked in the runtime helper,
+        // which traps (message + exit 1) on an out-of-range index.
+        return inst.dst + " = call i64 @arrow_index_get(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
     }
     if (op = "array_set") {
-        // operands = [arr, idx, val]; void.
-        // dst is the synth-name prefix (caller picks something like "%aset1").
-        var s <- inst.dst + ".p = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".off = add i64 " + ir_render_operand(inst.operands[1]) + ", 2\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i64, ptr " + inst.dst + ".p, i64 " + inst.dst + ".off\n";
-        s <- s + "  store i64 " + ir_render_operand(inst.operands[2]) + ", ptr " + inst.dst + ".ep";
-        return s;
+        // operands = [arr, idx, val]; void. Bounds-checked in the runtime
+        // helper, which traps (message + exit 1) on an out-of-range index.
+        return "call void @arrow_index_set(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ", i64 " + ir_render_operand(inst.operands[2]) + ")";
     }
     if (op = "array_push") {
         // operands = [arr, val]; runtime call returns updated arr pointer (realloc may move it).
@@ -436,16 +436,9 @@ fn ir_render_inst(inst): str {
         return s;
     }
     if (op = "char_at") {
-        // operands = [s_ptr, idx]; allocate 2-byte arena buffer with [byte, 0].
-        var s <- inst.dst + ".sp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
-        s <- s + "  " + inst.dst + ".ep = getelementptr i8, ptr " + inst.dst + ".sp, i64 " + ir_render_operand(inst.operands[1]) + "\n";
-        s <- s + "  " + inst.dst + ".ch = load i8, ptr " + inst.dst + ".ep\n";
-        s <- s + "  " + inst.dst + ".buf = call ptr @arena_alloc(i64 2)\n";
-        s <- s + "  store i8 " + inst.dst + ".ch, ptr " + inst.dst + ".buf\n";
-        s <- s + "  " + inst.dst + ".np = getelementptr i8, ptr " + inst.dst + ".buf, i64 1\n";
-        s <- s + "  store i8 0, ptr " + inst.dst + ".np\n";
-        s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".buf to i64";
-        return s;
+        // operands = [s_ptr, idx]; the runtime helper bounds-checks against
+        // strlen and traps (message + exit 1) on an out-of-range index.
+        return inst.dst + " = call i64 @arrow_char_at(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
     }
     if (op = "from_char_code") {
         // operand = code (i64); allocate a 2-byte buffer with [low_byte, 0].

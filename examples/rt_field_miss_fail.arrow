@@ -1,0 +1,10 @@
+// EXPECT: runtime_fail
+//OUT: go
+//ERR: Error: Struct has no field 'y'
+
+// Field access on an `any`-typed base is the one field path the static
+// checker cannot see; the runtime name-search now traps on a miss instead
+// of indexing the struct with -1.
+var p: any <- {x: 1};
+print("go");
+print(p.y);

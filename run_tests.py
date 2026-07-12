@@ -22,6 +22,13 @@ Rules per EXPECT category:
   scope_fail  native compile must report "scope error" and abort.
   parse_fail  native compile must report "parse error" and abort.
 
+  runtime_fail
+              native compile must succeed; then BOTH the interpreter and
+              the native binary must exit 1 with byte-identical output.
+              //OUT: lines are the expected pre-trap stdout (matched as a
+              prefix); //ERR: lines are substrings required in the output
+              (the trap message).
+
   For all *_fail categories: every //ERR: line must appear as a substring
   of the compiler's diagnostic output (its stdout). The interpreter side
   is not consulted — error categories are about the compile-time checker.
@@ -184,6 +191,38 @@ def check_fail(example: Path, header: dict, error_kind: str, verbose: bool):
     return (f"{error_kind} fail", "")
 
 
+def check_runtime_fail(example: Path, header: dict, verbose: bool):
+    """Compiles cleanly, then traps at runtime: both implementations must
+    exit 1 with byte-identical output (pre-trap prints + the error line)."""
+    try:
+        ic, iout, ierr = run_interp(example)
+    except subprocess.TimeoutExpired:
+        return ("TIMEOUT (interp)", "")
+    if ic == 0:
+        return ("UNEXPECTED (interp ran clean)", "")
+    try:
+        nc, nout, nerr, compile_out = run_compile_and_native(example)
+    except subprocess.TimeoutExpired:
+        return ("TIMEOUT (native)", "")
+    if "Compilation aborted" in compile_out:
+        last = compile_out.strip().splitlines()
+        return ("UNEXPECTED (compile failed)", last[-1] if last else "")
+    if nc == 0:
+        return ("UNEXPECTED (native ran clean)", "")
+    if ic != 1 or nc != 1:
+        return ("BAD EXIT CODE", f"interp rc={ic}, native rc={nc} (want 1)")
+    if iout != nout:
+        return ("MISMATCH (interp != native)",
+                f"interp:{iout!r} vs native:{nout!r}")
+    expected = header["output"]
+    if expected is not None and not iout.startswith(expected):
+        return ("MISMATCH (pre-trap OUT)", brief_diff(expected, iout))
+    missing = [c for c in header["contains"] if c not in iout]
+    if missing:
+        return ("CONTAINS missing", f"required substrings absent: {missing}")
+    return ("runtime fail", "")
+
+
 def brief_diff(expected: str, actual: str, max_lines: int = 4) -> str:
     el, al = expected.splitlines(), actual.splitlines()
     n = max(len(el), len(al))
@@ -203,10 +242,11 @@ CATEGORY_DISPATCH = {
     "type_fail":   lambda ex, h, v: check_fail(ex, h, "type", v),
     "scope_fail":  lambda ex, h, v: check_fail(ex, h, "scope", v),
     "parse_fail":  lambda ex, h, v: check_fail(ex, h, "parse", v),
+    "runtime_fail": lambda ex, h, v: check_runtime_fail(ex, h, v),
 }
 
 PASS_STATUSES = {
-    "ok", "type fail", "scope fail", "parse fail",
+    "ok", "type fail", "scope fail", "parse fail", "runtime fail",
     "skipped (interactive)", "weak (no //OUT:)",
 }
 

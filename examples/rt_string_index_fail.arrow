@@ -1,0 +1,9 @@
+// EXPECT: runtime_fail
+//OUT: go
+//ERR: Error: Index 9 out of bounds (length 3)
+
+// String indexing is bounds-checked against the string's length (the
+// native side pays a strlen; C strings carry no length header).
+var s <- "abc";
+print("go");
+print(s[9]);
