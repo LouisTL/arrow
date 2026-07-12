@@ -1,0 +1,13 @@
+// EXPECT: ok
+//OUT: true
+//OUT: false
+//OUT: true
+
+var a: any <- 5;
+var b: any <- 5;
+print(a = b);
+var c: any <- 6;
+print(a = c);
+var d: any <- "x";
+var e: any <- "x";
+print(d = e);

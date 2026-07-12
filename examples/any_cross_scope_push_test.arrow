@@ -1,0 +1,20 @@
+// EXPECT: ok
+//OUT: hello
+//OUT: int
+
+import "compiler/types" as T;
+
+fn fill(wp) {
+    push(wp, {path: "hello", name: "n"});
+}
+var work <- [];
+fill(work);
+var item <- work[len(work) - 1];
+print(item.path);
+
+fn show(p) {
+    print(p.type.kind);
+}
+var params <- [];
+push(params, {name: "x", type: T.mk_int()});
+show(params[0]);

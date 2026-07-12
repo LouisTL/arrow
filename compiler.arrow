@@ -895,11 +895,13 @@ fn get_field_type(fields, fname: str) {
             if (ft = "str") { return T.mk_str(); }
             if (ft = "struct") { return T.mk_struct(); }
             if (ft = "fn") { return T.mk_fn(); }
-            return T.mk_any();
+            // Unrecognized recorded kind: raw tier.
+            return T.mk_none();
         }
         i <- i + 1;
     }
-    return T.mk_any();
+    // Miss: raw tier.
+    return T.mk_none();
 }
 
 // Track array element types: var_name -> elem_type ("int" or "str")
@@ -957,7 +959,8 @@ fn get_array_elem_type(var_name: str) {
         }
         i <- i + 1;
     }
-    return T.mk_any();
+    // Miss: raw tier.
+    return T.mk_none();
 }
 
 // Function declarations we need to track
@@ -1779,7 +1782,18 @@ fn typeof_expr(nd): any {
     if (nd.node = "StringLit") { return T.mk_str(); }
     if (nd.node = "BoolLit") { return T.mk_bool(); }
     if (nd.node = "Identifier") {
-        return get_var_type(nd.name);
+        var vt2 <- get_var_type(nd.name);
+        if (vt2.kind = "any") {
+            // A tracked `any` is only a tagged cell when the name is
+            // DECLARED any (the tier key). A lookup miss also reads as
+            // any: a bare function name is a closure value; anything
+            // else is raw tier.
+            if (get_decl_type(nd.name).kind != "any") {
+                if (find_fn(nd.name) != false) { return T.mk_fn(); }
+                return T.mk_none();
+            }
+        }
+        return vt2;
     }
     if (nd.node = "BinOp") {
         var op <- nd.op;
@@ -1834,7 +1848,7 @@ fn typeof_expr(nd): any {
                     var at <- typeof_expr(nd.args[0]);
                     if (at.kind = "array") { return at.elem; }
                 }
-                return T.mk_any();
+                return T.mk_none();
             }
             if (nm = "keys") { return T.mk_array(T.mk_str()); }
             if (nm = "print") { return T.mk_int(); }
@@ -1844,6 +1858,12 @@ fn typeof_expr(nd): any {
             }
             var fi <- find_fn(nm);
             if (fi != false) {
+                // The annotation is the caller-visible truth: the return
+                // site emits by it (wrapping for `any`, raw otherwise), so
+                // callers type by it too. Without one, an inferred `any`
+                // is raw-tier: nothing wrapped it, so callers must not
+                // expect a tagged cell.
+                if (fi.ret_type_ann.kind != "none") { return fi.ret_type_ann; }
                 // Param-passthrough specialization: if this fn always returns
                 // a specific parameter unchanged (set by scan_fn_param_returns),
                 // the return type at this call site is the corresponding arg's
@@ -1859,15 +1879,19 @@ fn typeof_expr(nd): any {
                         return arg_t;
                     }
                 }
+                if (fi.ret_type.kind = "any") { return T.mk_none(); }
                 return fi.ret_type;
             }
         }
-        return T.mk_any();
+        // Unknown callee (indirect / closure calls): raw tier.
+        return T.mk_none();
     }
     if (nd.node = "ArrayLit") {
-        // Empty array → unknown element type. Push-refinement (see infer_body)
-        // will narrow this as elements get pushed.
-        if (len(nd.elements) = 0) { return T.mk_array(T.mk_any()); }
+        // Empty array → element type not yet known (`none`). Push-refinement
+        // (see infer_body) narrows this as elements get pushed, keeping the
+        // idiom on the raw tier; a declared [any] never narrows — it is the
+        // tagged tier by request.
+        if (len(nd.elements) = 0) { return T.mk_array(T.mk_none()); }
         // Unify element types across the literal: matching kinds collapse to
         // that kind, mismatched primitives collapse to `any`, mismatched
         // composite shapes recurse field/elem-wise. So
@@ -1879,6 +1903,12 @@ fn typeof_expr(nd): any {
             et <- T.types_join(et, typeof_expr(nd.elements[i]));
             i <- i + 1;
         }
+        // A join that lands on `any` is raw tier: nothing wraps these
+        // elements, and raw-tier consumers (untyped functions receiving
+        // the array) read them as raw words. Only an annotation-declared
+        // [any] slot puts elements on the tagged tier (the coercion path
+        // wraps them at the store).
+        if (et.kind = "any") { et <- T.mk_none(); }
         return T.mk_array(et);
     }
     if (nd.node = "IndexExpr") {
@@ -1895,7 +1925,8 @@ fn typeof_expr(nd): any {
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") { return T.mk_str(); }
         if (ot.kind = "array") { return ot.elem; }
-        return T.mk_any();
+        // Unknown base: raw tier — nothing wrapped this value.
+        return T.mk_none();
     }
     if (nd.node = "DotExpr") {
         if (nd.obj.node = "Identifier") {
@@ -1917,7 +1948,8 @@ fn typeof_expr(nd): any {
             var ft <- T.struct_field_type(ot.fields, nd.field);
             if (ft.kind != "none") { return ft; }
         }
-        return T.mk_any();
+        // Unknown base or field: raw tier — nothing wrapped this value.
+        return T.mk_none();
     }
     if (nd.node = "StructLit") {
         // Build a struct_lit type from the literal's fields
@@ -1925,13 +1957,21 @@ fn typeof_expr(nd): any {
         var i <- 0;
         while (i < len(nd.fields)) {
             var f <- nd.fields[i];
-            push(fs, {name: f.key, type: typeof_expr(f.val)});
+            var fvt <- typeof_expr(f.val);
+            // A field value typed `any` is raw tier in a bare literal: the
+            // record may cross into raw-tier scopes, whose readers expect
+            // raw words. An annotated struct slot wraps fields through the
+            // coercion path instead.
+            if (fvt.kind = "any") { fvt <- T.mk_none(); }
+            push(fs, {name: f.key, type: fvt});
             i <- i + 1;
         }
         return T.mk_struct_lit(fs);
     }
     if (nd.node = "ArrowFn") { return T.mk_fn(); }
-    return T.mk_any();
+    // Unrecognized expression forms are raw tier: only positions the
+    // emitter actually wraps may type as `any`.
+    return T.mk_none();
 }
 
 // Walk a body of statements, updating var_types for each assignment
@@ -2074,7 +2114,12 @@ fn infer_body(stmts) {
                         report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + s.name + "' of type " + T.type_str(dt));
                     }
                 }
-                if (!T.union_in_container(existing) && existing.kind != "union") {
+                // Variables explicitly declared `any` keep tracked type any
+                // for their whole lifetime: their slot holds a tagged cell,
+                // and reads must stay statically any so consumers dispatch
+                // on the tag instead of trusting a refined concrete type.
+                if (!T.union_in_container(existing) && existing.kind != "union"
+                    && get_decl_type(s.name).kind != "any") {
                     set_var_type(s.name, ty);
                 }
             }
@@ -2133,7 +2178,7 @@ fn infer_body(stmts) {
                 set_var_type(s.var_name, T.mk_str());
             } else {
                 // Array iteration: elem type from array
-                var et <- T.mk_any();
+                var et <- T.mk_none();
                 if (s.iterable.node = "Identifier") {
                     et <- get_array_elem_type(s.iterable.name);
                 }
@@ -2165,13 +2210,19 @@ fn infer_body(stmts) {
                 var cur_t <- get_var_type(arr_arg.name);
                 if (cur_t.kind = "array") {
                     var val_t <- typeof_expr(val_arg);
+                    // A pushed value typed `any` keeps the array raw-tier:
+                    // narrowing onto `any` would create a tagged array
+                    // whose cells poison raw-tier readers in other scopes.
+                    // The value itself unwraps at the push edge like any
+                    // other any -> raw store.
+                    if (val_t.kind = "any") { val_t <- T.mk_none(); }
                     // Treat current `any` as "unknown" (bottom) rather than
                     // "could be anything" (top): narrow toward the pushed
                     // type. Once we have a concrete element type, future
                     // pushes use types_join which correctly collapses to any
                     // if they conflict.
                     var new_elem <- T.mk_any();
-                    if (cur_t.elem.kind = "any") {
+                    if (cur_t.elem.kind = "none") {
                         new_elem <- val_t;
                     } else {
                         if (cur_t.elem.kind = "union") {
@@ -2181,6 +2232,19 @@ fn infer_body(stmts) {
                             new_elem <- cur_t.elem;
                         } else {
                             new_elem <- T.types_join(cur_t.elem, val_t);
+                            // Mixed pushes joining to `any` stay raw-tier
+                            // for the same reason — EXCEPT when the array
+                            // is DECLARED [any]: that is the tagged tier by
+                            // request, its elements wrap at the push edge,
+                            // and it never narrows.
+                            if (new_elem.kind = "any") {
+                                var d_el <- get_decl_type(arr_arg.name);
+                                var keep_any <- false;
+                                if (d_el.kind = "array") {
+                                    if (d_el.elem.kind = "any") { keep_any <- true; }
+                                }
+                                if (!keep_any) { new_elem <- T.mk_none(); }
+                            }
                         }
                     }
                     set_var_type(arr_arg.name, T.mk_array(new_elem));
@@ -2633,6 +2697,19 @@ fn array_union_src_ok(ut, actual, src): int {
 // hatch even after push-refinement narrows what var_types reports.
 // Everything else falls back to typeof_expr, which derives from
 // declarations and annotations anyway.
+// Field-name membership on a struct type's field list. Distinct from
+// struct_field_type's none sentinel: a field can legitimately carry type
+// `none` (raw-tier params and empty-literal arrays flow into struct
+// fields), so "typed none" no longer implies "absent".
+fn struct_has_field(fields, fname: str): int {
+    var i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].name = fname) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
 fn declared_base_type(e) {
     if (e.node = "Identifier") {
         var dt <- get_decl_type(e.name);
@@ -2800,9 +2877,9 @@ fn check_stmt(s) {
         var dot <- declared_base_type(s.obj);
         if (dot.kind = "struct_lit") {
             var fft <- T.struct_field_type(dot.fields, s.field);
-            if (fft.kind = "none") {
+            if (!struct_has_field(dot.fields, s.field)) {
                 report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "unknown field '" + s.field + "' on " + T.type_str(dot));
-            } else if (fft.kind != "any") {
+            } else if (fft.kind != "any" && fft.kind != "none") {
                 var dval <- typeof_expr(s.value);
                 if (!T.types_compat(fft, dval)) {
                     report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
@@ -2945,7 +3022,7 @@ fn check_expr(e) {
         // present; `any`-typed bases stay unchecked.
         var dbt <- declared_base_type(e.obj);
         if (dbt.kind = "struct_lit") {
-            if (T.struct_field_type(dbt.fields, e.field).kind = "none") {
+            if (!struct_has_field(dbt.fields, e.field)) {
                 report_error(expr_pos_line(e.obj), expr_pos_col(e.obj), "unknown field '" + e.field + "' on " + T.type_str(dbt));
             }
         }
@@ -3599,6 +3676,192 @@ fn emit_trap_helpers() {
     emit("ok:");
     emit("  %q = srem i64 %a, %b");
     emit("  ret i64 %q");
+    emit("}");
+    emit("");
+}
+
+// ── Emit tagged-any runtime helpers ─────
+//
+// Dispatchers for tagged any-cells: exact printing/formatting, a 3-way
+// dynamic compare (same-kind compares by kind, different kinds order by
+// tag, opaque falls back to the magnitude heuristic), and a to-string
+// used by concatenation. Cells share the union layout; tags are the
+// universal namespace from any_tag_of.
+fn emit_dyn_helpers() {
+    emit("@.dyn.arr = private constant [8 x i8] c\"<array>\\00\"");
+    emit("@.dyn.struct = private constant [9 x i8] c\"<struct>\\00\"");
+    emit("@.dyn.fnv = private constant [5 x i8] c\"<fn>\\00\"");
+    emit("@.dyn.true = private constant [5 x i8] c\"true\\00\"");
+    emit("@.dyn.false = private constant [6 x i8] c\"false\\00\"");
+    emit("@.dyn.fmtg = private constant [3 x i8] c\"%g\\00\"");
+    emit("define void @arrow_print_dyn(i64 %cell) {");
+    emit("entry:");
+    emit("  %cp = inttoptr i64 %cell to ptr");
+    emit("  %tag = load i64, ptr %cp");
+    emit("  %pp = getelementptr i64, ptr %cp, i64 1");
+    emit("  %pay = load i64, ptr %pp");
+    emit("  switch i64 %tag, label %opq [ i64 0, label %ti");
+    emit("    i64 1, label %tf");
+    emit("    i64 2, label %tb");
+    emit("    i64 3, label %ts");
+    emit("    i64 4, label %ta");
+    emit("    i64 5, label %tt");
+    emit("    i64 6, label %tn ]");
+    emit("ti:");
+    emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %pay)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("tf:");
+    emit("  call void @arrow_print_float(i64 %pay)");
+    emit("  ret void");
+    emit("tb:");
+    emit("  call void @arrow_print_bool(i64 %pay)");
+    emit("  ret void");
+    emit("ts:");
+    emit("  %sp = inttoptr i64 %pay to ptr");
+    emit("  call i32 @puts(ptr %sp)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("ta:");
+    emit("  call i32 @puts(ptr @.dyn.arr)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("tt:");
+    emit("  call i32 @puts(ptr @.dyn.struct)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("tn:");
+    emit("  call i32 @puts(ptr @.dyn.fnv)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("opq:");
+    emit("  call void @arrow_print_any(i64 %pay)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+    emit("define void @arrow_format_dyn(i64 %cell) {");
+    emit("entry:");
+    emit("  %cp = inttoptr i64 %cell to ptr");
+    emit("  %tag = load i64, ptr %cp");
+    emit("  %pp = getelementptr i64, ptr %cp, i64 1");
+    emit("  %pay = load i64, ptr %pp");
+    emit("  switch i64 %tag, label %opq [ i64 0, label %ti");
+    emit("    i64 1, label %tf");
+    emit("    i64 2, label %tb");
+    emit("    i64 3, label %ts");
+    emit("    i64 4, label %ta");
+    emit("    i64 5, label %tt");
+    emit("    i64 6, label %tn ]");
+    emit("ti:");
+    emit("  call void @arrow_format_int(i64 %pay)");
+    emit("  ret void");
+    emit("tf:");
+    emit("  call void @arrow_format_float(i64 %pay)");
+    emit("  ret void");
+    emit("tb:");
+    emit("  call void @arrow_format_bool(i64 %pay)");
+    emit("  ret void");
+    emit("ts:");
+    emit("  call void @arrow_format_str_q(i64 %pay)");
+    emit("  ret void");
+    emit("ta:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.dyn.arr)");
+    emit("  ret void");
+    emit("tt:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.dyn.struct)");
+    emit("  ret void");
+    emit("tn:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.dyn.fnv)");
+    emit("  ret void");
+    emit("opq:");
+    emit("  call void @arrow_format_any(i64 %pay)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+    emit("define i32 @arrow_dyn_cmp(i64 %t1, i64 %p1, i64 %t2, i64 %p2) {");
+    emit("entry:");
+    emit("  %o1 = icmp eq i64 %t1, 7");
+    emit("  %o2 = icmp eq i64 %t2, 7");
+    emit("  %opq = or i1 %o1, %o2");
+    emit("  br i1 %opq, label %heur, label %tags");
+    emit("heur:");
+    emit("  %hp1 = inttoptr i64 %p1 to ptr");
+    emit("  %hp2 = inttoptr i64 %p2 to ptr");
+    emit("  %hr = call i32 @arrow_safe_strcmp(ptr %hp1, ptr %hp2)");
+    emit("  ret i32 %hr");
+    emit("tags:");
+    emit("  %same = icmp eq i64 %t1, %t2");
+    emit("  br i1 %same, label %kind, label %tcmp");
+    emit("tcmp:");
+    emit("  %tlt = icmp slt i64 %t1, %t2");
+    emit("  %tr1 = select i1 %tlt, i32 -1, i32 1");
+    emit("  ret i32 %tr1");
+    emit("kind:");
+    emit("  %isstr = icmp eq i64 %t1, 3");
+    emit("  br i1 %isstr, label %scmp, label %kf");
+    emit("scmp:");
+    emit("  %sp1 = inttoptr i64 %p1 to ptr");
+    emit("  %sp2 = inttoptr i64 %p2 to ptr");
+    emit("  %sr = call i32 @strcmp(ptr %sp1, ptr %sp2)");
+    emit("  ret i32 %sr");
+    emit("kf:");
+    emit("  %isf = icmp eq i64 %t1, 1");
+    emit("  br i1 %isf, label %fcmp3, label %icmp3");
+    emit("fcmp3:");
+    emit("  %d1 = bitcast i64 %p1 to double");
+    emit("  %d2 = bitcast i64 %p2 to double");
+    emit("  %flt = fcmp olt double %d1, %d2");
+    emit("  %fgt = fcmp ogt double %d1, %d2");
+    emit("  %fr1 = select i1 %flt, i32 -1, i32 0");
+    emit("  %fr = select i1 %fgt, i32 1, i32 %fr1");
+    emit("  ret i32 %fr");
+    emit("icmp3:");
+    emit("  %lt = icmp slt i64 %p1, %p2");
+    emit("  %gt = icmp sgt i64 %p1, %p2");
+    emit("  %r1 = select i1 %lt, i32 -1, i32 0");
+    emit("  %ir = select i1 %gt, i32 1, i32 %r1");
+    emit("  ret i32 %ir");
+    emit("}");
+    emit("");
+    emit("define i64 @arrow_dyn_str(i64 %tag, i64 %pay) {");
+    emit("entry:");
+    emit("  switch i64 %tag, label %opq [ i64 0, label %ti");
+    emit("    i64 1, label %tf");
+    emit("    i64 2, label %tb");
+    emit("    i64 3, label %ts");
+    emit("    i64 4, label %ta");
+    emit("    i64 5, label %tt");
+    emit("    i64 6, label %tn ]");
+    emit("ti:");
+    emit("  %is = call ptr @arrow_itoa(i64 %pay)");
+    emit("  %ii = ptrtoint ptr %is to i64");
+    emit("  ret i64 %ii");
+    emit("tf:");
+    emit("  %fb = call ptr @arena_alloc(i64 32)");
+    emit("  %d = bitcast i64 %pay to double");
+    emit("  call i32 (ptr, i64, ptr, ...) @snprintf(ptr %fb, i64 32, ptr @.dyn.fmtg, double %d)");
+    emit("  %fi = ptrtoint ptr %fb to i64");
+    emit("  ret i64 %fi");
+    emit("tb:");
+    emit("  %bz = icmp eq i64 %pay, 0");
+    emit("  %bp = select i1 %bz, ptr @.dyn.false, ptr @.dyn.true");
+    emit("  %bi = ptrtoint ptr %bp to i64");
+    emit("  ret i64 %bi");
+    emit("ts:");
+    emit("  ret i64 %pay");
+    emit("ta:");
+    emit("  %ai = ptrtoint ptr @.dyn.arr to i64");
+    emit("  ret i64 %ai");
+    emit("tt:");
+    emit("  %ti2 = ptrtoint ptr @.dyn.struct to i64");
+    emit("  ret i64 %ti2");
+    emit("tn:");
+    emit("  %ni = ptrtoint ptr @.dyn.fnv to i64");
+    emit("  ret i64 %ni");
+    emit("opq:");
+    emit("  %op = call ptr @arrow_to_str(i64 %pay)");
+    emit("  %oi = ptrtoint ptr %op to i64");
+    emit("  ret i64 %oi");
     emit("}");
     emit("");
 }
@@ -4502,6 +4765,10 @@ fn ii_format_float(val)         { return ir_void_inst("format_float", [val], fal
 // or as a (quoted) string.
 fn ii_print_any(val)            { return ir_void_inst("print_any", [val], false); }
 fn ii_format_any(val)           { return ir_void_inst("format_any", [val], false); }
+fn ii_print_dyn(val)            { return ir_void_inst("print_dyn", [val], false); }
+fn ii_format_dyn(val)           { return ir_void_inst("format_dyn", [val], false); }
+fn ii_dyn_cmp(dst: str, t1, p1, t2, p2) { return ir_inst("dyncmp", dst, T.mk_int(), [t1, p1, t2, p2], false); }
+fn ii_dyn_str(dst: str, t, p)   { return ir_inst("dyn_str", dst, T.mk_str(), [t, p], false); }
 fn ii_print_lit(val)            { return ir_void_inst("print_lit", [val], false); }
 fn ii_print_newline()           { return ir_void_inst("print_newline", [], false); }
 // Generic print op — translator code prefers the typed variants
@@ -5094,7 +5361,7 @@ fn ir_emit_expr(b, nd) {
             var args <- [];
             var i <- 0;
             while (i < len(nd.args)) {
-                push(args, ir_emit_expr(b, nd.args[i]));
+                push(args, ir_emit_arg(b, nd.args[i]));
                 i <- i + 1;
             }
             var tmp <- ir_fresh_tmp(b, "icc");
@@ -5105,7 +5372,7 @@ fn ir_emit_expr(b, nd) {
 
         // Built-ins that map to dedicated IR ops.
         if (nm = "len") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             // Strings: strlen via existing helper (renderer handles strlen op).
             // Arrays: array_len op (loads slot 0 of the array layout).
             var argt <- typeof_expr(nd.args[0]);
@@ -5118,12 +5385,15 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "push") {
-            var arr <- ir_emit_expr(b, nd.args[0]);
+            var arr <- ir_emit_arg(b, nd.args[0]);
             var parrt <- typeof_expr(nd.args[0]);
             // Coerce the pushed value into the array element type so a
             // struct-with-union-field (and a union element's own tag) is
             // stored as a real cell, not a raw value (3c).
-            var pelem <- T.mk_any();
+            // Element slot unknown (none-typed array param, etc.): raw
+            // tier — wrapping here would poison raw-tier readers of the
+            // same array in other scopes.
+            var pelem <- T.mk_none();
             if (parrt.kind = "array") { pelem <- parrt.elem; }
             var val <- ir_coerce_slot_value(b, nd.args[1], pelem);
             var tmp <- ir_fresh_tmp(b, "push");
@@ -5142,26 +5412,26 @@ fn ir_emit_expr(b, nd) {
             } else if (nd.args[0].node = "DotExpr") {
                 // Re-evaluate the obj. Reusing the earlier-evaluated `arr`
                 // would point at the *old* pointer; we need the obj struct.
-                var obj_v <- ir_emit_expr(b, nd.args[0].obj);
+                var obj_v <- ir_emit_arg(b, nd.args[0].obj);
                 var fid <- ir_mod_add_str(b.mod, nd.args[0].field);
                 var prefix <- ir_fresh_tmp(b, "pset");
                 ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, ir_reg(tmp, T.mk_int())));
             } else if (nd.args[0].node = "IndexExpr") {
-                var obj_v <- ir_emit_expr(b, nd.args[0].obj);
-                var idx_v <- ir_emit_expr(b, nd.args[0].index);
+                var obj_v <- ir_emit_arg(b, nd.args[0].obj);
+                var idx_v <- ir_emit_arg(b, nd.args[0].index);
                 var prefix <- ir_fresh_tmp(b, "paset");
                 ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, T.mk_int())));
             }
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "pop") {
-            var arr <- ir_emit_expr(b, nd.args[0]);
+            var arr <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "pop");
             ir_push_inst(b.cur_block, ii_array_pop(tmp, T.mk_int(), arr));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "keys") {
-            var s <- ir_emit_expr(b, nd.args[0]);
+            var s <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "keys");
             ir_push_inst(b.cur_block, ii_struct_keys(tmp, s));
             return ir_reg(tmp, T.mk_array(T.mk_str()));
@@ -5169,60 +5439,60 @@ fn ir_emit_expr(b, nd) {
 
         // Cluster-3 string + IO builtins.
         if (nm = "str_len") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "sl");
             ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_code") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_at") {
-            var sarg <- ir_emit_expr(b, nd.args[0]);
-            var iarg <- ir_emit_expr(b, nd.args[1]);
+            var sarg <- ir_emit_arg(b, nd.args[0]);
+            var iarg <- ir_emit_arg(b, nd.args[1]);
             var tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, sarg, iarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "from_char_code") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "fcc");
             ir_push_inst(b.cur_block, ii_from_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "substring") {
-            var sarg <- ir_emit_expr(b, nd.args[0]);
-            var stargv <- ir_emit_expr(b, nd.args[1]);
-            var edarg <- ir_emit_expr(b, nd.args[2]);
+            var sarg <- ir_emit_arg(b, nd.args[0]);
+            var stargv <- ir_emit_arg(b, nd.args[1]);
+            var edarg <- ir_emit_arg(b, nd.args[2]);
             var tmp <- ir_fresh_tmp(b, "sub");
             ir_push_inst(b.cur_block, ii_substring(tmp, sarg, stargv, edarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "read_file") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "rf");
             ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "write_file") {
-            var parg <- ir_emit_expr(b, nd.args[0]);
-            var carg <- ir_emit_expr(b, nd.args[1]);
+            var parg <- ir_emit_arg(b, nd.args[0]);
+            var carg <- ir_emit_arg(b, nd.args[1]);
             var tmp <- ir_fresh_tmp(b, "wf");
             ir_push_inst(b.cur_block, ii_write_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "append_file") {
-            var parg <- ir_emit_expr(b, nd.args[0]);
-            var carg <- ir_emit_expr(b, nd.args[1]);
+            var parg <- ir_emit_arg(b, nd.args[0]);
+            var carg <- ir_emit_arg(b, nd.args[1]);
             var tmp <- ir_fresh_tmp(b, "af");
             ir_push_inst(b.cur_block, ii_append_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "exec_cmd") {
-            var arg <- ir_emit_expr(b, nd.args[0]);
+            var arg <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "ec");
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
@@ -5230,7 +5500,7 @@ fn ir_emit_expr(b, nd) {
         if (nm = "input") {
             var tmp <- ir_fresh_tmp(b, "in");
             if (len(nd.args) >= 1) {
-                var parg <- ir_emit_expr(b, nd.args[0]);
+                var parg <- ir_emit_arg(b, nd.args[0]);
                 ir_push_inst(b.cur_block, ii_input_with_prompt(tmp, parg));
             } else {
                 ir_push_inst(b.cur_block, ii_input(tmp));
@@ -5246,7 +5516,7 @@ fn ir_emit_expr(b, nd) {
                 ir_push_inst(b.cur_block, ir_inst("args_count", tmp, T.mk_int(), [], false));
                 return ir_reg(tmp, T.mk_int());
             }
-            var iarg <- ir_emit_expr(b, nd.args[0]);
+            var iarg <- ir_emit_arg(b, nd.args[0]);
             ir_push_inst(b.cur_block, ir_inst("args_get", tmp, T.mk_str(), [iarg], false));
             return ir_reg(tmp, T.mk_str());
         }
@@ -5283,7 +5553,7 @@ fn ir_emit_expr(b, nd) {
             var args <- [];
             var i <- 0;
             while (i < len(nd.args)) {
-                push(args, ir_emit_expr(b, nd.args[i]));
+                push(args, ir_emit_arg(b, nd.args[i]));
                 i <- i + 1;
             }
             var tmp <- ir_fresh_tmp(b, "cc");
@@ -5330,7 +5600,7 @@ fn ir_emit_expr(b, nd) {
                 var args <- [];
                 var i <- 0;
                 while (i < len(nd.args)) {
-                    push(args, ir_emit_expr(b, nd.args[i]));
+                    push(args, ir_emit_arg(b, nd.args[i]));
                     i <- i + 1;
                 }
                 var tmp <- ir_fresh_tmp(b, "cc");
@@ -5364,10 +5634,21 @@ fn ir_emit_expr(b, nd) {
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "ArrayLit") {
+        // A mixed literal types as [any]; its elements are tagged cells,
+        // each wrapped by its own static type.
+        var alit <- typeof_expr(nd);
+        var mixed <- false;
+        if (alit.kind = "array") { if (alit.elem.kind = "any") { mixed <- true; } }
         var elems <- [];
         var i <- 0;
         while (i < len(nd.elements)) {
-            push(elems, ir_emit_expr(b, nd.elements[i]));
+            var ev2 <- ir_emit_expr(b, nd.elements[i]);
+            var et2 <- typeof_expr(nd.elements[i]);
+            if (mixed) { ev2 <- ir_wrap_any(b, ev2, et2); }
+            // A tagged value entering a raw/concrete-elem literal is
+            // unwrapped: the literal's type declares its elements' tier.
+            if (!mixed) { ev2 <- ir_unwrap_any(b, ev2, et2); }
+            push(elems, ev2);
             i <- i + 1;
         }
         var tmp <- ir_fresh_tmp(b, "arr");
@@ -5379,8 +5660,8 @@ fn ir_emit_expr(b, nd) {
         // by infer_body and friends in the prep dance). Strings get char_at
         // semantics, arrays get array_get. Anything else falls back to array
         // since `any`-typed values are most commonly arrays in practice.
-        var obj <- ir_emit_expr(b, nd.obj);
-        var idx <- ir_emit_expr(b, nd.index);
+        var obj <- ir_unwrap_any(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj));
+        var idx <- ir_unwrap_any(b, ir_emit_expr(b, nd.index), typeof_expr(nd.index));
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") {
             var tmp <- ir_fresh_tmp(b, "ca");
@@ -5392,7 +5673,7 @@ fn ir_emit_expr(b, nd) {
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "DotExpr") {
-        var obj <- ir_emit_expr(b, nd.obj);
+        var obj <- ir_unwrap_any(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj));
         // Pool the field name in the module's string table.
         var fid <- ir_mod_add_str(b.mod, nd.field);
         var tmp <- ir_fresh_tmp(b, "dot");
@@ -5407,7 +5688,10 @@ fn ir_emit_expr(b, nd) {
             // Each AST field is {key: <str>, val: <expr>}; pool the name and
             // emit the value expression.
             var key_id <- ir_mod_add_str(b.mod, nd.fields[i].key);
-            var val <- ir_emit_expr(b, nd.fields[i].val);
+            // Bare literals are raw tier: an any-typed field value is
+            // unwrapped so the record stays readable in raw-tier scopes.
+            // (Annotated struct slots wrap through the coercion path.)
+            var val <- ir_unwrap_any(b, ir_emit_expr(b, nd.fields[i].val), typeof_expr(nd.fields[i].val));
             push(fields, {key_id: key_id, val: val});
             i <- i + 1;
         }
@@ -5493,8 +5777,10 @@ fn ir_emit_expr(b, nd) {
             var pname <- nd.params[i];
             var pslot <- ir_get_local_slot(sub, pname);
             ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(pslot, T.mk_int())));
-            // Default param type = any. (We could plumb param_types_ann later.)
-            set_var_type(pname, T.mk_any());
+            // Default param type: raw tier — callers do not wrap closure
+            // arguments. (Annotated arrow-fn params join the tagged tier
+            // with the call-edge cut.)
+            set_var_type(pname, T.mk_none());
             i <- i + 1;
         }
 
@@ -5750,7 +6036,23 @@ fn ir_emit_binop(b, nd) {
         // operands.
         var lt <- typeof_expr(nd.left);
         var rt <- typeof_expr(nd.right);
-        if (lt.kind = "str" || rt.kind = "str" || (lt.kind = "any" && rt.kind = "any")) {
+        // Tagged-any comparison: split each side into (tag, payload) —
+        // concrete sides ride with constant tags, none rides as opaque —
+        // and 3-way compare in the runtime, then icmp the result vs 0.
+        // Two raw-tier (`none`) sides also route here: their opaque lane
+        // is the magnitude heuristic, which is what dynamic-vs-dynamic
+        // comparison always meant (string content, not pointer identity).
+        if (lt.kind = "any" || rt.kind = "any"
+            || (lt.kind = "none" && rt.kind = "none")) {
+            var ls <- ir_dyn_side(b, lhs, lt);
+            var rs <- ir_dyn_side(b, rhs, rt);
+            var dc <- ir_fresh_tmp(b, "dcmp");
+            ir_push_inst(b.cur_block, ii_dyn_cmp(dc, ls.t, ls.p, rs.t, rs.p));
+            var dtmp <- ir_fresh_tmp(b, "scmp");
+            ir_push_inst(b.cur_block, ii_icmp(dtmp, ir_cmp_op(op), ir_reg(dc, T.mk_int()), ir_const_int(0)));
+            return ir_reg(dtmp, T.mk_int());
+        }
+        if (lt.kind = "str" || rt.kind = "str") {
             var tmp <- ir_fresh_tmp(b, "scmp");
             ir_push_inst(b.cur_block, ii_strcmp(tmp, ir_cmp_op(op), lhs, rhs));
             return ir_reg(tmp, T.mk_int());
@@ -5790,10 +6092,27 @@ fn ir_emit_binop(b, nd) {
                 ir_push_inst(b.cur_block, ii_int_to_str(t, rhs));
                 rhs_s <- ir_reg(t, T.mk_str());
             }
+            // Tagged-any sides convert to a string by tag before the concat.
+            if (lt.kind = "any") {
+                var lds <- ir_dyn_side(b, lhs, lt);
+                var lt2 <- ir_fresh_tmp(b, "dstr");
+                ir_push_inst(b.cur_block, ii_dyn_str(lt2, lds.t, lds.p));
+                lhs_s <- ir_reg(lt2, T.mk_str());
+            }
+            if (rt.kind = "any") {
+                var rds <- ir_dyn_side(b, rhs, rt);
+                var rt2 <- ir_fresh_tmp(b, "dstr");
+                ir_push_inst(b.cur_block, ii_dyn_str(rt2, rds.t, rds.p));
+                rhs_s <- ir_reg(rt2, T.mk_str());
+            }
             var tmp <- ir_fresh_tmp(b, "scat");
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, T.mk_str());
         }
+        // Tagged-any operands in numeric `+` are unwrapped to their payload
+        // word — raw-tier semantics, unchecked until T3.
+        lhs <- ir_unwrap_any(b, lhs, lt);
+        rhs <- ir_unwrap_any(b, rhs, rt);
         // Array concatenation — both sides are arrays, lower to a runtime
         // helper that allocates a fresh array and copies elements. The result
         // carries the joined element type from typeof_expr so prints format
@@ -5815,6 +6134,9 @@ fn ir_emit_binop(b, nd) {
     var lt <- typeof_expr(nd.left);
     var rt <- typeof_expr(nd.right);
     var use_float <- (lt.kind = "float" || rt.kind = "float");
+    // Tagged-any operands unwrap to their payload word (raw-tier semantics).
+    lhs <- ir_unwrap_any(b, lhs, lt);
+    rhs <- ir_unwrap_any(b, rhs, rt);
 
     if (op = "-") {
         if (use_float) { return ir_emit_fbinop(b, "fsub", lhs, lt, rhs, rt); }
@@ -5913,6 +6235,13 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_newline()); }
         return 0;
     }
+    if (t.kind = "any") {
+        // Tagged cell: exact runtime dispatch. Raw-tier none keeps the
+        // heuristic fallback below.
+        if (top_level) { ir_push_inst(b.cur_block, ii_print_dyn(val)); }
+        else { ir_push_inst(b.cur_block, ii_format_dyn(val)); }
+        return 0;
+    }
     if (t.kind = "union") {
         ir_emit_format_union(b, val, t.members, top_level);
         return 0;
@@ -5924,7 +6253,7 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
     // type joined across mixed-shape literals to `any`. For untyped structs
     // (the `struct` kind, distinct from `struct_lit`) we still fall back to
     // int — there's no general way to walk an opaque struct at runtime.
-    if (t.kind = "any") {
+    if (t.kind = "any" || t.kind = "none") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_any(val)); }
         else { ir_push_inst(b.cur_block, ii_format_any(val)); }
         return 0;
@@ -6037,6 +6366,88 @@ fn ir_emit_format_struct(b, struct_val, fields) {
 // Wrap a member value in a {tag, payload} union cell. tag = the member's
 // index in the normalized union (exact type match, or a struct value whose
 // field types are narrower than the member's — see union_member_index).
+// Universal tags for tagged `any` cells (see spec-tagged-any). Cells share
+// the union {tag, payload} layout but use this fixed namespace, because
+// `any`'s member set is open. 7 = opaque: the value crossed a none -> any
+// edge, so its kind is statically unknown; opaque payloads keep the old
+// magnitude-heuristic semantics.
+fn any_tag_of(k: str): int {
+    if (k = "int") { return 0; }
+    if (k = "float") { return 1; }
+    if (k = "bool") { return 2; }
+    if (k = "str") { return 3; }
+    if (k = "array") { return 4; }
+    if (k = "struct_lit") { return 5; }
+    if (k = "struct") { return 5; }
+    if (k = "fn") { return 6; }
+    return 7;
+}
+
+// Wrap a value into a tagged any-cell, keyed by its static type. Already-
+// any values pass through (they are cells); unions cannot be stored into
+// any (their positional tags are meaningless outside their member list).
+fn ir_wrap_any(b, vreg, st) {
+    if (st.kind = "any") { return vreg; }
+    if (st.kind = "union") {
+        report_error(0, 0, "cannot store a union value into any; match it and store the member");
+        return vreg;
+    }
+    var dst <- ir_fresh_tmp(b, "aw");
+    ir_push_inst(b.cur_block, ii_union_new(dst, ir_const_int(any_tag_of(st.kind)), vreg));
+    return ir_reg(dst, T.mk_any());
+}
+
+// Unwrap a statically-any value to its raw payload word, keyed by the
+// STATIC type (many emitters stamp approximate types on registers, so the
+// register type cannot be trusted). The invariant "static any implies
+// tagged cell" makes the payload load unconditional under the gate.
+fn ir_unwrap_any(b, vreg, st) {
+    if (st.kind != "any") { return vreg; }
+    var p <- ir_fresh_tmp(b, "auw");
+    ir_push_inst(b.cur_block, ii_union_payload(p, vreg));
+    // The payload is a raw i64 word; stamp int so downstream call/store
+    // rendering treats it as a value (none would render as void).
+    return ir_reg(p, T.mk_int());
+}
+
+// Split a value into (tag, payload) operands for the dyn runtime helpers.
+// A static any is a cell (load both words); a concrete side rides with a
+// constant universal tag; none rides as opaque, keeping the raw tier's
+// heuristic semantics inside the helper.
+fn ir_dyn_side(b, vreg, st) {
+    if (st.kind = "any") {
+        var t <- ir_fresh_tmp(b, "dt");
+        ir_push_inst(b.cur_block, ii_union_tag(t, vreg));
+        var p <- ir_fresh_tmp(b, "dp");
+        ir_push_inst(b.cur_block, ii_union_payload(p, vreg));
+        return {t: ir_reg(t, T.mk_int()), p: ir_reg(p, T.mk_int())};
+    }
+    return {t: ir_const_int(any_tag_of(st.kind)), p: vreg};
+}
+
+// Does this container type hold an `any` position at any depth? Mirrors
+// union_in_container for the tagged tier: such slots route through the
+// coercion path so every any position wraps its value.
+fn contains_dyn(t): int {
+    if (t.kind = "any") { return true; }
+    if (t.kind = "array") { return contains_dyn(t.elem); }
+    if (t.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(t.fields)) {
+            if (contains_dyn(t.fields[i].type)) { return true; }
+            i <- i + 1;
+        }
+    }
+    return false;
+}
+
+// Emit a call argument. Callee parameters are raw-tier in this cut (any
+// annotations map to none at param population), so a statically-any
+// argument is unwrapped to its payload here.
+fn ir_emit_arg(b, e) {
+    return ir_unwrap_any(b, ir_emit_expr(b, e), typeof_expr(e));
+}
+
 fn ir_union_wrap(b, val, member_type, union_type) {
     if (member_type.kind = "any") {
         report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
@@ -6088,6 +6499,13 @@ fn ir_emit_format_union(b, cell_val, members, top_level: int) {
 // union, a member value is wrapped into a {tag, payload} cell here; container
 // slots (arrays/structs holding unions) are built by ir_emit_value_for_slot.
 fn ir_coerce_slot_value(b, expr, slot_t) {
+    // A slot declared `any` stores a tagged cell: wrap the value by its
+    // static type (already-any values pass through as cells).
+    if (slot_t.kind = "any") {
+        var avt <- typeof_expr(expr);
+        var araw <- ir_emit_expr(b, expr);
+        return ir_wrap_any(b, araw, avt);
+    }
     // A union *leaf* (this position is itself a union member): wrap the value
     // into a {tag, payload} cell. Otherwise descend through any container.
     if (slot_t.kind = "union") {
@@ -6120,7 +6538,7 @@ fn ir_coerce_slot_value(b, expr, slot_t) {
 // own union fields get coerced before the caller tags it. Slots with no nested
 // union emit through the normal expression path unchanged.
 fn ir_emit_value_for_slot(b, expr, slot_t) {
-    if (slot_t.kind = "array" && expr.node = "ArrayLit" && T.union_in_container(slot_t)) {
+    if (slot_t.kind = "array" && expr.node = "ArrayLit" && (T.union_in_container(slot_t) || contains_dyn(slot_t))) {
         var welems <- [];
         var wi <- 0;
         while (wi < len(expr.elements)) {
@@ -6131,7 +6549,7 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
         ir_push_inst(b.cur_block, ii_array_new(atmp, T.mk_int(), welems));
         return ir_reg(atmp, slot_t);
     }
-    if (slot_t.kind = "struct_lit" && expr.node = "StructLit" && T.union_in_container(slot_t)) {
+    if (slot_t.kind = "struct_lit" && expr.node = "StructLit" && (T.union_in_container(slot_t) || contains_dyn(slot_t))) {
         var fields <- [];
         var fi <- 0;
         while (fi < len(expr.fields)) {
@@ -6156,6 +6574,14 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
             }
         }
     }
+    // A tagged value landing in any non-any slot (concrete or raw) unwraps
+    // to its payload word. This tail owns the unwrap for every slot route
+    // (assignments, returns, element/field stores), so the callers only add
+    // the wrap direction.
+    var dvt <- typeof_expr(expr);
+    if (dvt.kind = "any" && slot_t.kind != "any") {
+        return ir_unwrap_any(b, ir_emit_expr(b, expr), dvt);
+    }
     return ir_emit_expr(b, expr);
 }
 fn ir_emit_stmt(b, stmt) {
@@ -6174,23 +6600,55 @@ fn ir_emit_stmt(b, stmt) {
             // or array return whose fields hold unions is wrapped field-wise by
             // ir_emit_value_for_slot above; values already of union type pass
             // through unchanged.
+            var rvt <- typeof_expr(stmt.expr);
             if (rslot.kind = "union") {
-                var rvt <- typeof_expr(stmt.expr);
                 if (rvt.kind != "union") {
                     v <- ir_union_wrap(b, v, rvt, rslot);
                 }
             }
+            // Tagged-any return edges: an any-returning function wraps a
+            // concrete value; a concrete/raw-returning function unwraps a
+            // tagged one.
+            if (rslot.kind = "any") { v <- ir_wrap_any(b, v, rvt); }
             ir_set_terminator(b.cur_block, ii_ret(v));
         }
         return 0;
     }
     if (stmt.node = "Assignment") {
+        // ── Emit-time decl re-enrollment (block-shadowing fix) ──
+        // var_types/decl_types are function-flat, so infer_body's final
+        // state reflects the LAST `var <name>` in the function: an earlier
+        // block's `var v: any` loses its tagged treatment when a later
+        // sibling block re-declares the name with another type (and vice
+        // versa). Only the tagged tier is sensitive to this, so re-enroll
+        // at a declaration if and only if its any-ness differs from the
+        // current decl-state. Anything else keeps final-state typing, so
+        // emitted code for non-colliding functions is unchanged.
+        if (stmt.is_decl) {
+            var rp_new <- stmt.type_ann;
+            if (rp_new.kind = "none") { rp_new <- typeof_expr(stmt.expr); }
+            var rp_cur <- get_decl_type(stmt.name);
+            var rp_delta <- false;
+            if (rp_new.kind = "any" && rp_cur.kind != "any") { rp_delta <- true; }
+            if (rp_new.kind != "any" && rp_cur.kind = "any") { rp_delta <- true; }
+            if (rp_delta) {
+                set_decl_type(stmt.name, rp_new);
+                set_var_type(stmt.name, rp_new);
+            }
+        }
         var slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
         } else {
             // Look up existing var type — same name may have been declared earlier.
             slot_t <- get_var_type(stmt.name);
+            // The tier key is the declaration: a lookup that reads `any`
+            // only means a tagged slot when the name is DECLARED any.
+            // (A miss also reads as any — synthetic desugar temps like
+            // for-in counters must stay raw.)
+            if (slot_t.kind = "any" && get_decl_type(stmt.name).kind != "any") {
+                slot_t <- T.mk_none();
+            }
         }
         // An array-of-union literal wraps each element into the union at
         // construction (ir_emit_value_for_slot); all other RHS forms emit
@@ -6211,6 +6669,13 @@ fn ir_emit_stmt(b, stmt) {
         // (e.g. from a union-returning call) pass through unchanged.
         if (slot_t.kind = "union" && rhs_t.kind != "union") {
             v <- ir_union_wrap(b, v, rhs_t, slot_t);
+        }
+        // Tagged-any coercion: a concrete value stored into a slot declared
+        // any is wrapped into a tagged cell. (The reverse edge — a tagged
+        // value into a non-any slot — is unwrapped inside
+        // ir_emit_value_for_slot, which built `v` above.)
+        if (slot_t.kind = "any" && rhs_t.kind != "any") {
+            v <- ir_wrap_any(b, v, rhs_t);
         }
         // Route the store based on declaration intent.
         //
@@ -6288,8 +6753,8 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "IndexAssign") {
-        var obj <- ir_emit_expr(b, stmt.obj);
-        var idx <- ir_emit_expr(b, stmt.index);
+        var obj <- ir_unwrap_any(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj));
+        var idx <- ir_unwrap_any(b, ir_emit_expr(b, stmt.index), typeof_expr(stmt.index));
         // Coerce the new value to the array's element type: a union
         // element stores a {tag,payload} cell, so a member value is
         // wrapped (and a nested container has its own unions wrapped,
@@ -6303,7 +6768,7 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "DotAssign") {
-        var obj <- ir_emit_expr(b, stmt.obj);
+        var obj <- ir_unwrap_any(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj));
         // Coerce the new value to the field's declared type: a union-typed
         // field stores a {tag,payload} cell, so a member value is wrapped
         // (and a nested container has its own unions wrapped, recursively).
@@ -6443,7 +6908,7 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "IfStmt") {
-        var cond <- ir_emit_expr(b, stmt.cond);
+        var cond <- ir_unwrap_any(b, ir_emit_expr(b, stmt.cond), typeof_expr(stmt.cond));
         var then_lbl <- ir_fresh_block_lbl(b, "then");
         var end_lbl  <- ir_fresh_block_lbl(b, "ifend");
         var has_else <- len(stmt.else_body) > 0;
@@ -6501,7 +6966,7 @@ fn ir_emit_stmt(b, stmt) {
         var cond_bb <- ir_block(cond_lbl);
         ir_fn_add_block(b.func, cond_bb);
         b.cur_block <- cond_bb;
-        var cond <- ir_emit_expr(b, stmt.cond);
+        var cond <- ir_unwrap_any(b, ir_emit_expr(b, stmt.cond), typeof_expr(stmt.cond));
         var br_tmp <- ir_fresh_tmp(b, "br");
         ir_set_terminator(b.cur_block, ii_cond_br(br_tmp, cond, body_lbl, end_lbl));
 
@@ -6690,12 +7155,17 @@ fn emit_function_via_ir(nd, mod) {
     var fi_info <- find_fn(nd.name);
     i <- 0;
     while (i < len(nd.params)) {
+        // Parameters are raw-tier in this cut: a call-site join (or an
+        // explicit any annotation) that lands on `any` is mapped to `none`,
+        // so reads keep raw-word semantics — callers do not wrap arguments
+        // yet. The any-param edge (wrap at call sites) is the next cut.
+        var pt2 <- T.mk_any();
         if (fi_info != false && i < len(fi_info.param_types)) {
-            set_var_type(nd.params[i], fi_info.param_types[i]);
-        } else {
-            set_var_type(nd.params[i], T.mk_any());
+            pt2 <- fi_info.param_types[i];
         }
-        i <- i + 1;
+        if (pt2.kind = "any") { pt2 <- T.mk_none(); }
+        set_var_type(nd.params[i], pt2);
+            i <- i + 1;
     }
 
     // Run type inference on body to populate var_types before emission.
@@ -6939,6 +7409,7 @@ fn llvm_emit_runtime() {
     emit_array_concat_helper();
     emit_pop_helper();
     emit_trap_helpers();
+    emit_dyn_helpers();
     emit_keys_helper();
     emit_struct_find_helper();
     emit_itoa_helper();

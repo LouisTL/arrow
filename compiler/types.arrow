@@ -193,6 +193,15 @@ fn type_str(t): str {
 
 // Look up a field's type in a struct_lit fields list. Returns mk_none()
 // if no field with that name exists — callers treat none as "missing".
+fn struct_has_field(fields, fname: str): int {
+    var i <- 0;
+    while (i < len(fields)) {
+        if (fields[i].name = fname) { return true; }
+        i <- i + 1;
+    }
+    return false;
+}
+
 fn struct_field_type(fields, name: str): any {
     var i <- 0;
     while (i < len(fields)) {
@@ -211,8 +220,8 @@ fn type_eq(a, b): int {
         if (len(a.fields) != len(b.fields)) { return false; }
         var i <- 0;
         while (i < len(a.fields)) {
+            if (!struct_has_field(b.fields, a.fields[i].name)) { return false; }
             var bt <- struct_field_type(b.fields, a.fields[i].name);
-            if (bt.kind = "none") { return false; }
             if (!type_eq(a.fields[i].type, bt)) { return false; }
             i <- i + 1;
         }
@@ -319,8 +328,8 @@ fn types_compat(annot, actual): int {
         var i <- 0;
         while (i < len(annot.fields)) {
             var af <- annot.fields[i];
+            if (!struct_has_field(actual.fields, af.name)) { return false; }
             var bt <- struct_field_type(actual.fields, af.name);
-            if (bt.kind = "none") { return false; }
             if (!types_compat(af.type, bt)) { return false; }
             i <- i + 1;
         }

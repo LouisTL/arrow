@@ -244,6 +244,22 @@ fn ir_render_inst(inst): str {
     if (op = "format_any") {
         return "call void @arrow_format_any(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }
+    if (op = "print_dyn") {
+        return "call void @arrow_print_dyn(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "format_dyn") {
+        return "call void @arrow_format_dyn(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
+    if (op = "dyncmp") {
+        // 3-way compare of two (tag, payload) pairs; sext to i64 so the
+        // caller can icmp the result against 0 like strcmp.
+        var s <- inst.dst + ".c = call i32 @arrow_dyn_cmp(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ", i64 " + ir_render_operand(inst.operands[2]) + ", i64 " + ir_render_operand(inst.operands[3]) + ")\n";
+        s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".c to i64";
+        return s;
+    }
+    if (op = "dyn_str") {
+        return inst.dst + " = call i64 @arrow_dyn_str(i64 " + ir_render_operand(inst.operands[0]) + ", i64 " + ir_render_operand(inst.operands[1]) + ")";
+    }
     if (op = "print_lit") {
         return "call void @arrow_print_lit(i64 " + ir_render_operand(inst.operands[0]) + ")";
     }

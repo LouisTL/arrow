@@ -1,0 +1,6 @@
+// EXPECT: type_fail
+// ERR: cannot store a union value into any; match it and store the member
+
+var u: int|str <- 5;
+var a: any <- u;
+print("unreachable");

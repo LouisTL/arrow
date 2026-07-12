@@ -1,0 +1,8 @@
+// EXPECT: ok
+//OUT: v=7
+//OUT: v=s
+
+var a: any <- 7;
+print("v=" + a);
+var b: any <- "s";
+print("v=" + b);

@@ -1,0 +1,15 @@
+// EXPECT: ok
+//OUT: 42
+//OUT: hello
+
+fn f(c: int) {
+    if (c = 1) {
+        var v: any <- 42;
+        print(v);
+    } else {
+        var v <- "hello";
+        print(v);
+    }
+}
+f(1);
+f(0);
