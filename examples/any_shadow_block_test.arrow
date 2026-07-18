@@ -7,8 +7,8 @@ fn f(c: int) {
         var v: any <- 42;
         print(v);
     } else {
-        var v <- "hello";
-        print(v);
+        var w <- "hello";
+        print(w);
     }
 }
 f(1);

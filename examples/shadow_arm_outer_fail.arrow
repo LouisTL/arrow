@@ -1,0 +1,17 @@
+// EXPECT: type_fail
+//ERR: changes its type from str to int
+
+fn run(): int {
+    var t <- "s";
+    var u: int | {a: int} <- 5;
+    match (u) {
+        int => {
+            var t <- 5;
+            print(t);
+        },
+        {a: int} => { print(u.a); },
+    }
+    print(t);
+    return 0;
+}
+run();

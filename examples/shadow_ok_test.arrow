@@ -1,0 +1,24 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 2
+//OUT: 7
+//OUT: 4
+
+fn run(): int {
+    if (true) {
+        var i <- 1;
+        print(i);
+    }
+    if (true) {
+        var i <- 2;
+        print(i);
+    }
+    var flag <- false;
+    if (true) {
+        var flag <- 7;
+        print(flag);
+    }
+    return 0;
+}
+run();
+print(4);

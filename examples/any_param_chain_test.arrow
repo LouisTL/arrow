@@ -1,0 +1,21 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: s
+//OUT: 42
+
+fn second(y: any) {
+    print(y);
+}
+fn first(x: any) {
+    second(x);
+}
+fn take_int(v: int): int {
+    return v + 1;
+}
+fn route(x: any): int {
+    return take_int(x);
+}
+
+first(7);
+first("s");
+print(route(41));

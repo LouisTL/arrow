@@ -1,0 +1,21 @@
+// EXPECT: ok
+//OUT: 3
+//OUT: 7
+
+fn arr_len(a: [int]): int {
+    return len(a);
+}
+fn use_arr(x: any): int {
+    return arr_len(x);
+}
+fn getx(s: {x: int, y: int}): int {
+    return s.x;
+}
+fn use_struct(v: any): int {
+    return getx(v);
+}
+
+var xs <- [10, 20, 30];
+print(use_arr(xs));
+var p <- {x: 7, y: 4};
+print(use_struct(p));

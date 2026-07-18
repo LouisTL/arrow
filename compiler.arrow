@@ -780,6 +780,13 @@ var var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 // type a bare reassignment must fit. any/union declared types accept all.
 var decl_types <- [[]]; // decl_types[0] is list of [{name, dtype}]
 
+// Shadowing rule registry: one {name, dtype} per name per function,
+// recording the FIRST declaration's type (annotation, else the inferred
+// RHS type at the declaration point). The typing maps are function-flat,
+// so a same-name re-declaration whose type differs cannot be compiled
+// faithfully — the checker rejects it instead (see shadow_declare).
+var shadow_decls <- [[]];
+
 // Track global variables (top-level)
 var global_vars <- []; // list of variable name strings
 
@@ -857,6 +864,43 @@ fn get_decl_type(name: str): any {
         i <- i - 1;
     }
     return T.mk_none();
+}
+
+// Equality for the shadowing rule. int and bool share the i64
+// representation and every raw-tier operation, so shadowing across them
+// cannot misfire the emitters; everything else must match structurally.
+fn shadow_eq(a, b): int {
+    if (T.type_eq(a, b)) { return true; }
+    if (a.kind = "int" && b.kind = "bool") { return true; }
+    if (a.kind = "bool" && b.kind = "int") { return true; }
+    return false;
+}
+
+// Record / verify a declaration for the shadowing rule. First declaration
+// of a name records its type. A re-declaration whose type differs from
+// the recorded one is a checker error: the flat per-function typing maps
+// give every same-name declaration one shared slot, so the emitters would
+// type the earlier blocks by the later declaration (or vice versa).
+// `none` is a wildcard on either side — the raw tier is not type checked
+// — and a none record is refined in place by a later concrete decl.
+fn shadow_declare(name: str, t, line: int, col: int) {
+    var lst <- shadow_decls[0];
+    var i <- 0;
+    while (i < len(lst)) {
+        if (lst[i].name = name) {
+            var prev <- lst[i].dtype;
+            if (prev.kind != "none" && t.kind != "none" && !shadow_eq(prev, t)) {
+                report_error(line, col, "re-declaration of '" + name + "' changes its type from " + T.type_str(prev) + " to " + T.type_str(t) + "; shadowing may not change a variable's type (rename the variable)");
+            }
+            if (prev.kind = "none" && t.kind != "none") {
+                lst[i] <- {name: name, dtype: t};
+            }
+            return false;
+        }
+        i <- i + 1;
+    }
+    push(shadow_decls[0], {name: name, dtype: t});
+    return false;
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
@@ -2093,7 +2137,10 @@ fn infer_body(stmts) {
             // Use explicit type annotation if present (already a Type), otherwise infer
             if (s.type_ann.kind != "none") {
                 set_var_type(s.name, s.type_ann);
-                if (s.is_decl) { set_decl_type(s.name, s.type_ann); }
+                if (s.is_decl) {
+                    set_decl_type(s.name, s.type_ann);
+                    shadow_declare(s.name, s.type_ann, s.line, s.col);
+                }
             } else {
                 // A reassignment (no annotation) must not downgrade a variable
                 // whose declared type carries a union — a top-level union or a
@@ -2104,6 +2151,7 @@ fn infer_body(stmts) {
                 var ty <- typeof_expr(s.expr);
                 if (s.is_decl) {
                     set_decl_type(s.name, ty);
+                    shadow_declare(s.name, ty, s.line, s.col);
                 } else {
                     // Fixed-type rule (3b): a bare reassignment must fit the
                     // variable's declared type. any/union/union-container and
@@ -2154,6 +2202,16 @@ fn infer_body(stmts) {
         if (s.node = "MatchStmt") {
             var mi <- 0;
             while (mi < len(s.arms)) {
+                // Match arms are the one construct the checker scopes for
+                // real: the scrutinee binding is saved/restored per arm,
+                // and the parser's synthesized field binders (see
+                // match_destructure_body) re-bind the same field names in
+                // every struct-pattern arm at that arm's field types.
+                // Snapshot the shadowing registry around each arm so those
+                // per-arm bindings do not read as function-wide
+                // re-declarations; a declaration INSIDE an arm still
+                // checks against names declared outside the match.
+                var shadow_snap <- len(shadow_decls[0]);
                 if (s.arms[mi].wild) {
                     infer_body(s.arms[mi].body);
                 } else {
@@ -2167,6 +2225,7 @@ fn infer_body(stmts) {
                         infer_body(s.arms[mi].body);
                     }
                 }
+                while (len(shadow_decls[0]) > shadow_snap) { pop(shadow_decls[0]); }
                 mi <- mi + 1;
             }
         }
@@ -5549,11 +5608,29 @@ fn ir_emit_expr(b, nd) {
             } else {
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
-            // Evaluate user args.
+            // A callee variable DECLARED any holds a tagged cell (tag 6
+            // when the pair wrapped as a fn value): unwrap to the raw
+            // closure pair before the indirect call. T3 adds the tag check.
+            if (get_decl_type(nm).kind = "any") {
+                var cuw <- ir_fresh_tmp(b, "cuw");
+                ir_push_inst(b.cur_block, ii_union_payload(cuw, ir_reg(pair_tmp, T.mk_int())));
+                pair_tmp <- cuw;
+            }
+            // Evaluate user args. If the underlying arrow fn carries
+            // annotations, coerce per-annotation: an any-annotated param
+            // receives a tagged cell, a union param wraps, and unannotated
+            // params stay raw (blanket any-unwrap via ir_emit_arg).
+            var cl_fi <- find_fn(cinfo.fn_name);
             var args <- [];
             var i <- 0;
             while (i < len(nd.args)) {
-                push(args, ir_emit_arg(b, nd.args[i]));
+                var cl_pann <- T.mk_none();
+                if (cl_fi != false && i < len(cl_fi.param_types_ann)) { cl_pann <- cl_fi.param_types_ann[i]; }
+                if (cl_pann.kind = "none") {
+                    push(args, ir_emit_arg(b, nd.args[i]));
+                } else {
+                    push(args, ir_coerce_slot_value(b, nd.args[i], cl_pann));
+                }
                 i <- i + 1;
             }
             var tmp <- ir_fresh_tmp(b, "cc");
@@ -5597,10 +5674,23 @@ fn ir_emit_expr(b, nd) {
                 } else {
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
                 }
+                // A callee variable DECLARED any holds a tagged cell:
+                // unwrap to the raw closure pair. T3 adds the tag check.
+                if (get_decl_type(nm).kind = "any") {
+                    var cuw <- ir_fresh_tmp(b, "cuw");
+                    ir_push_inst(b.cur_block, ii_union_payload(cuw, ir_reg(pair_tmp, T.mk_int())));
+                    pair_tmp <- cuw;
+                }
                 var args <- [];
                 var i <- 0;
                 while (i < len(nd.args)) {
-                    push(args, ir_emit_arg(b, nd.args[i]));
+                    var iv_pann <- T.mk_none();
+                    if (fi_lookup != false && i < len(fi_lookup.param_types_ann)) { iv_pann <- fi_lookup.param_types_ann[i]; }
+                    if (iv_pann.kind = "none") {
+                        push(args, ir_emit_arg(b, nd.args[i]));
+                    } else {
+                        push(args, ir_coerce_slot_value(b, nd.args[i], iv_pann));
+                    }
                     i <- i + 1;
                 }
                 var tmp <- ir_fresh_tmp(b, "cc");
@@ -5619,13 +5709,12 @@ fn ir_emit_expr(b, nd) {
         while (i < len(nd.args)) {
             var pann <- T.mk_none();
             if (cfi != false && i < len(cfi.param_types_ann)) { pann <- cfi.param_types_ann[i]; }
-            var av <- ir_emit_value_for_slot(b, nd.args[i], pann);
-            if (pann.kind = "union") {
-                var avt <- typeof_expr(nd.args[i]);
-                if (avt.kind != "union") {
-                    av <- ir_union_wrap(b, av, avt, pann);
-                }
-            }
+            // ir_coerce_slot_value owns every slot-keyed coercion: union
+            // params wrap member values, any-annotated params receive a
+            // tagged cell (wrap by the arg's static type; statically-any
+            // args pass through as cells), and its raw/none tail unwraps
+            // tagged values bound for concrete or unannotated params.
+            var av <- ir_coerce_slot_value(b, nd.args[i], pann);
             push(args, av);
             i <- i + 1;
         }
@@ -5750,6 +5839,7 @@ fn ir_emit_expr(b, nd) {
         struct_layouts[0] <- [];
         array_elem_types[0] <- [];
         decl_types[0] <- [];
+        shadow_decls[0] <- [];
 
         // Preserve type info for top-level globals into the arrow fn scope.
         // Inside a closure, references to top-level vars resolve to @g_<n>
@@ -5777,10 +5867,19 @@ fn ir_emit_expr(b, nd) {
             var pname <- nd.params[i];
             var pslot <- ir_get_local_slot(sub, pname);
             ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(pslot, T.mk_int())));
-            // Default param type: raw tier — callers do not wrap closure
-            // arguments. (Annotated arrow-fn params join the tagged tier
-            // with the call-edge cut.)
-            set_var_type(pname, T.mk_none());
+            // Annotation-first: an annotated closure param uses its
+            // annotation, and an explicitly-any param joins the tagged
+            // tier (call sites wrap arguments into cells) — enrolled as
+            // declared-any for typeof's tier gate. Unannotated stays raw.
+            var pann3 <- T.mk_none();
+            if (i < len(nd.param_types_ann)) { pann3 <- nd.param_types_ann[i]; }
+            if (pann3.kind = "any") { set_decl_type(pname, pann3); }
+            if (pann3.kind != "none") {
+                set_var_type(pname, pann3);
+            } else {
+                set_var_type(pname, T.mk_none());
+            }
+            shadow_declare(pname, pann3, 0, 0);
             i <- i + 1;
         }
 
@@ -5931,7 +6030,7 @@ fn ir_emit_expr(b, nd) {
                 ret_type: ret_type_inferred,
                 ret_fields: false,
                 param_types: [],
-                param_types_ann: [],
+                param_types_ann: nd.param_types_ann,
                 ret_type_ann: T.mk_none(),
                 is_arrow_var: false
             });
@@ -6441,9 +6540,10 @@ fn contains_dyn(t): int {
     return false;
 }
 
-// Emit a call argument. Callee parameters are raw-tier in this cut (any
-// annotations map to none at param population), so a statically-any
-// argument is unwrapped to its payload here.
+// Emit a call argument bound for a RAW-TIER target: builtins and
+// unannotated params. A statically-any argument is unwrapped to its
+// payload here. Annotation-aware call paths route through
+// ir_coerce_slot_value instead and never reach this for tagged targets.
 fn ir_emit_arg(b, e) {
     return ir_unwrap_any(b, ir_emit_expr(b, e), typeof_expr(e));
 }
@@ -6615,27 +6715,6 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "Assignment") {
-        // ── Emit-time decl re-enrollment (block-shadowing fix) ──
-        // var_types/decl_types are function-flat, so infer_body's final
-        // state reflects the LAST `var <name>` in the function: an earlier
-        // block's `var v: any` loses its tagged treatment when a later
-        // sibling block re-declares the name with another type (and vice
-        // versa). Only the tagged tier is sensitive to this, so re-enroll
-        // at a declaration if and only if its any-ness differs from the
-        // current decl-state. Anything else keeps final-state typing, so
-        // emitted code for non-colliding functions is unchanged.
-        if (stmt.is_decl) {
-            var rp_new <- stmt.type_ann;
-            if (rp_new.kind = "none") { rp_new <- typeof_expr(stmt.expr); }
-            var rp_cur <- get_decl_type(stmt.name);
-            var rp_delta <- false;
-            if (rp_new.kind = "any" && rp_cur.kind != "any") { rp_delta <- true; }
-            if (rp_new.kind != "any" && rp_cur.kind = "any") { rp_delta <- true; }
-            if (rp_delta) {
-                set_decl_type(stmt.name, rp_new);
-                set_var_type(stmt.name, rp_new);
-            }
-        }
         var slot_t <- T.mk_none();
         if (stmt.type_ann.kind != "none") {
             slot_t <- stmt.type_ann;
@@ -6656,6 +6735,18 @@ fn ir_emit_stmt(b, stmt) {
         // storing raw int bits into a float slot would bitcast to a denormal.
         var v: any <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
         var rhs_t <- typeof_expr(stmt.expr);
+        // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
+        // record this var as holding a closure so future CallExpr on this name
+        // emit closure_call instead of a direct call, and mirror the inferred
+        // return type onto the var's declared_fns entry so typeof_expr at call
+        // sites returns the right kind. This runs BEFORE the slot coercions
+        // below: the tagged-any wrap replaces `v` with a plain cell register,
+        // which would lose the arrow_* marker fields this block reads.
+        if (stmt.expr.node = "ArrowFn") {
+            ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
+            set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
+            set_arrow_fn_var(stmt.name, v.arrow_fn_name);
+        }
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
             var dr <- ir_fresh_tmp(b, "fsi");
@@ -6736,20 +6827,6 @@ fn ir_emit_stmt(b, stmt) {
                 }
             }
         }
-        // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
-        // record this var as holding a closure so future CallExpr on this name
-        // emit closure_call instead of a direct call. Also mirror the inferred
-        // return type onto the var's declared_fns entry so typeof_expr at call
-        // sites returns the right kind (str / int / array etc).
-        if (stmt.expr.node = "ArrowFn") {
-            ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
-            // The type checker consults find_fn(varname); make sure that
-            // entry's ret_type matches what the body actually returns.
-            set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
-            // Wire up var → mangled-name map (param-type lookups go through
-            // get_arrow_fn_name to find the underlying IR function).
-            set_arrow_fn_var(stmt.name, v.arrow_fn_name);
-        }
         return 0;
     }
     if (stmt.node = "IndexAssign") {
@@ -6782,7 +6859,7 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "PrintStmt") {
-        var v <- ir_emit_expr(b, stmt.expr);
+        var pv <- ir_emit_expr(b, stmt.expr);
         // Decide formatting based on the expression's static type. typeof_expr
         // consults var_types (set by scan_call_sites + infer_body in our prep
         // pass) so identifiers / params / fields with inferred types are
@@ -6790,7 +6867,7 @@ fn ir_emit_stmt(b, stmt) {
         // (array, struct_lit) ir_emit_format_value emits an inline runtime
         // walk; for scalars it dispatches to print_int / print_str / print_bool.
         var et <- typeof_expr(stmt.expr);
-        ir_emit_format_value(b, v, et, true);
+        ir_emit_format_value(b, pv, et, true);
         return 0;
     }
     if (stmt.node = "MatchStmt") {
@@ -6808,12 +6885,12 @@ fn ir_emit_stmt(b, stmt) {
                 while (wbi < len(arm.body)) { ir_emit_stmt(b, arm.body[wbi]); wbi <- wbi + 1; }
                 if (b.cur_block.terminator = false) { ir_set_terminator(b.cur_block, ii_br(join_lbl)); }
             } else {
-            var idx <- union_member_index(ut, arm.ptype);
+            var midx <- union_member_index(ut, arm.ptype);
             var do_lbl <- ir_fresh_block_lbl(b, "marm");
             var next_lbl <- join_lbl;
             if (mi + 1 < len(stmt.arms)) { next_lbl <- ir_fresh_block_lbl(b, "mnext"); }
             var cmp <- ir_fresh_tmp(b, "mcmp");
-            ir_push_inst(b.cur_block, ii_icmp(cmp, "eq", ir_reg(tag, T.mk_int()), ir_const_int(idx)));
+            ir_push_inst(b.cur_block, ii_icmp(cmp, "eq", ir_reg(tag, T.mk_int()), ir_const_int(midx)));
             if (arm.is_lit) {
                 var vchk_lbl <- ir_fresh_block_lbl(b, "mval");
                 var brt <- ir_fresh_tmp(b, "br");
@@ -7022,7 +7099,7 @@ fn ir_emit_stmt(b, stmt) {
         ir_emit_stmt(b, idx_init);
 
         // condition: idx_name < len(coll)
-        var cond <- {
+        var cond_ast <- {
             node: "BinOp",
             op: "<",
             left: {node: "Identifier", name: idx_name},
@@ -7054,7 +7131,7 @@ fn ir_emit_stmt(b, stmt) {
         }
         push(new_body, inc_idx);
 
-        var while_stmt <- {node: "WhileStmt", cond: cond, body: new_body};
+        var while_stmt <- {node: "WhileStmt", cond: cond_ast, body: new_body};
         ir_emit_stmt(b, while_stmt);
         return 0;
     }
@@ -7113,6 +7190,7 @@ fn emit_function_via_ir(nd, mod) {
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
     decl_types[0] <- [];
+    shadow_decls[0] <- [];
     var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -7155,16 +7233,25 @@ fn emit_function_via_ir(nd, mod) {
     var fi_info <- find_fn(nd.name);
     i <- 0;
     while (i < len(nd.params)) {
-        // Parameters are raw-tier in this cut: a call-site join (or an
-        // explicit any annotation) that lands on `any` is mapped to `none`,
-        // so reads keep raw-word semantics — callers do not wrap arguments
-        // yet. The any-param edge (wrap at call sites) is the next cut.
+        // Annotation-first param typing: an explicit annotation is the
+        // param's type, and an explicitly-any param joins the tagged tier
+        // — call sites wrap its arguments into cells — so it keeps `any`
+        // and is enrolled as declared-any for typeof's tier gate. Without
+        // an annotation, a call-site join landing on `any` still maps to
+        // `none`: nothing wraps those arguments (raw tier).
         var pt2 <- T.mk_any();
+        var pann2 <- T.mk_none();
         if (fi_info != false && i < len(fi_info.param_types)) {
             pt2 <- fi_info.param_types[i];
         }
-        if (pt2.kind = "any") { pt2 <- T.mk_none(); }
+        if (fi_info != false && i < len(fi_info.param_types_ann)) {
+            pann2 <- fi_info.param_types_ann[i];
+        }
+        if (pann2.kind != "none") { pt2 <- pann2; }
+        if (pt2.kind = "any" && pann2.kind != "any") { pt2 <- T.mk_none(); }
+        if (pann2.kind = "any") { set_decl_type(nd.params[i], pann2); }
         set_var_type(nd.params[i], pt2);
+        shadow_declare(nd.params[i], pann2, 0, 0);
             i <- i + 1;
     }
 

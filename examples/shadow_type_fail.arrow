@@ -1,0 +1,15 @@
+// EXPECT: type_fail
+//ERR: changes its type from int to str
+
+fn run(): int {
+    if (true) {
+        var t <- 5;
+        print(t);
+    }
+    if (true) {
+        var t <- "s";
+        print(t);
+    }
+    return 0;
+}
+run();
