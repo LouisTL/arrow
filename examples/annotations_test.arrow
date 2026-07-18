@@ -1,0 +1,120 @@
+// EXPECT: ok
+// Typed declarations and annotations, consolidated from the early
+// test_* scaffolding (test_pass / test_mixed / test_types / test_arr_ann /
+// test_arr_pass / test_struct_ann / test_struct_pass).
+
+// scalar typed decls, untyped decls, reassignment, mixing
+var x: int <- 42;
+print(x);
+var msg: str <- "typed";
+print(msg);
+var count <- 10;
+print(count);
+x <- x + 1;
+print(x);
+var old_style <- 99;
+var new_style: int <- 100;
+print(old_style + new_style);
+//OUT: 42
+//OUT: typed
+//OUT: 10
+//OUT: 43
+//OUT: 199
+
+// every fn annotation shape
+fn add(a: int, b: int): int {
+    return a + b;
+}
+print(add(2, 3));
+fn greet(name: str) {
+    print("hello " + name);
+}
+greet("world");
+fn mix(a: str, b) {
+    print(a + " and " + b);
+}
+mix("cats", "dogs");
+fn double_raw(n) {
+    return n * 2;
+}
+print(double_raw(21));
+fn double_ann(n: int) {
+    return n * 2;
+}
+print(double_ann(10));
+fn shout(s: str): str {
+    return s + "!";
+}
+print(shout("wow"));
+fn greet_raw(name) {
+    return "hi " + name;
+}
+print(greet_raw("world"));
+fn make_greeting(who: str): str {
+    var result: str <- "hi " + who;
+    return result;
+}
+print(make_greeting("there"));
+//OUT: 5
+//OUT: hello world
+//OUT: cats and dogs
+//OUT: 42
+//OUT: 20
+//OUT: wow!
+//OUT: hi world
+//OUT: hi there
+
+// sentinel return: struct-or-false without annotation stays raw tier
+// (the compiler's own style — must keep compiling and running)
+fn find(name) {
+    if (name = "x") { return {tag: 1, val: 42}; }
+    return false;
+}
+var r <- find("x");
+
+// array annotations: [int], [str], nested [[int]], params and returns
+var nums: [int] <- [1, 2, 3];
+var words: [str] <- ["hi", "there"];
+var nested: [[int]] <- [[1, 2], [3, 4]];
+fn sum(xs: [int]): int {
+    var total: int <- 0;
+    for (n in xs) {
+        total <- total + n;
+    }
+    return total;
+}
+fn first_word(ws: [str]): str {
+    return ws[0];
+}
+print(sum(nums));
+print(first_word(words));
+print(nested[0][1]);
+//OUT: 6
+//OUT: hi
+//OUT: 2
+
+// struct annotations: decls, params, returns, arrays of structs,
+// structs holding arrays
+var pt: {x: int, y: int} <- {x: 3, y: 4};
+print(pt.x);
+print(pt.y);
+fn make_point(px: int, py: int): {x: int, y: int} {
+    return {x: px, y: py};
+}
+var p: {x: int, y: int} <- make_point(10, 20);
+print(p.x + p.y);
+var people: [{name: str, age: int}] <- [{name: "Ada", age: 30}, {name: "Bob", age: 25}];
+print(people[0].name);
+print(people[1].age);
+var team: {name: str, members: [str]} <- {name: "Reds", members: ["a", "b"]};
+print(team.name);
+print(team.members[0]);
+print("ok");
+//OUT: 3
+//OUT: 4
+//OUT: 30
+//OUT: Ada
+//OUT: 25
+//OUT: Reds
+//OUT: a
+//OUT: ok

@@ -1,0 +1,96 @@
+// EXPECT: ok
+// any-annotated parameters at every call-edge shape, merged from the
+// original param probes: direct calls with each payload kind, any -> any
+// chains and any -> concrete routing, fn values / closures flowing
+// through any (declared-any callees included), and composite payloads
+// (array / struct) crossing an any edge into typed params.
+
+// direct calls, each payload kind
+fn show(x: any) {
+    print(x);
+}
+show(41);
+show(2.5);
+show(true);
+show("hej");
+//OUT: 41
+//OUT: 2.5
+//OUT: true
+//OUT: hej
+
+// any -> any chain, then any -> concrete routing
+fn second(y: any) {
+    print(y);
+}
+fn first(x: any) {
+    second(x);
+}
+fn take_int(v: int): int {
+    return v + 1;
+}
+fn route(x: any): int {
+    return take_int(x);
+}
+first(7);
+first("s");
+print(route(41));
+//OUT: 7
+//OUT: s
+//OUT: 42
+
+// fn values through any params, arrow fns with any params, and a
+// declared-any callee
+fn double(n: int): int {
+    return n * 2;
+}
+fn apply(f: any, v: int): int {
+    return f(v);
+}
+print(apply(double, 20));
+//OUT: 40
+
+var h <- (x: any) => {
+    print(x);
+    return 0;
+};
+h(5);
+h("s");
+//OUT: 5
+//OUT: s
+
+var g: any <- (x: int) => x * 3;
+print(g(7));
+//OUT: 21
+
+fn run(): int {
+    var f <- (x: any) => {
+        print(x);
+        return 1;
+    };
+    f(9);
+    f("in");
+    return 0;
+}
+run();
+//OUT: 9
+//OUT: in
+
+// composite payloads through an any edge into typed params
+fn arr_len(a: [int]): int {
+    return len(a);
+}
+fn use_arr(x: any): int {
+    return arr_len(x);
+}
+fn getx(s: {x: int, y: int}): int {
+    return s.x;
+}
+fn use_struct(v: any): int {
+    return getx(v);
+}
+var cxs <- [10, 20, 30];
+print(use_arr(cxs));
+var cp <- {x: 7, y: 4};
+print(use_struct(cp));
+//OUT: 3
+//OUT: 7

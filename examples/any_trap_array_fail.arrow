@@ -1,7 +1,7 @@
 // EXPECT: runtime_fail
 //ERR: Error: expected array in any, got int
 
-// T3: index read through a statically-any base requires an indexable
+// Index read through a statically-any base requires an indexable
 // cell — str or array; an int traps naming the array expectation.
 var v: any <- 7;
 print(v[0]);

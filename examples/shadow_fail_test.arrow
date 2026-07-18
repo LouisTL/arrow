@@ -1,0 +1,48 @@
+// EXPECT: type_fail
+//ERR: changes its type from int to str
+//ERR: changes its type from any to int
+//ERR: changes its type from str to int
+//ERR: 3 type error(s)
+
+// The shadow rule, all three original violations in one file (the
+// checker batches): a sibling-block re-declare at a different type,
+// anyness counting as part of the type, and a match-arm binder
+// shadowing an outer name at a different type.
+fn scalar_shadow(): int {
+    if (true) {
+        var t <- 5;
+        print(t);
+    }
+    if (true) {
+        var t <- "s";
+        print(t);
+    }
+    return 0;
+}
+fn anyness_shadow(): int {
+    if (true) {
+        var v: any <- 5;
+        print(v);
+    }
+    if (true) {
+        var v <- 9;
+        print(v);
+    }
+    return 0;
+}
+fn arm_shadow(): int {
+    var t <- "s";
+    var u: int | {a: int} <- 5;
+    match (u) {
+        int => {
+            var t <- 5;
+            print(t);
+        },
+        {a: int} => { print(u.a); },
+    }
+    print(t);
+    return 0;
+}
+scalar_shadow();
+anyness_shadow();
+arm_shadow();

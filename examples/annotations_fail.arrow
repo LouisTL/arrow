@@ -1,0 +1,49 @@
+// EXPECT: type_fail
+//ERR: 'x' annotated as int but assigned str
+//ERR: argument 2 expected int but got str
+//ERR: argument 1 expected str but got int
+//ERR: 'words' annotated as [int] but assigned [str]
+//ERR: argument 1 expected [int] but got [str]
+//ERR: return type mismatch
+//ERR: 'bad1' annotated as {x: int, y: int}
+//ERR: 'bad2' annotated as {x: int, y: int}
+//ERR: call to 'dist'
+//ERR: 10 type error(s)
+
+// Annotation rejections, consolidated from test_fail / test_arr_fail /
+// test_struct_fail (the checker batches all ten).
+
+// scalars: bad decl, bad arg each direction
+var x: int <- "this is a string, not int";
+fn add(a: int, b: int): int {
+    return a + b;
+}
+fn greet(name: str): str {
+    return name;
+}
+print(add(1, "two"));
+print(greet(42));
+
+// arrays: bad decl, bad arg, bad return
+var words: [int] <- ["a", "b", "c"];
+fn sum(xs: [int]): int {
+    var total: int <- 0;
+    for (n in xs) { total <- total + n; }
+    return total;
+}
+var names: [str] <- ["x", "y"];
+print(sum(names));
+fn bad(): [int] {
+    return 42;
+}
+
+// structs: wrong field type, missing field, bad call, bad return
+var bad1: {x: int, y: int} <- {x: "hello", y: 4};
+var bad2: {x: int, y: int} <- {x: 5};
+fn dist(p: {x: int, y: int}): int {
+    return p.x + p.y;
+}
+print(dist({x: "no", y: 2}));
+fn make(): {x: int, y: int} {
+    return {x: 1, y: "bad"};
+}

@@ -2,7 +2,7 @@
 //OUT: 6
 //ERR: Error: expected fn in any, got int
 
-// T3: the closure registry is a compile-time record — after the var is
+// The closure registry is a compile-time record — after the var is
 // reassigned to a non-fn value, the call still routes through the
 // closure path and the runtime tag check traps.
 var h: any <- (x: int) => x * 3;

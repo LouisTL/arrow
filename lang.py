@@ -311,7 +311,7 @@ class Assignment:
     is_decl: bool = False  # True when introduced via `var`
     line: int = 0
     col: int = 0
-    type_kind: str = "none"  # T3: annotation kind head ("none" = unchecked)
+    type_kind: str = "none"  # annotation kind head ("none" = unchecked)
 
 @dataclass
 class PrintStmt:
@@ -376,15 +376,15 @@ class FnDecl:
     name: str
     params: list[str]
     body: list
-    param_kinds: list = None   # T3: per-param annotation kind heads
-    ret_kind: str = "none"     # T3: return annotation kind head
+    param_kinds: list = None   # per-param annotation kind heads
+    ret_kind: str = "none"     # return annotation kind head
 
 @dataclass
 class ArrowFn:
     params: list[str]
     body: Any
-    param_kinds: list = None   # T3: per-param annotation kind heads
-    ret_kind: str = "none"     # T3: return annotation kind head
+    param_kinds: list = None   # per-param annotation kind heads
+    ret_kind: str = "none"     # return annotation kind head
 
 @dataclass
 class ReturnStmt:
@@ -617,7 +617,7 @@ class Parser:
 
     def _type_ann_kind(self) -> str:
         """Parse a type annotation (consuming exactly what _skip_type_ann
-        would) and return its kind head for T3 runtime checks: int / float /
+        would) and return its kind head for the runtime kind checks: int / float /
         bool / str / array / struct / any — or "none" for unions, unresolved
         alias names, and anything the kind-level check does not cover.
         Aliases resolve through the same registry the match arms use."""
@@ -635,7 +635,7 @@ class Parser:
         name = ident_tok.value
         tkind = "none"
         if typed:
-            # ': type' on a reassignment — kind head retained for T3.
+            # ': type' on a reassignment — kind head retained for the runtime check.
             self._eat(TokenType.COLON)
             tkind = self._type_ann_kind()
         self._eat(TokenType.ARROW)
@@ -649,7 +649,7 @@ class Parser:
         ident_tok = self._eat(TokenType.IDENT)
         name = ident_tok.value
         # Optional type annotation: var x: int <- expr; the kind head is
-        # retained for the T3 runtime check at this declaration edge.
+        # retained for the runtime kind check at this declaration edge.
         tkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
@@ -710,7 +710,7 @@ class Parser:
         self._eat(TokenType.FN)
         name = self._eat(TokenType.IDENT).value
         params, pkinds = self._param_list()
-        # Optional return type annotation — kind head retained for T3.
+        # Optional return type annotation — kind head retained for the return check.
         rkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
@@ -726,7 +726,7 @@ class Parser:
         if self._current().type != TokenType.RPAREN:
             params.append(self._eat(TokenType.IDENT).value)
             # Optional per-param type annotation: fn f(x: type, y: type) —
-            # the kind head is retained for T3 param-bind checks.
+            # the kind head is retained for the param-bind checks.
             if self._current().type == TokenType.COLON:
                 self._eat(TokenType.COLON)
                 kinds.append(self._type_ann_kind())
@@ -915,7 +915,7 @@ class Parser:
 
     def _arrow_fn(self) -> ArrowFn:
         params, pkinds = self._param_list()
-        # Optional return type annotation — kind head retained for T3.
+        # Optional return type annotation — kind head retained for the return check.
         rkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
@@ -1089,7 +1089,7 @@ class RuntimeError_(Exception):
 def _value_kind(v) -> str:
     """Map a runtime value to its universal kind name (native tag order;
     bool tested before int because Python bool subclasses int). Values
-    with no mapping are 'opaque' and pass every T3 expectation."""
+    with no mapping are 'opaque' and pass every runtime kind expectation."""
     if isinstance(v, bool): return "bool"
     if isinstance(v, int): return "int"
     if isinstance(v, float): return "float"
@@ -1101,7 +1101,7 @@ def _value_kind(v) -> str:
 
 
 def _any_check(val, want: str):
-    """T3 runtime kind check at an annotated edge. none/any expectations
+    """Runtime kind check at an annotated edge. none/any expectations
     emit no check; opaque values pass everything; int/bool/float accept
     each other (no value conversion — the native float promote is a
     storage-representation detail the interpreter does not need). The
@@ -1121,7 +1121,7 @@ def _any_check(val, want: str):
 class Environment:
     def __init__(self, parent: 'Environment | None' = None, is_fn_root: bool = False):
         self.vars: dict[str, Any] = {}
-        # T3: annotation kind heads for bindings declared with a type.
+        # Annotation kind heads for bindings declared with a type.
         # Reassignments through assign() re-check against the owning
         # scope's recorded kind, mirroring the native declared-slot rule.
         self.kinds: dict[str, str] = {}
@@ -1161,7 +1161,7 @@ class Environment:
         env = self
         while env is not None:
             if name in env.vars:
-                # T3: a binding declared with an annotation keeps its kind
+                # A binding declared with an annotation keeps its kind
                 # for life — later writes re-check, like the native slot.
                 k = env.kinds.get(name, "none")
                 if k != "none":
@@ -1188,7 +1188,7 @@ class Function:
         self.params = params
         self.body = body
         self.closure = closure
-        # T3: annotation kind heads for the param-bind and return checks.
+        # Annotation kind heads for the param-bind and return checks.
         self.param_kinds = param_kinds if param_kinds is not None else []
         self.ret_kind = ret_kind
 
@@ -1254,7 +1254,7 @@ class Interpreter:
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
                 if is_decl:
-                    # T3: an annotated declaration checks the value's kind
+                    # An annotated declaration checks the value's kind
                     # before binding. This runs OUTSIDE the try below — the
                     # trap message carries no position info, matching the
                     # native trap byte-for-byte.
@@ -1275,7 +1275,7 @@ class Interpreter:
                     # only failure case is a name that doesn't exist
                     # anywhere — that's the typo case the user wanted
                     # caught.
-                    # T3: a typed reassignment (`x: str <- e;`) checks its
+                    # A typed reassignment (`x: str <- e;`) checks its
                     # own annotation; assign() then re-checks the kind
                     # recorded at declaration, whichever scope owns it.
                     if node.type_kind != "none":
@@ -1513,12 +1513,12 @@ class Interpreter:
 
         fn = self._eval(callee)
         if not isinstance(fn, Function):
-            # T3: a non-function callee can only arrive through an any/none
+            # A non-function callee can only arrive through an any/none
             # flow in checker-accepted programs — same trap as the native
             # declared-any callee check (expected tag 6).
             raise RuntimeError_(f"expected fn in any, got {_value_kind(fn)}")
 
-        # T3: evaluate and kind-check arguments left-to-right, so a trap
+        # Evaluate and kind-check arguments left-to-right, so a trap
         # on argument i fires before argument i+1 evaluates — matching the
         # native per-argument coercion order at the call site.
         pkinds = fn.param_kinds
@@ -1552,7 +1552,7 @@ class Interpreter:
         finally:
             self.env = prev_env
         if fn.ret_kind != "none":
-            # T3: annotated return edge — same matrix as the native
+            # Annotated return edge — same matrix as the native
             # checked unwrap at the return slot. A body that falls off
             # the end yields None, which maps to opaque and passes.
             _any_check(result, fn.ret_kind)

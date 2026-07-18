@@ -1,8 +1,0 @@
-// EXPECT: ok
-//OUT: 40
-
-fn double(x: int): int { return x * 2; }
-fn apply(f: any, v: int): int {
-    return f(v);
-}
-print(apply(double, 20));

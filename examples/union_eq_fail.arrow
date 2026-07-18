@@ -1,0 +1,14 @@
+// EXPECT: type_fail
+//ERR: 'b' annotated as int | bool but assigned int | str
+//ERR: 'y' annotated as int | str but assigned int | bool | str
+//ERR: 2 type error(s)
+
+// The rejection side of member-wise union equality: a differing member
+// is a mismatch, and narrowing (superset value into subset slot) is a
+// mismatch. Widening is allowed — see union_type_eq_test.arrow.
+var a: int | str <- 5;
+var b: int | bool <- a;
+print("one");
+var x: int | str | bool <- 5;
+var y: int | str <- x;
+print("two");

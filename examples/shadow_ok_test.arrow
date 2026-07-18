@@ -3,7 +3,14 @@
 //OUT: 2
 //OUT: 7
 //OUT: 4
+//OUT: 42
+//OUT: hello
 
+// Legal shadowing: sibling blocks may re-declare a name at the same
+// type (int <-> bool exempt as one class), and block-local decls of
+// distinct names in either branch are fine. The last block pins the
+// old block-slot regression: an any-typed local in one branch and an
+// unannotated local in the other must get distinct slots.
 fn run(): int {
     if (true) {
         var i <- 1;
@@ -22,3 +29,15 @@ fn run(): int {
 }
 run();
 print(4);
+
+fn branchy(c: int) {
+    if (c = 1) {
+        var v: any <- 42;
+        print(v);
+    } else {
+        var w <- "hello";
+        print(w);
+    }
+}
+branchy(1);
+branchy(0);

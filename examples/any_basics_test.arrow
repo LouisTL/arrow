@@ -1,0 +1,59 @@
+// EXPECT: ok
+// Tagged-any basics, merged from the original small probes:
+// prints of each scalar payload kind, any -> concrete unwraps, string
+// concat with any payloads, equality between cells, and a [any] array
+// taking mixed pushes and reading each element back.
+
+// prints of each payload kind
+var pa: any <- 5000000;
+print(pa);
+var pb: any <- 3.14;
+print(pb);
+var pc: any <- true;
+print(pc);
+//OUT: 5000000
+//OUT: 3.14
+//OUT: true
+
+// any -> concrete unwraps at typed decls
+var ca: any <- 41;
+var cn: int <- ca;
+print(cn + 1);
+var cs: any <- "hi";
+var ct: str <- cs;
+print(ct + "!");
+//OUT: 42
+//OUT: hi!
+
+// string concat pulls the payload out of the cell
+var ka: any <- 7;
+print("v=" + ka);
+var kb: any <- "s";
+print("v=" + kb);
+//OUT: v=7
+//OUT: v=s
+
+// equality compares payloads, not cells
+var ea: any <- 5;
+var eb: any <- 5;
+print(ea = eb);
+var ec: any <- 6;
+print(ea = ec);
+var ed: any <- "x";
+var ee: any <- "x";
+print(ed = ee);
+//OUT: true
+//OUT: false
+//OUT: true
+
+// a [any] array holds mixed payloads
+var xs: [any] <- [];
+push(xs, 1);
+push(xs, "two");
+push(xs, 3.5);
+print(xs[0]);
+print(xs[1]);
+print(xs[2]);
+//OUT: 1
+//OUT: two
+//OUT: 3.5

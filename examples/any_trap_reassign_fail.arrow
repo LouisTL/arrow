@@ -2,7 +2,7 @@
 //OUT: a
 //ERR: Error: expected str in any, got int
 
-// T3: a slot keeps its declared kind for life — reassigning through an
+// A slot keeps its declared kind for life — reassigning through an
 // any-held value of the wrong kind traps at the write.
 var s: str <- "a";
 print(s);

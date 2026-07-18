@@ -1,0 +1,60 @@
+// EXPECT: ok
+// The unwrap-edge decision matrix, merged from the original probes.
+// Pins: the none wildcard, the int/bool/float numeric class, the float
+// promote, and the arrow-var `: any` return annotation.
+
+// none is not type checked, not even at runtime. A value whose static
+// type is unknowable at the decl site (a call to a fn defined later in
+// walk order) flows through any into a concrete edge without trapping,
+// and an unannotated slot takes the raw payload unchecked.
+fn wild_use() {
+    var v: any <- wild_mk();
+    var n: int <- v;
+    print(n + 1);
+    var r <- v;
+    print(r + 2);
+}
+fn wild_mk() { return 1; }
+wild_use();
+//OUT: 2
+//OUT: 3
+
+// int/bool/float form one numeric class at check time: an expected-int
+// edge accepts a bool payload raw, and expected-bool accepts an int.
+// No value conversions on these edges, so the test observes through
+// arithmetic and truthiness, not direct prints.
+var nv: any <- true;
+var nn: int <- nv;
+print(nn + 1);
+var nw: any <- 1;
+var nb: bool <- nw;
+if (nb) { print(1); }
+//OUT: 2
+//OUT: 1
+
+// expected-float with an any-held int promotes the payload (sitofp in
+// the native helper; the interpreter needs no conversion). A cell
+// already holding a float passes through unchanged.
+var pv: any <- 5;
+var pf: float <- pv;
+print(pf * 0.5);
+var pw: any <- 4.5;
+var pg: float <- pw;
+print(pg);
+//OUT: 2.5
+//OUT: 4.5
+
+// a top-level arrow var with a `: any` return annotation wraps its
+// return into a cell (both body forms), and callers — typed
+// annotation-first — check-unwrap it at concrete slots.
+var av_g <- (x: int): any => x + 2;
+var av_h <- (x: int): any => { return x * 2; };
+var av_r: int <- av_g(5);
+print(av_r);
+var av_s: int <- av_h(5);
+print(av_s);
+var av_t: int <- av_g(2);
+print(av_t);
+//OUT: 7
+//OUT: 10
+//OUT: 4

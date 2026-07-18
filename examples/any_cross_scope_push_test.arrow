@@ -2,7 +2,10 @@
 //OUT: hello
 //OUT: int
 
-import "compiler/types" as T;
+// Cross-scope pushes into []-inferred arrays: a struct pushed inside a
+// callee lands in the caller's array, and a call-produced struct pushed
+// at top level reads back through a nested field. (A local helper
+// stands in for the compiler-internals import this test once used.)
 
 fn fill(wp) {
     push(wp, {path: "hello", name: "n"});
@@ -12,9 +15,12 @@ fill(work);
 var item <- work[len(work) - 1];
 print(item.path);
 
+fn mk_kind() {
+    return {kind: "int"};
+}
 fn show(p) {
     print(p.type.kind);
 }
 var params <- [];
-push(params, {name: "x", type: T.mk_int()});
+push(params, {name: "x", type: mk_kind()});
 show(params[0]);
