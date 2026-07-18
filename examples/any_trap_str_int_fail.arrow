@@ -1,0 +1,10 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected str in any, got int
+
+// T3: an any-held int passed to a str-annotated parameter traps at the
+// call site, before the callee body runs.
+fn f(s: str) {
+    print(s);
+}
+var v: any <- 5;
+f(v);

@@ -1,0 +1,10 @@
+// EXPECT: runtime_fail
+//OUT: start
+//ERR: Error: expected str in any, got int
+
+// T3: storing an any-held int into a str-declared slot traps at the
+// declaration edge. The pre-trap print pins output ordering.
+print("start");
+var v: any <- 5;
+var s: str <- v;
+print(s);

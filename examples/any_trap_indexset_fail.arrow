@@ -1,0 +1,7 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected array in any, got str
+
+// T3: element write through a statically-any base is array-only — a
+// cell-held str is readable by index but not writable.
+var v: any <- "abc";
+v[0] <- 1;

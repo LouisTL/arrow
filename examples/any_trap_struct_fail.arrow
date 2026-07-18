@@ -1,0 +1,6 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected struct in any, got int
+
+// T3: field read through a statically-any base requires a struct cell.
+var v: any <- 7;
+print(v.x);

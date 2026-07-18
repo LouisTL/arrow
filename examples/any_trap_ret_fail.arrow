@@ -1,0 +1,9 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected str in any, got int
+
+// T3: a concrete-annotated return receiving an any-held value of the
+// wrong kind traps at the return edge, inside the callee.
+fn f(v: any): str {
+    return v;
+}
+f(5);

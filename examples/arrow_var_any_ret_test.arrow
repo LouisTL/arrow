@@ -1,0 +1,16 @@
+// EXPECT: ok
+//OUT: 7
+//OUT: 10
+//OUT: 4
+
+// spec-6.1: a top-level arrow var with a `: any` return annotation wraps
+// its return into a cell (both body forms), and callers — typed
+// annotation-first — check-unwrap it at concrete slots.
+var g <- (x: int): any => x + 2;
+var h <- (x: int): any => { return x * 2; };
+var r: int <- g(5);
+print(r);
+var s: int <- h(5);
+print(s);
+var t: int <- g(2);
+print(t);

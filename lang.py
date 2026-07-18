@@ -311,6 +311,7 @@ class Assignment:
     is_decl: bool = False  # True when introduced via `var`
     line: int = 0
     col: int = 0
+    type_kind: str = "none"  # T3: annotation kind head ("none" = unchecked)
 
 @dataclass
 class PrintStmt:
@@ -375,11 +376,15 @@ class FnDecl:
     name: str
     params: list[str]
     body: list
+    param_kinds: list = None   # T3: per-param annotation kind heads
+    ret_kind: str = "none"     # T3: return annotation kind head
 
 @dataclass
 class ArrowFn:
     params: list[str]
     body: Any
+    param_kinds: list = None   # T3: per-param annotation kind heads
+    ret_kind: str = "none"     # T3: return annotation kind head
 
 @dataclass
 class ReturnStmt:
@@ -610,31 +615,51 @@ class Parser:
         while self._match(TokenType.PIPE):
             self._skip_type_ann()
 
+    def _type_ann_kind(self) -> str:
+        """Parse a type annotation (consuming exactly what _skip_type_ann
+        would) and return its kind head for T3 runtime checks: int / float /
+        bool / str / array / struct / any — or "none" for unions, unresolved
+        alias names, and anything the kind-level check does not cover.
+        Aliases resolve through the same registry the match arms use."""
+        kind, _ = self._parse_type_kind()
+        if self._current().type == TokenType.PIPE:
+            while self._match(TokenType.PIPE):
+                self._parse_type_kind()
+            return "none"
+        if kind in ("int", "float", "bool", "str", "array", "struct", "any"):
+            return kind
+        return "none"
+
     def _assignment(self, typed: bool = False) -> Assignment:
         ident_tok = self._eat(TokenType.IDENT)
         name = ident_tok.value
+        tkind = "none"
         if typed:
-            # Skip ': type' — interpreter ignores type annotations
+            # ': type' on a reassignment — kind head retained for T3.
             self._eat(TokenType.COLON)
-            self._skip_type_ann()
+            tkind = self._type_ann_kind()
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
-        return Assignment(name, expr, is_decl=False, line=ident_tok.line, col=ident_tok.col)
+        return Assignment(name, expr, is_decl=False, line=ident_tok.line, col=ident_tok.col,
+                          type_kind=tkind)
 
     def _var_decl(self) -> Assignment:
         var_tok = self._eat(TokenType.VAR)
         ident_tok = self._eat(TokenType.IDENT)
         name = ident_tok.value
-        # Optional type annotation: var x: int <- expr;
+        # Optional type annotation: var x: int <- expr; the kind head is
+        # retained for the T3 runtime check at this declaration edge.
+        tkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
-            self._skip_type_ann()
+            tkind = self._type_ann_kind()
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
         # Track at the `var` keyword position so error messages point there.
-        return Assignment(name, expr, is_decl=True, line=var_tok.line, col=var_tok.col)
+        return Assignment(name, expr, is_decl=True, line=var_tok.line, col=var_tok.col,
+                          type_kind=tkind)
 
     def _print_stmt(self) -> PrintStmt:
         self._eat(TokenType.PRINT)
@@ -684,30 +709,38 @@ class Parser:
     def _fn_decl(self) -> FnDecl:
         self._eat(TokenType.FN)
         name = self._eat(TokenType.IDENT).value
-        params = self._param_list()
-        # Optional return type annotation: fn f(...) : type { ... }
+        params, pkinds = self._param_list()
+        # Optional return type annotation — kind head retained for T3.
+        rkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
-            self._skip_type_ann()
+            rkind = self._type_ann_kind()
         body = self._block()
-        return FnDecl(name, params, body.statements)
+        return FnDecl(name, params, body.statements,
+                      param_kinds=pkinds, ret_kind=rkind)
 
-    def _param_list(self) -> list[str]:
+    def _param_list(self) -> tuple[list[str], list[str]]:
         self._eat(TokenType.LPAREN)
         params = []
+        kinds = []
         if self._current().type != TokenType.RPAREN:
             params.append(self._eat(TokenType.IDENT).value)
-            # Optional per-param type annotation: fn f(x: type, y: type)
+            # Optional per-param type annotation: fn f(x: type, y: type) —
+            # the kind head is retained for T3 param-bind checks.
             if self._current().type == TokenType.COLON:
                 self._eat(TokenType.COLON)
-                self._skip_type_ann()
+                kinds.append(self._type_ann_kind())
+            else:
+                kinds.append("none")
             while self._match(TokenType.COMMA):
                 params.append(self._eat(TokenType.IDENT).value)
                 if self._current().type == TokenType.COLON:
                     self._eat(TokenType.COLON)
-                    self._skip_type_ann()
+                    kinds.append(self._type_ann_kind())
+                else:
+                    kinds.append("none")
         self._eat(TokenType.RPAREN)
-        return params
+        return params, kinds
 
     def _type_decl(self):
         """type Name <- Type; register a structural alias. Runtime-typed, so
@@ -881,18 +914,21 @@ class Parser:
         return False
 
     def _arrow_fn(self) -> ArrowFn:
-        params = self._param_list()
-        # Optional return type annotation: skip it (interpreter ignores types)
+        params, pkinds = self._param_list()
+        # Optional return type annotation — kind head retained for T3.
+        rkind = "none"
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
-            self._skip_type_ann()
+            rkind = self._type_ann_kind()
         self._eat(TokenType.FAT_ARROW)
         if self._current().type == TokenType.LBRACE and not self._is_struct_literal():
             body = self._block()
-            return ArrowFn(params, body.statements)
+            return ArrowFn(params, body.statements,
+                           param_kinds=pkinds, ret_kind=rkind)
         else:
             expr = self._expression()
-            return ArrowFn(params, expr)
+            return ArrowFn(params, expr,
+                           param_kinds=pkinds, ret_kind=rkind)
 
     def _or_expr(self):
         left = self._and_expr()
@@ -1050,9 +1086,45 @@ class RuntimeError_(Exception):
     pass
 
 
+def _value_kind(v) -> str:
+    """Map a runtime value to its universal kind name (native tag order;
+    bool tested before int because Python bool subclasses int). Values
+    with no mapping are 'opaque' and pass every T3 expectation."""
+    if isinstance(v, bool): return "bool"
+    if isinstance(v, int): return "int"
+    if isinstance(v, float): return "float"
+    if isinstance(v, str): return "str"
+    if isinstance(v, list): return "array"
+    if isinstance(v, Struct): return "struct"
+    if isinstance(v, Function): return "fn"
+    return "opaque"
+
+
+def _any_check(val, want: str):
+    """T3 runtime kind check at an annotated edge. none/any expectations
+    emit no check; opaque values pass everything; int/bool/float accept
+    each other (no value conversion — the native float promote is a
+    storage-representation detail the interpreter does not need). The
+    message matches the native trap byte-for-byte once main() prefixes
+    'Error: '."""
+    if want == "none" or want == "any":
+        return
+    got = _value_kind(val)
+    if got == "opaque" or got == want:
+        return
+    num = ("int", "float", "bool")
+    if want in num and got in num:
+        return
+    raise RuntimeError_(f"expected {want} in any, got {got}")
+
+
 class Environment:
     def __init__(self, parent: 'Environment | None' = None, is_fn_root: bool = False):
         self.vars: dict[str, Any] = {}
+        # T3: annotation kind heads for bindings declared with a type.
+        # Reassignments through assign() re-check against the owning
+        # scope's recorded kind, mirroring the native declared-slot rule.
+        self.kinds: dict[str, str] = {}
         self.parent = parent
         # Function-boundary marker: assignment walks up looking for an
         # existing binding to mutate, but stops at a function root so it
@@ -1069,7 +1141,7 @@ class Environment:
             return self.parent.get(name)
         raise RuntimeError_(f"Undefined variable '{name}'")
 
-    def declare(self, name: str, value: Any):
+    def declare(self, name: str, value: Any, kind: str = "none"):
         # Always create a fresh binding in the *current* scope. Error if a
         # name with the same identifier already exists in this same scope
         # (catches accidental redeclaration). Outer-scope bindings of the
@@ -1077,6 +1149,8 @@ class Environment:
         if name in self.vars:
             raise RuntimeError_(f"redeclaration of '{name}' in the same scope")
         self.vars[name] = value
+        if kind != "none":
+            self.kinds[name] = kind
 
     def assign(self, name: str, value: Any) -> bool:
         # Walk all the way up to find an existing binding. No function
@@ -1087,6 +1161,11 @@ class Environment:
         env = self
         while env is not None:
             if name in env.vars:
+                # T3: a binding declared with an annotation keeps its kind
+                # for life — later writes re-check, like the native slot.
+                k = env.kinds.get(name, "none")
+                if k != "none":
+                    _any_check(value, k)
                 env.vars[name] = value
                 return True
             env = env.parent
@@ -1103,11 +1182,15 @@ class Environment:
 
 
 class Function:
-    def __init__(self, name: str, params: list[str], body: Any, closure: Environment):
+    def __init__(self, name: str, params: list[str], body: Any, closure: Environment,
+                 param_kinds: list | None = None, ret_kind: str = "none"):
         self.name = name
         self.params = params
         self.body = body
         self.closure = closure
+        # T3: annotation kind heads for the param-bind and return checks.
+        self.param_kinds = param_kinds if param_kinds is not None else []
+        self.ret_kind = ret_kind
 
     def __repr__(self):
         return f"<fn {self.name}({', '.join(self.params)})>"
@@ -1171,10 +1254,16 @@ class Interpreter:
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
                 if is_decl:
+                    # T3: an annotated declaration checks the value's kind
+                    # before binding. This runs OUTSIDE the try below — the
+                    # trap message carries no position info, matching the
+                    # native trap byte-for-byte.
+                    if node.type_kind != "none":
+                        _any_check(val, node.type_kind)
                     # `var x <- expr;` — fresh binding in current scope.
                     # Redeclaration in the same scope is an error.
                     try:
-                        self.env.declare(name, val)
+                        self.env.declare(name, val, node.type_kind)
                     except RuntimeError_ as e:
                         # Re-raise with position info for better diagnostics.
                         raise RuntimeError_(f"{e} at line {line}, col {col}")
@@ -1186,6 +1275,11 @@ class Interpreter:
                     # only failure case is a name that doesn't exist
                     # anywhere — that's the typo case the user wanted
                     # caught.
+                    # T3: a typed reassignment (`x: str <- e;`) checks its
+                    # own annotation; assign() then re-checks the kind
+                    # recorded at declaration, whichever scope owns it.
+                    if node.type_kind != "none":
+                        _any_check(val, node.type_kind)
                     if not self.env.assign(name, val):
                         raise RuntimeError_(
                             f"cannot reassign undeclared variable '{name}' "
@@ -1197,7 +1291,7 @@ class Interpreter:
                 idx = self._eval(index)
                 val = self._eval(value)
                 if not isinstance(target, list):
-                    raise RuntimeError_("Cannot index into non-array value")
+                    raise RuntimeError_(f"expected array in any, got {_value_kind(target)}")
                 if not isinstance(idx, int):
                     raise RuntimeError_("Array index must be an integer")
                 if idx < 0 or idx >= len(target):
@@ -1208,7 +1302,7 @@ class Interpreter:
                 target = self._eval(obj)
                 val = self._eval(value)
                 if not isinstance(target, Struct):
-                    raise RuntimeError_("Cannot set field on non-struct value")
+                    raise RuntimeError_(f"expected struct in any, got {_value_kind(target)}")
                 target.set(field, val)
 
             case PrintStmt(expr):
@@ -1289,7 +1383,9 @@ class Interpreter:
                 self._exec_block(stmts)
 
             case FnDecl(name, params, body):
-                self.env.set(name, Function(name, params, body, self.env))
+                self.env.set(name, Function(name, params, body, self.env,
+                                            param_kinds=node.param_kinds,
+                                            ret_kind=node.ret_kind))
 
             case ReturnStmt(expr):
                 raise ReturnSignal(self._eval(expr) if expr is not None else None)
@@ -1367,13 +1463,13 @@ class Interpreter:
                         raise RuntimeError_(f"Index {idx} out of bounds (length {len(target)})")
                     return target[idx]
                 else:
-                    raise RuntimeError_("Cannot index into this type")
+                    raise RuntimeError_(f"expected array in any, got {_value_kind(target)}")
 
             case DotExpr(obj, field):
                 target = self._eval(obj)
                 if isinstance(target, Struct):
                     return target.get(field)
-                raise RuntimeError_(f"Cannot access field '{field}' on non-struct value")
+                raise RuntimeError_(f"expected struct in any, got {_value_kind(target)}")
 
             case UnaryOp('-', operand): return -self._eval(operand)
             case UnaryOp('!', operand): return not self._truthy(self._eval(operand))
@@ -1382,7 +1478,9 @@ class Interpreter:
                 return self._eval_binop(op, left, right)
 
             case ArrowFn(params, body):
-                return Function("<arrow>", params, body, self.env)
+                return Function("<arrow>", params, body, self.env,
+                                param_kinds=node.param_kinds,
+                                ret_kind=node.ret_kind)
 
             case CallExpr(callee, args):
                 return self._eval_call(callee, args)
@@ -1415,18 +1513,31 @@ class Interpreter:
 
         fn = self._eval(callee)
         if not isinstance(fn, Function):
-            raise RuntimeError_(f"'{fn}' is not a function")
+            # T3: a non-function callee can only arrive through an any/none
+            # flow in checker-accepted programs — same trap as the native
+            # declared-any callee check (expected tag 6).
+            raise RuntimeError_(f"expected fn in any, got {_value_kind(fn)}")
 
-        arg_vals = [self._eval(a) for a in args]
+        # T3: evaluate and kind-check arguments left-to-right, so a trap
+        # on argument i fires before argument i+1 evaluates — matching the
+        # native per-argument coercion order at the call site.
+        pkinds = fn.param_kinds
+        arg_vals = []
+        for ai, a in enumerate(args):
+            av = self._eval(a)
+            _any_check(av, pkinds[ai] if ai < len(pkinds) else "none")
+            arg_vals.append(av)
         if len(arg_vals) != len(fn.params):
             raise RuntimeError_(
                 f"Function {fn.name} expects {len(fn.params)} args, got {len(arg_vals)}")
 
         call_env = Environment(parent=fn.closure, is_fn_root=True)
-        for param, val in zip(fn.params, arg_vals):
+        for pi, (param, val) in enumerate(zip(fn.params, arg_vals)):
             # `declare`, not `set` — the param shouldn't accidentally mutate
-            # a same-named binding in the enclosing closure scope.
-            call_env.declare(param, val)
+            # a same-named binding in the enclosing closure scope. The
+            # annotation kind rides along so body reassignments re-check.
+            call_env.declare(param, val,
+                             pkinds[pi] if pi < len(pkinds) else "none")
 
         prev_env = self.env
         self.env = call_env
@@ -1440,6 +1551,11 @@ class Interpreter:
             result = ret.value
         finally:
             self.env = prev_env
+        if fn.ret_kind != "none":
+            # T3: annotated return edge — same matrix as the native
+            # checked unwrap at the return slot. A body that falls off
+            # the end yields None, which maps to opaque and passes.
+            _any_check(result, fn.ret_kind)
         return result
 
     def _eval_builtin(self, name: str, args: list) -> Any:

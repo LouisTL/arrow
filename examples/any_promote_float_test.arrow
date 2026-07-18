@@ -1,0 +1,13 @@
+// EXPECT: ok
+//OUT: 2.5
+//OUT: 4.5
+
+// T3: expected-float with an any-held int promotes the payload (sitofp
+// in the native helper; the interpreter needs no conversion). A cell
+// already holding a float passes through unchanged.
+var v: any <- 5;
+var f: float <- v;
+print(f * 0.5);
+var w: any <- 4.5;
+var g: float <- w;
+print(g);

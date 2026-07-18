@@ -1,0 +1,7 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected fn in any, got int
+
+// T3: calling through an any-declared variable verifies tag 6 (fn)
+// before the indirect closure call.
+var g: any <- 42;
+g(1);

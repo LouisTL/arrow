@@ -2166,9 +2166,20 @@ fn infer_body(stmts) {
                 // for their whole lifetime: their slot holds a tagged cell,
                 // and reads must stay statically any so consumers dispatch
                 // on the tag instead of trusting a refined concrete type.
+                // Symmetrically (T3), a concrete-locked variable keeps its
+                // type across an any-typed reassignment: the tagged value
+                // stores THROUGH the slot (checked-unwrapped at runtime),
+                // it does not retype the variable. Overwriting here used to
+                // degrade the tracked type to any, which the emit-time tier
+                // demote turned into none — routing the store through the
+                // raw unchecked unwrap and skipping the trap.
+                var rdt <- get_decl_type(s.name);
                 if (!T.union_in_container(existing) && existing.kind != "union"
-                    && get_decl_type(s.name).kind != "any") {
-                    set_var_type(s.name, ty);
+                    && rdt.kind != "any") {
+                    if (ty.kind != "any" || rdt.kind = "none" || rdt.kind = "union"
+                        || T.union_in_container(rdt)) {
+                        set_var_type(s.name, ty);
+                    }
                 }
             }
             // Track struct layouts from struct literals — store ftype as kind string
@@ -3737,6 +3748,66 @@ fn emit_trap_helpers() {
     emit("  ret i64 %q");
     emit("}");
     emit("");
+    // T3: checked any-cell unwrap. Verifies the cell tag against the
+    // expected kind (want; 8 = the indexable sentinel accepting str or
+    // array), promotes int/bool payloads to double bits when a float is
+    // expected (mirrors the static fsi promote), passes opaque (7)
+    // unconditionally, and otherwise prints the exact interpreter trap
+    // and exits 1. Emission side: ir_unwrap_any_checked.
+    emit("@.rt.anyexp = private constant [35 x i8] c\"Error: expected %s in any, got %s\\0A\\00\"");
+    emit("@.rt.kint = private constant [4 x i8] c\"int\\00\"");
+    emit("@.rt.kfloat = private constant [6 x i8] c\"float\\00\"");
+    emit("@.rt.kbool = private constant [5 x i8] c\"bool\\00\"");
+    emit("@.rt.kstr = private constant [4 x i8] c\"str\\00\"");
+    emit("@.rt.karr = private constant [6 x i8] c\"array\\00\"");
+    emit("@.rt.kstruct = private constant [7 x i8] c\"struct\\00\"");
+    emit("@.rt.kfn = private constant [3 x i8] c\"fn\\00\"");
+    emit("@.rt.kopq = private constant [7 x i8] c\"opaque\\00\"");
+    emit("@.rt.knames = private constant [8 x ptr] [ptr @.rt.kint, ptr @.rt.kfloat, ptr @.rt.kbool, ptr @.rt.kstr, ptr @.rt.karr, ptr @.rt.kstruct, ptr @.rt.kfn, ptr @.rt.kopq]");
+    emit("define i64 @arrow_any_unwrap(i64 %cell.i, i64 %want) {");
+    emit("entry:");
+    emit("  %p = inttoptr i64 %cell.i to ptr");
+    emit("  %tag = load i64, ptr %p");
+    emit("  %pp = getelementptr i64, ptr %p, i64 1");
+    emit("  %pay = load i64, ptr %pp");
+    emit("  %eq = icmp eq i64 %tag, %want");
+    emit("  br i1 %eq, label %ok, label %ck7");
+    emit("ck7:");
+    emit("  %is7 = icmp eq i64 %tag, 7");
+    emit("  br i1 %is7, label %ok, label %ck8");
+    emit("ck8:");
+    emit("  %w8 = icmp eq i64 %want, 8");
+    emit("  br i1 %w8, label %idx, label %cknum");
+    emit("idx:");
+    emit("  %t3 = icmp eq i64 %tag, 3");
+    emit("  %t4 = icmp eq i64 %tag, 4");
+    emit("  %tidx = or i1 %t3, %t4");
+    emit("  br i1 %tidx, label %ok, label %trap");
+    emit("cknum:");
+    emit("  %wn = icmp sle i64 %want, 2");
+    emit("  %tn = icmp sle i64 %tag, 2");
+    emit("  %bn = and i1 %wn, %tn");
+    emit("  br i1 %bn, label %num, label %trap");
+    emit("num:");
+    emit("  %wf = icmp eq i64 %want, 1");
+    emit("  br i1 %wf, label %prom, label %ok");
+    emit("prom:");
+    emit("  %d = sitofp i64 %pay to double");
+    emit("  %pb = bitcast double %d to i64");
+    emit("  ret i64 %pb");
+    emit("ok:");
+    emit("  ret i64 %pay");
+    emit("trap:");
+    emit("  %wi = select i1 %w8, i64 4, i64 %want");
+    emit("  %gw = getelementptr ptr, ptr @.rt.knames, i64 %wi");
+    emit("  %wname = load ptr, ptr %gw");
+    emit("  %gt = getelementptr ptr, ptr @.rt.knames, i64 %tag");
+    emit("  %tname = load ptr, ptr %gt");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.anyexp, ptr %wname, ptr %tname)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
+    emit("}");
+    emit("");
 }
 
 // ── Emit tagged-any runtime helpers ─────
@@ -4485,7 +4556,13 @@ fn ir_reg(name: str, t) {
     return {kind: "reg", name: name, type: t};
 }
 
-fn ir_const_int(n: int) {
+// NOTE: `n` is deliberately unannotated (raw tier), matching
+// ir_const_float — NumberLit and match-arm literal tokens carry their
+// digits as lexer strings and flow here unconverted; rendering
+// concatenates them into IR text, where a digit string and an int are
+// indistinguishable. An int annotation here is a lie the T3 interpreter
+// checks catch (a none-sourced str at an int-annotated edge).
+fn ir_const_int(n) {
     return {kind: "const_int", val: n, type: T.mk_int()};
 }
 
@@ -5609,11 +5686,11 @@ fn ir_emit_expr(b, nd) {
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
             // A callee variable DECLARED any holds a tagged cell (tag 6
-            // when the pair wrapped as a fn value): unwrap to the raw
-            // closure pair before the indirect call. T3 adds the tag check.
+            // when the pair wrapped as a fn value): verify the tag and
+            // unwrap to the raw closure pair before the indirect call (T3).
             if (get_decl_type(nm).kind = "any") {
                 var cuw <- ir_fresh_tmp(b, "cuw");
-                ir_push_inst(b.cur_block, ii_union_payload(cuw, ir_reg(pair_tmp, T.mk_int())));
+                ir_push_inst(b.cur_block, ii_call(cuw, T.mk_int(), "arrow_any_unwrap", [ir_reg(pair_tmp, T.mk_int()), ir_const_int(6)]));
                 pair_tmp <- cuw;
             }
             // Evaluate user args. If the underlying arrow fn carries
@@ -5675,10 +5752,10 @@ fn ir_emit_expr(b, nd) {
                     ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
                 }
                 // A callee variable DECLARED any holds a tagged cell:
-                // unwrap to the raw closure pair. T3 adds the tag check.
+                // verify the tag and unwrap to the raw closure pair (T3).
                 if (get_decl_type(nm).kind = "any") {
                     var cuw <- ir_fresh_tmp(b, "cuw");
-                    ir_push_inst(b.cur_block, ii_union_payload(cuw, ir_reg(pair_tmp, T.mk_int())));
+                    ir_push_inst(b.cur_block, ii_call(cuw, T.mk_int(), "arrow_any_unwrap", [ir_reg(pair_tmp, T.mk_int()), ir_const_int(6)]));
                     pair_tmp <- cuw;
                 }
                 var args <- [];
@@ -5749,7 +5826,12 @@ fn ir_emit_expr(b, nd) {
         // by infer_body and friends in the prep dance). Strings get char_at
         // semantics, arrays get array_get. Anything else falls back to array
         // since `any`-typed values are most commonly arrays in practice.
-        var obj <- ir_unwrap_any(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj));
+        // T3: a statically-any object must be indexable — tag 3 (str)
+        // or 4 (array); want 8 is the indexable sentinel. The index
+        // operand stays raw-tier. A cell-held str passing the check
+        // still routes through array_get (static dispatch), matching
+        // the raw regime for that edge.
+        var obj <- ir_unwrap_any_checked(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj), 8);
         var idx <- ir_unwrap_any(b, ir_emit_expr(b, nd.index), typeof_expr(nd.index));
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") {
@@ -5762,7 +5844,8 @@ fn ir_emit_expr(b, nd) {
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "DotExpr") {
-        var obj <- ir_unwrap_any(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj));
+        // T3: a statically-any object must hold a struct (tag 5).
+        var obj <- ir_unwrap_any_checked(b, ir_emit_expr(b, nd.obj), typeof_expr(nd.obj), any_tag_of("struct"));
         // Pool the field name in the module's string table.
         var fid <- ir_mod_add_str(b.mod, nd.field);
         var tmp <- ir_fresh_tmp(b, "dot");
@@ -5803,6 +5886,29 @@ fn ir_emit_expr(b, nd) {
         // Mint a unique name for the closure's IR function.
         arrow_fn_counter[0] <- arrow_fn_counter[0] + 1;
         var afn_name <- "__arrow_" + arrow_fn_counter[0];
+
+        // T3/spec-6.1: when the arrow carries a return annotation,
+        // register the mangled entry BEFORE the body emits, so block-body
+        // ReturnStmts (which key on find_fn of the mangled name) see the
+        // annotation as rslot and wrap/unwrap accordingly. Callers already
+        // type the call annotation-first (typeof_expr returns ret_type_ann
+        // when set), so this aligns the body half with the caller half.
+        // set_fn_ret_type skips annotated entries, so the later
+        // inferred-type mirror becomes a no-op rather than a conflict.
+        if (nd.ret_type_ann.kind != "none") {
+            if (find_fn(afn_name) = false) {
+                push(declared_fns, {
+                    name: afn_name,
+                    param_count: len(nd.params),
+                    ret_type: nd.ret_type_ann,
+                    ret_fields: false,
+                    param_types: [],
+                    param_types_ann: nd.param_types_ann,
+                    ret_type_ann: nd.ret_type_ann,
+                    is_arrow_var: false
+                });
+            }
+        }
 
         // Build the IR Function. Param list = [env, user params...].
         var ir_params <- [{name: "env", type: T.mk_int()}];
@@ -5974,11 +6080,27 @@ fn ir_emit_expr(b, nd) {
         }
 
         if (nd.is_expr) {
-            var v <- ir_emit_expr(sub, nd.body);
-            ir_set_terminator(sub.cur_block, ii_ret(v));
-            // Observe the expression's static type for the body's return type.
-            // typeof_expr consults var_types populated during emission.
-            ret_type_inferred <- typeof_expr(nd.body);
+            if (nd.ret_type_ann.kind != "none") {
+                // T3/spec-6.1: an annotated expression body returns
+                // through the same slot machinery as a ReturnStmt —
+                // the value is built for the annotation, wrapped for an
+                // any return, checked-unwrapped for a concrete one, and
+                // union members are wrapped.
+                var rv <- ir_emit_value_for_slot(sub, nd.body, nd.ret_type_ann);
+                var rvt3 <- typeof_expr(nd.body);
+                if (nd.ret_type_ann.kind = "union") {
+                    if (rvt3.kind != "union") { rv <- ir_union_wrap(sub, rv, rvt3, nd.ret_type_ann); }
+                }
+                if (nd.ret_type_ann.kind = "any") { rv <- ir_wrap_any(sub, rv, rvt3); }
+                ir_set_terminator(sub.cur_block, ii_ret(rv));
+                ret_type_inferred <- nd.ret_type_ann;
+            } else {
+                var v <- ir_emit_expr(sub, nd.body);
+                ir_set_terminator(sub.cur_block, ii_ret(v));
+                // Observe the expression's static type for the body's return type.
+                // typeof_expr consults var_types populated during emission.
+                ret_type_inferred <- typeof_expr(nd.body);
+            }
         } else {
             i <- 0;
             while (i < len(nd.body)) {
@@ -6509,6 +6631,20 @@ fn ir_unwrap_any(b, vreg, st) {
     return ir_reg(p, T.mk_int());
 }
 
+// Checked unwrap (T3): like ir_unwrap_any, but verifies the cell tag
+// against `want` at runtime — a universal tag from any_tag_of, or 8 =
+// "indexable" (str or array). Tag 7 (opaque) passes any expectation;
+// int/bool/float (tags 0..2) accept each other, with an expected float
+// promoting an int/bool payload to double bits inside the helper (the
+// reverse raw-bits edge is deliberate — spec-tagged-any). A mismatch
+// prints `Error: expected <kind> in any, got <kind>` and exits 1.
+fn ir_unwrap_any_checked(b, vreg, st, want: int) {
+    if (st.kind != "any") { return vreg; }
+    var c <- ir_fresh_tmp(b, "auc");
+    ir_push_inst(b.cur_block, ii_call(c, T.mk_int(), "arrow_any_unwrap", [vreg, ir_const_int(want)]));
+    return ir_reg(c, T.mk_int());
+}
+
 // Split a value into (tag, payload) operands for the dyn runtime helpers.
 // A static any is a cell (load both words); a concrete side rides with a
 // constant universal tag; none rides as opaque, keeping the raw tier's
@@ -6680,7 +6816,16 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
     // the wrap direction.
     var dvt <- typeof_expr(expr);
     if (dvt.kind = "any" && slot_t.kind != "any") {
-        return ir_unwrap_any(b, ir_emit_expr(b, expr), dvt);
+        // Raw (none) slots take the unchecked payload — "none is not
+        // type checked, not even at runtime". Union slots are
+        // unreachable here (any -> union is rejected statically) and
+        // stay raw defensively. Every concrete slot verifies the tag
+        // (T3) — this tail owns the checked unwrap for assignments,
+        // returns, element/field stores and annotated call arguments.
+        if (slot_t.kind = "none" || slot_t.kind = "union") {
+            return ir_unwrap_any(b, ir_emit_expr(b, expr), dvt);
+        }
+        return ir_unwrap_any_checked(b, ir_emit_expr(b, expr), dvt, any_tag_of(slot_t.kind));
     }
     return ir_emit_expr(b, expr);
 }
@@ -6830,7 +6975,8 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "IndexAssign") {
-        var obj <- ir_unwrap_any(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj));
+        // T3: element writes are array-only — expected tag 4 strictly.
+        var obj <- ir_unwrap_any_checked(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj), any_tag_of("array"));
         var idx <- ir_unwrap_any(b, ir_emit_expr(b, stmt.index), typeof_expr(stmt.index));
         // Coerce the new value to the array's element type: a union
         // element stores a {tag,payload} cell, so a member value is
@@ -6845,7 +6991,8 @@ fn ir_emit_stmt(b, stmt) {
         return 0;
     }
     if (stmt.node = "DotAssign") {
-        var obj <- ir_unwrap_any(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj));
+        // T3: a statically-any object must hold a struct (tag 5).
+        var obj <- ir_unwrap_any_checked(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj), any_tag_of("struct"));
         // Coerce the new value to the field's declared type: a union-typed
         // field stores a {tag,payload} cell, so a member value is wrapped
         // (and a nested container has its own unions wrapped, recursively).
