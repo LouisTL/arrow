@@ -7268,9 +7268,15 @@ fn ir_emit_stmt(b, stmt) {
             type_ann: T.mk_none(),
             is_decl: false
         };
-        // Statement nodes of mixed shapes go in here, so the element
-        // type must be the explicit escape hatch.
-        var new_body: [any] <- [bind_x];
+        // Statement nodes of mixed shapes go in here. Use the parser's
+        // raw-list idiom (`[]` infers [none]; push-refinement keeps
+        // mixed shapes on the raw tier -- see pb()). A declared [any]
+        // would store the elements as tagged two-word cells, and the
+        // WhileStmt body walk below reads statements raw: natively that
+        // misreads the cells as node structs and crashes. (This was the
+        // annotations_fail native segfault.)
+        var new_body <- [];
+        push(new_body, bind_x);
         var i <- 0;
         while (i < len(stmt.body)) {
             push(new_body, stmt.body[i]);
