@@ -1,0 +1,8 @@
+// EXPECT: ok
+//OUT: true
+//OUT: false
+
+// file_exists is the probe companion to read_file's missing-file trap.
+// README.md is a tracked file at the repo root, where the suite runs.
+print(file_exists("README.md"));
+print(file_exists("definitely_missing_file.xyz"));

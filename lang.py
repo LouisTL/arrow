@@ -1220,7 +1220,7 @@ class Struct:
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
-            "exec_cmd", "args"}
+            "exec_cmd", "args", "file_exists"}
 
 
 class Interpreter:
@@ -1593,17 +1593,25 @@ class Interpreter:
             path = self._eval(args[0])
             if not isinstance(path, str):
                 raise RuntimeError_("read_file() requires a string path")
-            # Return "" on missing file to match the native compiler's
-            # behavior — Arrow programs that probe for optional files (the
-            # resolver's search-path fallback, for one) rely on the empty
-            # result as a signal rather than an exception.
+            # A missing (or unopenable) file is a runtime error — same
+            # family as division by zero and out-of-bounds indexing, and
+            # byte-identical to the native @arrow_read_file trap:
+            # `Error: cannot read file: <path>` on stdout, exit 1.
+            # Probing for optional files is file_exists()'s job (the
+            # import resolver's search-path fallback uses it).
             try:
                 with open(path, encoding="utf-8") as f:
                     return f.read()
-            except FileNotFoundError:
-                return ""
-            except Exception as e:
-                raise RuntimeError_(f"Error reading file: {e}")
+            except Exception:
+                raise RuntimeError_(f"cannot read file: {path}")
+
+        elif name == "file_exists":
+            if len(args) != 1:
+                raise RuntimeError_("file_exists() takes exactly 1 argument")
+            path = self._eval(args[0])
+            if not isinstance(path, str):
+                raise RuntimeError_("file_exists() requires a string path")
+            return os.path.isfile(path)
 
         elif name == "write_file":
             if len(args) != 2:

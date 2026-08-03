@@ -1882,6 +1882,7 @@ fn typeof_expr(nd): any {
             if (nm = "substring") { return T.mk_str(); }
             if (nm = "input") { return T.mk_str(); }
             if (nm = "read_file") { return T.mk_str(); }
+            if (nm = "file_exists") { return T.mk_bool(); }
             if (nm = "write_file") { return T.mk_int(); }
             if (nm = "append_file") { return T.mk_int(); }
             if (nm = "exec_cmd") { return T.mk_int(); }
@@ -2364,7 +2365,7 @@ fn report_scope_error(line: int, col: int, msg: str) {
 // the extra machinery.
 fn is_builtin_name(n: str): int {
     return n = "print" || n = "len" || n = "push" || n = "pop" || n = "keys"
-        || n = "read_file" || n = "write_file" || n = "append_file" || n = "input"
+        || n = "read_file" || n = "file_exists" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
         || n = "exec_cmd" || n = "args"
@@ -3661,6 +3662,7 @@ fn emit_trap_helpers() {
     emit("@.rt.oob = private constant [47 x i8] c\"Error: Index %lld out of bounds (length %lld)\\0A\\00\"");
     emit("@.rt.div0 = private constant [25 x i8] c\"Error: Division by zero\\0A\\00\"");
     emit("@.rt.mod0 = private constant [23 x i8] c\"Error: Modulo by zero\\0A\\00\"");
+    emit("@.rt.rdfail = private constant [29 x i8] c\"Error: cannot read file: %s\\0A\\00\"");
     emit("define i64 @arrow_index_get(i64 %arr.i, i64 %idx) {");
     emit("entry:");
     emit("  %arr = inttoptr i64 %arr.i to ptr");
@@ -4119,10 +4121,13 @@ fn emit_read_file_helper() {
     emit("  %fpv = ptrtoint ptr %fp to i64");
     emit("  %is_null = icmp eq i64 %fpv, 0");
     emit("  br i1 %is_null, label %fail, label %ok");
+    // Missing/unopenable file: trap — `Error: cannot read file: <path>`,
+    // exit 1 — same family as OOB and div-by-zero. Probing for optional
+    // files is file_exists()'s job (the import resolver uses it).
     emit("fail:");
-    emit("  %empty = call ptr @arena_alloc(i64 1)");
-    emit("  store i8 0, ptr %empty");
-    emit("  ret ptr %empty");
+    emit("  call i32 (ptr, ...) @printf(ptr @.rt.rdfail, ptr %path)");
+    emit("  call void @exit(i32 1)");
+    emit("  unreachable");
     emit("ok:");
     emit("  call i32 @fseek(ptr %fp, i64 0, i32 2)");
     emit("  %size = call i64 @ftell(ptr %fp)");
@@ -4134,6 +4139,30 @@ fn emit_read_file_helper() {
     emit("  store i8 0, ptr %endp");
     emit("  call i32 @fclose(ptr %fp)");
     emit("  ret ptr %buf");
+    emit("}");
+    emit("");
+}
+
+// ── Emit file_exists helper ─────────────
+//
+// Probe companion to read_file's trap semantics: 1 if fopen("rb")
+// succeeds (then closed), else 0. Corner: on Linux fopen("rb") on a
+// directory succeeds, where the interpreter's os.path.isfile is false
+// — documented deviation, not worth an extra syscall dance.
+
+fn emit_file_exists_helper() {
+    emit("define i64 @arrow_file_exists(i64 %path.i) {");
+    emit("entry:");
+    emit("  %path = inttoptr i64 %path.i to ptr");
+    emit("  %fp = call ptr @fopen(ptr %path, ptr @.str.rb)");
+    emit("  %fpv = ptrtoint ptr %fp to i64");
+    emit("  %is_null = icmp eq i64 %fpv, 0");
+    emit("  br i1 %is_null, label %no, label %yes");
+    emit("yes:");
+    emit("  call i32 @fclose(ptr %fp)");
+    emit("  ret i64 1");
+    emit("no:");
+    emit("  ret i64 0");
     emit("}");
     emit("");
 }
@@ -4471,7 +4500,13 @@ if (rc_detect = 0) {
     // Probe for macOS via uname; redirect output to a temp file so we don't
     // pollute stdout, then read it back.
     exec_cmd("uname -s > /tmp/.arrow_uname 2>/dev/null");
-    var uname_out <- read_file("/tmp/.arrow_uname");
+    // read_file traps on a missing file, so guard the probe: if the shell
+    // redirect could not create the file (e.g. unwritable /tmp), fall
+    // through with "" exactly as the old empty-read contract did.
+    var uname_out <- "";
+    if (file_exists("/tmp/.arrow_uname")) {
+        uname_out <- read_file("/tmp/.arrow_uname");
+    }
     if (str_len(uname_out) >= 6) {
         if (substring(uname_out, 0, 6) = "Darwin") {
             is_mac[0] <- 1;
@@ -4793,6 +4828,7 @@ fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, T.mk_str
 
 // IO ops — each calls into the corresponding arrow_* runtime helper.
 fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, T.mk_str(), [path], false); }
+fn ii_file_exists(dst: str, path)   { return ir_inst("file_exists", dst, T.mk_bool(), [path], false); }
 fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, T.mk_int(), [p, c], false); }
 fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, T.mk_int(), [p, c], false); }
 fn ii_exec_cmd(dst: str, c)         { return ir_inst("exec_cmd",    dst, T.mk_int(), [c], false); }
@@ -5612,6 +5648,12 @@ fn ir_emit_expr(b, nd) {
             var tmp <- ir_fresh_tmp(b, "rf");
             ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
             return ir_reg(tmp, T.mk_str());
+        }
+        if (nm = "file_exists") {
+            var arg <- ir_emit_arg(b, nd.args[0]);
+            var tmp <- ir_fresh_tmp(b, "fe");
+            ir_push_inst(b.cur_block, ii_file_exists(tmp, arg));
+            return ir_reg(tmp, T.mk_bool());
         }
         if (nm = "write_file") {
             var parg <- ir_emit_arg(b, nd.args[0]);
@@ -7656,6 +7698,7 @@ fn llvm_emit_runtime() {
     emit_substring_helper();
     emit_strcat_helper();
     emit_read_file_helper();
+    emit_file_exists_helper();
     emit_write_file_helper();
     emit_append_file_helper();
     emit_input_helper();
@@ -7879,18 +7922,22 @@ if (args() > 0) {
 
         // Resolve the path: try relative to importer first; if not found,
         // try the search-path fallback (the directory containing the arrow
-        // executable, where std/ lives). Read the file content once, here,
-        // so we can settle on a path before doing any dedup or bookkeeping.
+        // executable, where std/ lives). Probe with file_exists —
+        // read_file traps on missing files now — then read once on the
+        // settled path; a still-missing path leaves sub_src empty so the
+        // "cannot read file (missing or empty)" import error below fires
+        // exactly as before.
         var resolved_path <- item.path;
-        var sub_src <- read_file(resolved_path);
-        if (len(sub_src) = 0) {
+        if (!file_exists(resolved_path)) {
             var exe_dir <- dirname(args(-1));
             var fb_path <- exe_dir + item.raw_path + ".arrow";
-            var fb_src <- read_file(fb_path);
-            if (len(fb_src) > 0) {
+            if (file_exists(fb_path)) {
                 resolved_path <- fb_path;
-                sub_src <- fb_src;
             }
+        }
+        var sub_src <- "";
+        if (file_exists(resolved_path)) {
+            sub_src <- read_file(resolved_path);
         }
 
         // Dedup: only load each file once. Uses the resolved path so a

@@ -477,6 +477,10 @@ fn ir_render_inst(inst): str {
         s <- s + "  " + inst.dst + " = ptrtoint ptr " + inst.dst + ".r to i64";
         return s;
     }
+    if (op = "file_exists") {
+        // operand = path (i64 holding ptr); helper takes/returns i64.
+        return inst.dst + " = call i64 @arrow_file_exists(i64 " + ir_render_operand(inst.operands[0]) + ")";
+    }
     if (op = "write_file") {
         var s <- inst.dst + ".pp = inttoptr i64 " + ir_render_operand(inst.operands[0]) + " to ptr\n";
         s <- s + "  " + inst.dst + ".cp = inttoptr i64 " + ir_render_operand(inst.operands[1]) + " to ptr\n";

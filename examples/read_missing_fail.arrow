@@ -1,0 +1,11 @@
+// EXPECT: runtime_fail
+//OUT: before
+//ERR: Error: cannot read file: definitely_missing_file.xyz
+
+// read_file on a missing path is a runtime error — same family as
+// division by zero and out-of-bounds indexing. Byte-identical trap on
+// both hosts: `Error: cannot read file: <path>` on stdout, exit 1.
+// Code that probes for optional files uses file_exists() instead.
+print("before");
+var s <- read_file("definitely_missing_file.xyz");
+print(s);
