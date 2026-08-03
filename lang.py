@@ -1600,7 +1600,9 @@ class Interpreter:
             # Probing for optional files is file_exists()'s job (the
             # import resolver's search-path fallback uses it).
             try:
-                with open(path, encoding="utf-8") as f:
+                # newline="": no CRLF translation on read — byte-faithful
+                # to the native fopen("rb") helper on every platform.
+                with open(path, encoding="utf-8", newline="") as f:
                     return f.read()
             except Exception:
                 raise RuntimeError_(f"cannot read file: {path}")
@@ -1623,7 +1625,9 @@ class Interpreter:
             if not isinstance(content, str):
                 content = self._format(content)
             try:
-                with open(path, "w", encoding="utf-8") as f:
+                # newline="": \n stays \n on Windows — matches the
+                # native fopen("wb") helper byte-for-byte.
+                with open(path, "w", encoding="utf-8", newline="") as f:
                     return f.write(content)
             except Exception as e:
                 raise RuntimeError_(f"Error writing file: {e}")
@@ -1638,7 +1642,9 @@ class Interpreter:
             if not isinstance(content, str):
                 content = self._format(content)
             try:
-                with open(path, "a", encoding="utf-8") as f:
+                # newline="": \n stays \n on Windows — matches the
+                # native fopen("ab") helper byte-for-byte.
+                with open(path, "a", encoding="utf-8", newline="") as f:
                     return f.write(content)
             except Exception as e:
                 raise RuntimeError_(f"Error appending to file: {e}")

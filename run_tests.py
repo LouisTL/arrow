@@ -37,11 +37,27 @@ Usage:
     python run_tests.py                 # runs all examples
     python run_tests.py pattern         # runs examples matching pattern
     python run_tests.py -v              # show full output on every test
+    python run_tests.py --native-compiler ./arrow2
+                                        # additive: every test ALSO goes
+                                        # through the given native compiler
+                                        # binary, cross-checked against the
+                                        # interp-hosted oracle
+
+Additive --native-compiler mode: the oracle path (lang.py hosting
+compiler.arrow) runs exactly as described above; per test the runner
+additionally compiles with the native binary and requires (a) the emitted
+.ll byte-identical to the oracle's on compile-clean categories, (b)
+compiler diagnostics byte-identical on *_fail categories, and (c) run
+output / exit codes identical to the interp and oracle-native legs on
+ok / runtime_fail. Interactive tests still skip every native leg. The
+suite expects to run from the repo root (the std-import exe-dir fallback
+and the file_exists_ok pin both assume it).
 
 Exit code: 0 if all pass, 1 if any fail.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -52,6 +68,10 @@ HERE = Path(__file__).parent.resolve()
 EXAMPLES = HERE / "examples"
 LANG = HERE / "lang.py"
 COMPILER = HERE / "compiler.arrow"
+
+# Set by --native-compiler: absolute Path to a native arrow compiler
+# binary. None = oracle-only (the default, byte-identical to before).
+NATIVE_COMPILER = None
 
 INTERACTIVE_KEYWORDS = ["input("]
 
@@ -92,43 +112,68 @@ def run_interp(example: Path) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def run_compile_only(example: Path) -> tuple[int, str, str]:
+def oracle_cmd(example: Path, exe: Path, keep_ll: bool) -> list:
+    """Compile command for the interp-hosted oracle (lang.py running
+    compiler.arrow) — the default host, unchanged from before."""
+    cmd = [sys.executable, str(LANG), str(COMPILER), str(example),
+           "-o", str(exe)]
+    if keep_ll:
+        cmd.append("--keep-ll")
+    return cmd
+
+
+def native_cmd(example: Path, exe: Path, keep_ll: bool) -> list:
+    """Compile command for the --native-compiler binary. Same driver argv
+    contract as the oracle: <compiler> <input> -o <exe> [--keep-ll]."""
+    cmd = [str(NATIVE_COMPILER), str(example), "-o", str(exe)]
+    if keep_ll:
+        cmd.append("--keep-ll")
+    return cmd
+
+
+def run_compile_only(example: Path, cmd_builder=oracle_cmd) -> tuple[int, str, str]:
     with tempfile.TemporaryDirectory() as tmp:
         exe = Path(tmp) / "a.exe"
         proc = subprocess.run(
-            [sys.executable, str(LANG), str(COMPILER), str(example),
-             "-o", str(exe)],
+            cmd_builder(example, exe, False),
             capture_output=True, text=True, timeout=180,
         )
         return proc.returncode, proc.stdout, proc.stderr
 
 
-def run_compile_and_native(example: Path):
+def run_compile_and_native(example: Path, cmd_builder=oracle_cmd,
+                           keep_ll: bool = False):
+    """Compile with the given host command, then run the produced binary.
+    Returns (rc, stdout, stderr, compile_stdout, ll_bytes); ll_bytes is
+    the kept intermediate IR when keep_ll (driver: -o a.exe -> a.ll),
+    else None."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         exe = tmp / "a.exe"
         compile_proc = subprocess.run(
-            [sys.executable, str(LANG), str(COMPILER), str(example),
-             "-o", str(exe)],
+            cmd_builder(example, exe, keep_ll),
             capture_output=True, text=True, timeout=180,
         )
+        ll = tmp / "a.ll"
+        ll_bytes = ll.read_bytes() if (keep_ll and ll.exists()) else None
         if compile_proc.returncode != 0:
             return (compile_proc.returncode, compile_proc.stdout,
                     compile_proc.stderr or "(compile failed)",
-                    compile_proc.stdout)
+                    compile_proc.stdout, ll_bytes)
         real_exe = exe if exe.exists() else tmp / "a"
         if not real_exe.exists():
-            exes = list(tmp.glob("*.exe")) or list(tmp.glob("a*"))
+            exes = (list(tmp.glob("*.exe"))
+                    or [p for p in tmp.glob("a*") if p.suffix != ".ll"])
             real_exe = exes[0] if exes else exe
         if not real_exe.exists():
             return (99, compile_proc.stdout,
                     f"(no output binary; compile output: {compile_proc.stdout})",
-                    compile_proc.stdout)
+                    compile_proc.stdout, ll_bytes)
         run_proc = subprocess.run(
             [str(real_exe)], capture_output=True, text=True, timeout=60,
         )
         return (run_proc.returncode, run_proc.stdout, run_proc.stderr,
-                compile_proc.stdout)
+                compile_proc.stdout, ll_bytes)
 
 
 def is_interactive(example: Path) -> bool:
@@ -152,13 +197,30 @@ def check_ok(example: Path, header: dict, verbose: bool):
     if is_interactive(example):
         return ("skipped (interactive)", "")
 
+    keep = NATIVE_COMPILER is not None
     try:
-        nc, nout, nerr, _ = run_compile_and_native(example)
+        nc, nout, nerr, _, oll = run_compile_and_native(
+            example, oracle_cmd, keep)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT (native)", "")
     if nc != 0:
         last = (nerr or nout).strip().splitlines()
         return ("native ERROR", last[-1] if last else "")
+
+    if NATIVE_COMPILER is not None:
+        try:
+            c2, out2, err2, _, nll = run_compile_and_native(
+                example, native_cmd, True)
+        except subprocess.TimeoutExpired:
+            return ("TIMEOUT (nc-native)", "")
+        if c2 != 0:
+            last = (err2 or out2).strip().splitlines()
+            return ("nc-native ERROR", last[-1] if last else "")
+        if oll != nll:
+            return ("MISMATCH (.ll oracle != nc)", ll_diff_note(oll, nll))
+        if out2 != nout:
+            return ("MISMATCH (nc-native != native)",
+                    f"native:{nout!r} vs nc:{out2!r}")
 
     expected = header["output"]
     if expected is not None:
@@ -188,6 +250,13 @@ def check_fail(example: Path, header: dict, error_kind: str, verbose: bool):
     missing = [c for c in header["contains"] if c not in stdout]
     if missing:
         return ("CONTAINS missing", f"required substrings absent: {missing}")
+    if NATIVE_COMPILER is not None:
+        try:
+            rc2, stdout2, stderr2 = run_compile_only(example, native_cmd)
+        except subprocess.TimeoutExpired:
+            return ("TIMEOUT (nc-compile)", "")
+        if stdout2 != stdout:
+            return ("MISMATCH (nc diag != oracle)", brief_diff(stdout, stdout2))
     return (f"{error_kind} fail", "")
 
 
@@ -200,8 +269,10 @@ def check_runtime_fail(example: Path, header: dict, verbose: bool):
         return ("TIMEOUT (interp)", "")
     if ic == 0:
         return ("UNEXPECTED (interp ran clean)", "")
+    keep = NATIVE_COMPILER is not None
     try:
-        nc, nout, nerr, compile_out = run_compile_and_native(example)
+        nc, nout, nerr, compile_out, oll = run_compile_and_native(
+            example, oracle_cmd, keep)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT (native)", "")
     if "Compilation aborted" in compile_out:
@@ -220,7 +291,34 @@ def check_runtime_fail(example: Path, header: dict, verbose: bool):
     missing = [c for c in header["contains"] if c not in iout]
     if missing:
         return ("CONTAINS missing", f"required substrings absent: {missing}")
+    if NATIVE_COMPILER is not None:
+        try:
+            c2, out2, err2, compile_out2, nll = run_compile_and_native(
+                example, native_cmd, True)
+        except subprocess.TimeoutExpired:
+            return ("TIMEOUT (nc-native)", "")
+        if "Compilation aborted" in compile_out2:
+            last = compile_out2.strip().splitlines()
+            return ("UNEXPECTED (nc compile failed)", last[-1] if last else "")
+        if oll != nll:
+            return ("MISMATCH (.ll oracle != nc)", ll_diff_note(oll, nll))
+        if c2 != 1:
+            return ("BAD EXIT CODE (nc)", f"nc rc={c2} (want 1)")
+        if out2 != iout:
+            return ("MISMATCH (nc-native != interp)",
+                    f"interp:{iout!r} vs nc:{out2!r}")
     return ("runtime fail", "")
+
+
+def ll_diff_note(a, b) -> str:
+    """Describe a .ll byte mismatch between the oracle-emitted IR and
+    the native-compiler-emitted IR."""
+    if a is None or b is None:
+        return (f"missing IR (oracle={'present' if a is not None else 'absent'}, "
+                f"nc={'present' if b is not None else 'absent'})")
+    n = min(len(a), len(b))
+    off = next((i for i in range(n) if a[i] != b[i]), n)
+    return f"first diff at byte {off} (sizes {len(a)} vs {len(b)})"
 
 
 def brief_diff(expected: str, actual: str, max_lines: int = 4) -> str:
@@ -257,7 +355,21 @@ def main():
                     help="substring filter for example filenames")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="show full output on every test")
+    ap.add_argument("--native-compiler", metavar="PATH", default=None,
+                    help="additive mode: also compile every test with this "
+                         "native arrow compiler binary and cross-check .ll "
+                         "bytes, diagnostics, and run output against the "
+                         "interp-hosted oracle")
     args = ap.parse_args()
+
+    global NATIVE_COMPILER
+    if args.native_compiler:
+        p = Path(args.native_compiler).resolve()
+        if not p.is_file() or not os.access(p, os.X_OK):
+            print(f"--native-compiler: not an executable file: {p}")
+            return 1
+        NATIVE_COMPILER = p
+        print(f"additive native-compiler mode: {p}")
 
     examples = sorted([p for p in EXAMPLES.glob("*.arrow")
                        if args.pattern in p.name])
