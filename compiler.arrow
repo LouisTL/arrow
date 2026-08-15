@@ -21,6 +21,7 @@ import "compiler/lexer" as lex;
 import "compiler/ir_render" as irr;
 
 // ── Parser ──────────────────────────────
+type Val <- {kind: str, name: str, type: struct};
 var toks<-[];var pos<-[0];
 var type_aliases<-[[]]; // structural type aliases (3d): [{name, atype}]
 
@@ -311,7 +312,7 @@ fn canonical_of(name: str): str {
 // top-level names in this module to their mangled form. Tracks a scope of
 // parameter / local-variable names that should NOT be rewritten because
 // they shadow the top-level binding.
-fn mod_rewrite_stmts(stmts, top_names, scope, mod_name) {
+fn mod_rewrite_stmts(stmts, top_names: [str], scope: [str], mod_name: str): int {
     var i <- 0;
     while (i < len(stmts)) {
         mod_rewrite_stmt(stmts[i], top_names, scope, mod_name);
@@ -320,7 +321,7 @@ fn mod_rewrite_stmts(stmts, top_names, scope, mod_name) {
     return 0;
 }
 
-fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
+fn mod_rewrite_stmt(s, top_names: [str], scope: [str], mod_name: str): int {
     if (s.node = "Assignment") {
         mod_rewrite_expr(s.expr, top_names, scope, mod_name);
         return 0;
@@ -380,7 +381,7 @@ fn mod_rewrite_stmt(s, top_names, scope, mod_name) {
     return 0;
 }
 
-fn name_in(names, n: str): int {
+fn name_in(names: [str], n: str): int {
     var i <- 0;
     while (i < len(names)) {
         if (names[i] = n) { return true; }
@@ -389,7 +390,7 @@ fn name_in(names, n: str): int {
     return false;
 }
 
-fn mod_rewrite_expr(e, top_names, scope, mod_name) {
+fn mod_rewrite_expr(e, top_names: [str], scope: [str], mod_name: str): int {
     if (e.node = "MatchExpr") {
         mod_rewrite_expr(e.scrutinee, top_names, scope, mod_name);
         var mxi <- 0;
@@ -505,7 +506,7 @@ fn rename_module(stmts, mod_name: str) {
 // import string. If the relative resolution doesn't find the file, the
 // work-loop body retries against a search-path fallback (the directory
 // containing the arrow executable — useful for std lib lookups).
-fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
+fn extract_imports(stmts, dir: str, work_paths, work_dirs: [str], mod_names: [str]) {
     var out <- [];
     var i <- 0;
     while (i < len(stmts)) {
@@ -527,7 +528,7 @@ fn extract_imports(stmts, dir: str, work_paths, work_dirs, mod_names) {
 // nodes referring to imported namespaces. Rewrite them to direct Identifier
 // references with the mangled name, so the rest of the compiler (typeof,
 // scan_fns, IR emit) finds them via the usual lookup paths.
-fn main_rewrite_stmts(stmts, mod_names) {
+fn main_rewrite_stmts(stmts, mod_names: [str]): int {
     var i <- 0;
     while (i < len(stmts)) {
         stmts[i] <- main_rewrite_stmt(stmts[i], mod_names);
@@ -541,7 +542,7 @@ fn main_rewrite_stmts(stmts, mod_names) {
 // pulled it from. The fallback path covers bare expression statements
 // (e.g. `T.helper();`): the parser stores those as the raw expression
 // node, so without this walk the rewriter would miss DotExprs inside.
-fn main_rewrite_stmt(s, mod_names) {
+fn main_rewrite_stmt(s, mod_names: [str]) {
     if (s.node = "Assignment") { s.expr <- main_rewrite_value(s.expr, mod_names); return s; }
     if (s.node = "ReturnStmt") {
         if (s.expr != false) { s.expr <- main_rewrite_value(s.expr, mod_names); }
@@ -590,7 +591,7 @@ fn main_rewrite_stmt(s, mod_names) {
 
 // Recursively rewrite an expression. Returns the (possibly new) node — for
 // DotExpr-on-imported-namespace we substitute a fresh Identifier node.
-fn main_rewrite_value(e, mod_names) {
+fn main_rewrite_value(e, mod_names: [str]) {
     if (e.node = "MatchExpr") {
         e.scrutinee <- main_rewrite_value(e.scrutinee, mod_names);
         var mxi <- 0;
@@ -1049,7 +1050,7 @@ fn find_fn(name: str) {
     return false;
 }
 
-fn set_fn_ret_type(name: str, rtype, rfields) {
+fn set_fn_ret_type(name: str, rtype, rfields: int) {
     var i <- 0;
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
@@ -1442,7 +1443,7 @@ fn scan_globals_list(stmts) {
     }
 }
 
-fn var_exists(vars, name: str): int {
+fn var_exists(vars: [str], name: str): int {
     var i <- 0;
     while (i < len(vars)) {
         if (vars[i] = name) { return true; }
@@ -1468,12 +1469,12 @@ fn collect_vars(stmts, vars) {
     }
 }
 
-fn cv_handle(nd, work, vars) {
+fn cv_handle(nd, work, vars: [str]) {
     cv_stmt(nd, work, vars);
     cv_expr(nd, work, vars);
 }
 
-fn cv_stmt(nd, work, vars) {
+fn cv_stmt(nd, work, vars: [str]) {
     if (nd.node = "Assignment") {
         // Only declarations (`var x <- ...`) introduce a local slot. Bare
         // reassignments to a global should NOT be pre-allocated as locals
@@ -1527,7 +1528,7 @@ fn cv_stmt(nd, work, vars) {
     }
 }
 
-fn cv_expr(nd, work, vars) {
+fn cv_expr(nd, work, vars: [str]) {
     if (nd.node = "MatchExpr") {
         push(work, nd.scrutinee);
         var mxi <- 0;
@@ -1761,7 +1762,7 @@ fn match_expr_result_type(nd) {
     return T.mk_union(norm);
 }
 
-fn check_match_coverage(ln, col, scrutinee, ut, arms) {
+fn check_match_coverage(ln, col: int, scrutinee, ut, arms) {
     var ms <- T.union_normalize(ut.members);
     var covered <- [];
     var ci2 <- 0;
@@ -2391,7 +2392,7 @@ fn scope_stack_has(scopes, name: str): int {
 // Resolution lookup for an identifier read: search the local fn's scope
 // stack, then the captured outer scopes (one entry per enclosing fn), then
 // globals, then top-level function names, then builtins.
-fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
+fn scope_resolves(name: str, fn_scopes, captured, globals_set: [str], fn_names: [str]): int {
     if (scope_stack_has(fn_scopes, name)) { return true; }
     // captured is a list-of-scope-stacks for enclosing closures
     ci <- 0;
@@ -2410,7 +2411,7 @@ fn scope_resolves(name: str, fn_scopes, captured, globals_set, fn_names): int {
 // `var`, since builtins are intrinsics, not bindings. Everything else —
 // current-function scopes, captured outer-fn scopes, globals, top-level fn-names —
 // is a valid mutation target.
-fn scope_resolves_for_assign(name: str, fn_scopes, captured, globals_set, fn_names): int {
+fn scope_resolves_for_assign(name: str, fn_scopes, captured, globals_set: [str], fn_names: [str]): int {
     if (scope_stack_has(fn_scopes, name)) { return true; }
     var ci <- 0;
     while (ci < len(captured)) {
@@ -2447,7 +2448,7 @@ fn scope_declare(fn_scopes, name: str) {
 // Walk an expression checking that every Identifier resolves. Recurses
 // into nested expressions; for ArrowFn, walks into the closure body with
 // a fresh fn_scopes and the current fn_scopes appended to captured.
-fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
+fn scope_check_expr(e, fn_scopes, captured, globals_set: [str], fn_names: [str]) {
     if (e.node = "MatchExpr") {
         scope_check_expr(e.scrutinee, fn_scopes, captured, globals_set, fn_names);
         var mxi <- 0;
@@ -2545,7 +2546,7 @@ fn scope_check_expr(e, fn_scopes, captured, globals_set, fn_names) {
     return false;
 }
 
-fn scope_check_stmts(stmts, fn_scopes, captured, globals_set, fn_names) {
+fn scope_check_stmts(stmts, fn_scopes, captured, globals_set: [str], fn_names: [str]) {
     var i <- 0;
     while (i < len(stmts)) {
         scope_check_stmt(stmts[i], fn_scopes, captured, globals_set, fn_names);
@@ -2554,7 +2555,7 @@ fn scope_check_stmts(stmts, fn_scopes, captured, globals_set, fn_names) {
     return false;
 }
 
-fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
+fn scope_check_stmt(s, fn_scopes, captured, globals_set: [str], fn_names: [str]) {
     if (s.node = "Assignment") {
         // RHS evaluated before LHS is bound, so check expression first.
         scope_check_expr(s.expr, fn_scopes, captured, globals_set, fn_names);
@@ -2659,7 +2660,7 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set, fn_names) {
 }
 
 // Check a single function declaration with its own fresh fn_scopes.
-fn scope_check_fn(fn_decl, outer_captured, globals_set, fn_names, outer_fn_scopes) {
+fn scope_check_fn(fn_decl, outer_captured: int, globals_set: [str], fn_names: [str], outer_fn_scopes: int) {
     var new_captured <- [];
     if (outer_captured != false) {
         ci <- 0;
@@ -2732,7 +2733,7 @@ fn check_body(stmts) {
 // A bool member is fully covered once BOTH literals `true` and `false` have
 // appeared — bool has exactly two inhabitants, so the pair is total. Every
 // other member is covered only by a type arm or `_` (literals merely refine).
-fn match_eff_covered(covered, ms, i: int, seen_lits): int {
+fn match_eff_covered(covered: [int], ms, i: int, seen_lits: [str]): int {
     if (covered[i]) { return true; }
     if (ms[i].kind = "bool" && name_in(seen_lits, "bool:true") && name_in(seen_lits, "bool:false")) { return true; }
     return false;
@@ -3242,7 +3243,7 @@ fn find_captures(body, params, is_expr: int) {
 // `params_in` is the list of names that shadow at this scope. The output is
 // flat — outer-scope names that this body, or any nested ArrowFn body,
 // references (after subtracting inner params).
-fn ir_collect_refs(body, params_in, is_expr: int) {
+fn ir_collect_refs(body, params_in, is_expr: int): [str] {
     var refs <- [];
     var work <- [];
     if (is_expr = false) {
@@ -3325,7 +3326,7 @@ fn ir_collect_refs(body, params_in, is_expr: int) {
     return refs;
 }
 
-fn ir_find_captures(b, body, params, is_expr: int) {
+fn ir_find_captures(b, body, params: [str], is_expr: int): [str] {
     // Collect refs (recursing into nested ArrowFn) then filter to those that
     // resolve in the outer builder's locals — those are the ones we need to
     // copy into the env for this closure.
@@ -3351,7 +3352,7 @@ fn ir_find_captures(b, body, params, is_expr: int) {
 // share writable state with us. (For top-level globals captured by a
 // closure we don't box anything — globals are already by-reference via
 // @g_<n> direct access.)
-fn ir_find_my_captured_locals(b, body) {
+fn ir_find_my_captured_locals(b, body): [str] {
     var captured <- [];
     // Walk body with the same shape ir_collect_refs uses, but only harvest
     // refs from inside ArrowFn nodes. Anything OUR body references at the
@@ -4587,7 +4588,7 @@ if (rc_detect = 0) {
 
 // ── Value constructors ──────────────────────────────
 
-fn ir_reg(name: str, t) {
+fn ir_reg(name: str, t): Val {
     return {kind: "reg", name: name, type: t};
 }
 
@@ -4604,7 +4605,7 @@ fn ir_const_int(n) {
 // Float constant: `val` is the source-level text ("1.5", "3.14159", "0.1").
 // Rendered as the bare text — LLVM accepts decimal float literals in any
 // position that takes a `double` operand (e.g. `fadd double 1.5, %x`).
-fn ir_const_float(val) {
+fn ir_const_float(val: str) {
     return {kind: "const_float", val: val, type: T.mk_float()};
 }
 
@@ -4634,7 +4635,7 @@ fn ir_inst(op: str, dst: str, dst_type, operands, extra) {
 }
 
 // Convenience: a void instruction (no result).
-fn ir_void_inst(op: str, operands, extra) {
+fn ir_void_inst(op: str, operands, extra: int) {
     return {op: op, dst: "", dst_type: T.mk_none(), operands: operands, extra: extra};
 }
 
@@ -4644,12 +4645,12 @@ fn ir_block(label: str) {
     return {label: label, insts: [], terminator: false};
 }
 
-fn ir_push_inst(bb, inst) {
+fn ir_push_inst(bb, inst): int {
     push(bb.insts, inst);
     return 0;
 }
 
-fn ir_set_terminator(bb, term) {
+fn ir_set_terminator(bb, term): int {
     bb.terminator <- term;
     return 0;
 }
@@ -4678,7 +4679,7 @@ fn ir_fn_fresh_label(f, prefix: str): str {
     return prefix + f.next_label[0];
 }
 
-fn ir_fn_add_block(f, bb) {
+fn ir_fn_add_block(f, bb): int {
     push(f.blocks, bb);
     return 0;
 }
@@ -4703,7 +4704,7 @@ fn ir_module() {
     };
 }
 
-fn ir_mod_add_function(m, f) {
+fn ir_mod_add_function(m, f): int {
     push(m.functions, f);
     return 0;
 }
@@ -4722,17 +4723,17 @@ fn ir_mod_add_str(m, text: str): str {
 // Variant that takes an explicit id (e.g. "fmt"). Useful for hand-built
 // IR test code that wants specific names. Caller is responsible for
 // uniqueness.
-fn ir_mod_add_str_raw(m, id: str, text: str) {
+fn ir_mod_add_str_raw(m, id: str, text: str): int {
     push(m.str_table, {id: id, text: text});
     return 0;
 }
 
-fn ir_mod_add_global(m, name: str, t) {
+fn ir_mod_add_global(m, name: str, t): int {
     push(m.globals, {name: name, type: t});
     return 0;
 }
 
-fn ir_mod_add_extern(m, name: str, params, ret_type, is_variadic: int) {
+fn ir_mod_add_extern(m, name: str, params, ret_type, is_variadic: int): int {
     push(m.externs, {name: name, params: params, ret_type: ret_type, is_variadic: is_variadic});
     return 0;
 }
@@ -4764,20 +4765,20 @@ fn ii_neg(dst: str, v)          { return ir_inst("neg",     dst, T.mk_int(), [v]
 // with i64 registers will produce LLVM type errors at clang time, which is a
 // loud failure mode and helpful for catching codegen bugs.
 
-fn ii_fadd(dst: str, l, r)      { return ir_inst("fadd",    dst, T.mk_float(), [l, r], false); }
-fn ii_fsub(dst: str, l, r)      { return ir_inst("fsub",    dst, T.mk_float(), [l, r], false); }
-fn ii_fmul(dst: str, l, r)      { return ir_inst("fmul",    dst, T.mk_float(), [l, r], false); }
-fn ii_fdiv(dst: str, l, r)      { return ir_inst("fdiv",    dst, T.mk_float(), [l, r], false); }
-fn ii_fneg(dst: str, v)         { return ir_inst("fneg",    dst, T.mk_float(), [v],    false); }
+fn ii_fadd(dst: str, l: Val, r: Val)      { return ir_inst("fadd",    dst, T.mk_float(), [l, r], false); }
+fn ii_fsub(dst: str, l: Val, r: Val)      { return ir_inst("fsub",    dst, T.mk_float(), [l, r], false); }
+fn ii_fmul(dst: str, l: Val, r: Val)      { return ir_inst("fmul",    dst, T.mk_float(), [l, r], false); }
+fn ii_fdiv(dst: str, l: Val, r: Val)      { return ir_inst("fdiv",    dst, T.mk_float(), [l, r], false); }
+fn ii_fneg(dst: str, v: Val)         { return ir_inst("fneg",    dst, T.mk_float(), [v],    false); }
 // LLVM fcmp predicates: oeq, one, olt, ole, ogt, oge. The "o" variants are
 // "ordered" — they return false if either operand is NaN. We use them so
 // `nan = nan` is false, matching Python/IEEE.
-fn ii_fcmp(dst: str, op: str, l, r) {
+fn ii_fcmp(dst: str, op: str, l: Val, r: Val) {
     return ir_inst("fcmp", dst, T.mk_int(), [l, r], op);
 }
 
 // Cast i64 (storage form of a float) ↔ double.
-fn ii_bc_i_to_d(dst: str, v)    { return ir_inst("bc_i_to_d", dst, T.mk_float(), [v], false); }
+fn ii_bc_i_to_d(dst: str, v: Val)    { return ir_inst("bc_i_to_d", dst, T.mk_float(), [v], false); }
 fn ii_bc_d_to_i(dst: str, v)    { return ir_inst("bc_d_to_i", dst, T.mk_int(),   [v], false); }
 // allocate an 8-byte heap cell for a captured local. The
 // instruction's dst register holds the cell's address (as i64, the IR's
@@ -4788,11 +4789,11 @@ fn ii_box_alloc(dst: str)       { return ir_inst("box_alloc", dst, T.mk_int(),  
 // load through a box pointer. operand is the box ptr held as i64
 // (e.g. loaded from a slot, or received as a captured env value); we
 // inttoptr it to ptr before the i64 load so LLVM accepts the type.
-fn ii_box_load(dst: str, p)     { return ir_inst("box_load",  dst, T.mk_int(),   [p], false); }
+fn ii_box_load(dst: str, p: Val)     { return ir_inst("box_load",  dst, T.mk_int(),   [p], false); }
 // store through a box pointer. operands = [value, box_ptr_i64].
 // dst is a scratch register name for the inttoptr — caller passes a
 // fresh tmp via ir_fresh_tmp(b, "bsp").
-fn ii_box_store(dst: str, v, p)  { return ir_inst("box_store", dst, T.mk_int(), [v, p], false); }
+fn ii_box_store(dst: str, v, p: Val)  { return ir_inst("box_store", dst, T.mk_int(), [v, p], false); }
 // Cast i64 (an int value) to double via signed int-to-fp.
 fn ii_sitofp(dst: str, v)       { return ir_inst("sitofp",    dst, T.mk_float(), [v], false); }
 // Cast double back to a signed i64 (truncate-toward-zero).
@@ -4805,33 +4806,33 @@ fn ii_icmp(dst: str, op: str, l, r) {
     return ir_inst("icmp", dst, T.mk_int(), [l, r], op);
 }
 
-fn ii_strcmp(dst: str, op: str, l, r) {
+fn ii_strcmp(dst: str, op: str, l: Val, r: Val) {
     return ir_inst("strcmp", dst, T.mk_int(), [l, r], op);
 }
 
 fn ii_alloca(dst: str, t)       { return ir_inst("alloca",  dst, t,        [],     false); }
-fn ii_load(dst: str, t, ptr)    { return ir_inst("load",    dst, t,        [ptr],  false); }
-fn ii_store(val, ptr)           { return ir_void_inst("store",              [val, ptr], false); }
+fn ii_load(dst: str, t, ptr: Val)    { return ir_inst("load",    dst, t,        [ptr],  false); }
+fn ii_store(val, ptr: Val)           { return ir_void_inst("store",              [val, ptr], false); }
 
-fn ii_strcat(dst: str, l, r)    { return ir_inst("strcat",  dst, T.mk_str(), [l, r], false); }
-fn ii_strlen(dst: str, s)       { return ir_inst("strlen",  dst, T.mk_int(), [s],    false); }
-fn ii_int_to_str(dst: str, n)   { return ir_inst("int_to_str", dst, T.mk_str(), [n], false); }
+fn ii_strcat(dst: str, l: Val, r: Val)    { return ir_inst("strcat",  dst, T.mk_str(), [l, r], false); }
+fn ii_strlen(dst: str, s: Val)       { return ir_inst("strlen",  dst, T.mk_int(), [s],    false); }
+fn ii_int_to_str(dst: str, n: Val)   { return ir_inst("int_to_str", dst, T.mk_str(), [n], false); }
 
 // String ops. Each one is lowered inline by the LLVM renderer to match
 // what the runtime expects.
-fn ii_char_code(dst: str, s)        { return ir_inst("char_code", dst, T.mk_int(), [s], false); }
-fn ii_char_at(dst: str, s, idx)     { return ir_inst("char_at",   dst, T.mk_str(), [s, idx], false); }
+fn ii_char_code(dst: str, s: Val)        { return ir_inst("char_code", dst, T.mk_int(), [s], false); }
+fn ii_char_at(dst: str, s: Val, idx)     { return ir_inst("char_at",   dst, T.mk_str(), [s, idx], false); }
 fn ii_from_char_code(dst: str, n)   { return ir_inst("from_char_code", dst, T.mk_str(), [n], false); }
 // substring is delegated to a runtime helper @arrow_substring — keeps the
 // IR linear instead of generating a copy loop.
-fn ii_substring(dst: str, s, st, ed) { return ir_inst("substring", dst, T.mk_str(), [s, st, ed], false); }
+fn ii_substring(dst: str, s: Val, st, ed) { return ir_inst("substring", dst, T.mk_str(), [s, st, ed], false); }
 
 // IO ops — each calls into the corresponding arrow_* runtime helper.
-fn ii_read_file(dst: str, path)     { return ir_inst("read_file",   dst, T.mk_str(), [path], false); }
-fn ii_file_exists(dst: str, path)   { return ir_inst("file_exists", dst, T.mk_bool(), [path], false); }
-fn ii_write_file(dst: str, p, c)    { return ir_inst("write_file",  dst, T.mk_int(), [p, c], false); }
-fn ii_append_file(dst: str, p, c)   { return ir_inst("append_file", dst, T.mk_int(), [p, c], false); }
-fn ii_exec_cmd(dst: str, c)         { return ir_inst("exec_cmd",    dst, T.mk_int(), [c], false); }
+fn ii_read_file(dst: str, path: Val)     { return ir_inst("read_file",   dst, T.mk_str(), [path], false); }
+fn ii_file_exists(dst: str, path: Val)   { return ir_inst("file_exists", dst, T.mk_bool(), [path], false); }
+fn ii_write_file(dst: str, p: Val, c: Val)    { return ir_inst("write_file",  dst, T.mk_int(), [p, c], false); }
+fn ii_append_file(dst: str, p: Val, c: Val)   { return ir_inst("append_file", dst, T.mk_int(), [p, c], false); }
+fn ii_exec_cmd(dst: str, c: Val)         { return ir_inst("exec_cmd",    dst, T.mk_int(), [c], false); }
 fn ii_input(dst: str)               { return ir_inst("input",       dst, T.mk_str(), [],   false); }
 fn ii_input_with_prompt(dst: str, p) { return ir_inst("input",       dst, T.mk_str(), [p],  false); }
 
@@ -4839,42 +4840,42 @@ fn ii_array_new(dst: str, elem_type, elems) {
     // elems is [Value]; elem_type is a Type (element kind)
     return ir_inst("array_new", dst, T.mk_array(elem_type), elems, elem_type);
 }
-fn ii_array_len(dst: str, arr) { return ir_inst("array_len", dst, T.mk_int(), [arr], false); }
-fn ii_array_get(dst: str, elem_type, arr, idx) {
+fn ii_array_len(dst: str, arr: Val) { return ir_inst("array_len", dst, T.mk_int(), [arr], false); }
+fn ii_array_get(dst: str, elem_type, arr: Val, idx) {
     return ir_inst("array_get", dst, elem_type, [arr, idx], false);
 }
-fn ii_array_set(prefix: str, arr, idx, val) {
+fn ii_array_set(prefix: str, arr: Val, idx, val) {
     // prefix is a fresh register-name root used by the renderer to synthesize
     // the intermediate cast/GEP/store registers. Caller's responsibility to
     // make it unique within the function (e.g. ir_fresh_tmp(b, "aset")).
     return ir_inst("array_set", prefix, T.mk_none(), [arr, idx, val], false);
 }
-fn ii_array_push(dst: str, arr, val) {
+fn ii_array_push(dst: str, arr: Val, val) {
     // Returns updated array pointer (realloc may move it)
     return ir_inst("array_push", dst, arr.type, [arr, val], false);
 }
-fn ii_array_concat(dst: str, a, b) {
+fn ii_array_concat(dst: str, a: Val, b: Val) {
     // Returns freshly-allocated array containing a's elems followed by b's.
     return ir_inst("array_concat", dst, a.type, [a, b], false);
 }
-fn ii_array_pop(dst: str, elem_type, arr) {
+fn ii_array_pop(dst: str, elem_type, arr: Val) {
     return ir_inst("array_pop", dst, elem_type, [arr], false);
 }
 
 fn ii_union_new(dst: str, tag, payload) { return ir_inst("union_new", dst, T.mk_int(), [tag, payload], false); }
-fn ii_union_tag(dst: str, cell)            { return ir_inst("union_tag", dst, T.mk_int(), [cell], false); }
-fn ii_union_payload(dst: str, cell)        { return ir_inst("union_payload", dst, T.mk_int(), [cell], false); }
+fn ii_union_tag(dst: str, cell: Val)            { return ir_inst("union_tag", dst, T.mk_int(), [cell], false); }
+fn ii_union_payload(dst: str, cell: Val)        { return ir_inst("union_payload", dst, T.mk_int(), [cell], false); }
 fn ii_struct_new(dst: str, fields) {
     // fields: [{name: str, val: Value}]
     return ir_inst("struct_new", dst, T.mk_struct(), [], fields);
 }
-fn ii_struct_get(dst: str, field_type, s, field: str) {
+fn ii_struct_get(dst: str, field_type, s: Val, field: str) {
     return ir_inst("struct_get", dst, field_type, [s], field);
 }
-fn ii_struct_set(prefix: str, s, field: str, val) {
+fn ii_struct_set(prefix: str, s: Val, field: str, val) {
     return ir_inst("struct_set", prefix, T.mk_none(), [s, val], field);
 }
-fn ii_struct_keys(dst: str, s) {
+fn ii_struct_keys(dst: str, s: Val) {
     return ir_inst("struct_keys", dst, T.mk_array(T.mk_str()), [s], false);
 }
 
@@ -4896,7 +4897,7 @@ fn ii_indirect_call(dst: str, ret_type, fn_ptr, args) {
 fn ii_closure_make(dst: str, fn_name: str, captures) {
     return ir_inst("closure_make", dst, T.mk_int(), captures, fn_name);
 }
-fn ii_closure_call(dst: str, ret_type, pair_val, args) {
+fn ii_closure_call(dst: str, ret_type, pair_val: Val, args) {
     var ops <- [pair_val];
     var i <- 0;
     while (i < len(args)) { push(ops, args[i]); i <- i + 1; }
@@ -4917,31 +4918,31 @@ fn ii_unreachable()             { return ir_void_inst("unreachable", [], false);
 // without re-deriving the value's type from operand metadata. The AST→IR
 // translator picks which one to emit using typeof_expr on the source node.
 fn ii_print_int(val)            { return ir_void_inst("print_int", [val], false); }
-fn ii_print_str(ptr_reg: str, val) {
+fn ii_print_str(ptr_reg: str, val: Val) {
     // ptr_reg is the name for the intermediate inttoptr cast (e.g. "%pp1").
     // Caller's responsibility to make it unique within the function.
     return ir_inst("print_str", ptr_reg, T.mk_none(), [val], false);
 }
 fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false); }
-fn ii_print_float(val)          { return ir_void_inst("print_float", [val], false); }
+fn ii_print_float(val: Val)          { return ir_void_inst("print_float", [val], false); }
 
 // Format helpers — used to compose printed output for composite values.
 // These don't add a trailing newline; the translator emits ii_print_newline
 // at the end of a top-level composite print.
-fn ii_format_int(val)           { return ir_void_inst("format_int", [val], false); }
-fn ii_format_str_q(val)         { return ir_void_inst("format_str_q", [val], false); }
-fn ii_format_bool(val)          { return ir_void_inst("format_bool", [val], false); }
-fn ii_format_float(val)         { return ir_void_inst("format_float", [val], false); }
+fn ii_format_int(val: Val)           { return ir_void_inst("format_int", [val], false); }
+fn ii_format_str_q(val: Val)         { return ir_void_inst("format_str_q", [val], false); }
+fn ii_format_bool(val: Val)          { return ir_void_inst("format_bool", [val], false); }
+fn ii_format_float(val: Val)         { return ir_void_inst("format_float", [val], false); }
 // Runtime-dispatching variants used when the static type is `any` — they
 // use the int-vs-pointer size heuristic to guess whether to format as int
 // or as a (quoted) string.
-fn ii_print_any(val)            { return ir_void_inst("print_any", [val], false); }
-fn ii_format_any(val)           { return ir_void_inst("format_any", [val], false); }
-fn ii_print_dyn(val)            { return ir_void_inst("print_dyn", [val], false); }
-fn ii_format_dyn(val)           { return ir_void_inst("format_dyn", [val], false); }
-fn ii_dyn_cmp(dst: str, t1, p1, t2, p2) { return ir_inst("dyncmp", dst, T.mk_int(), [t1, p1, t2, p2], false); }
-fn ii_dyn_str(dst: str, t, p)   { return ir_inst("dyn_str", dst, T.mk_str(), [t, p], false); }
-fn ii_print_lit(val)            { return ir_void_inst("print_lit", [val], false); }
+fn ii_print_any(val: Val)            { return ir_void_inst("print_any", [val], false); }
+fn ii_format_any(val: Val)           { return ir_void_inst("format_any", [val], false); }
+fn ii_print_dyn(val: Val)            { return ir_void_inst("print_dyn", [val], false); }
+fn ii_format_dyn(val: Val)           { return ir_void_inst("format_dyn", [val], false); }
+fn ii_dyn_cmp(dst: str, t1, p1: Val, t2, p2: Val) { return ir_inst("dyncmp", dst, T.mk_int(), [t1, p1, t2, p2], false); }
+fn ii_dyn_str(dst: str, t: Val, p: Val)   { return ir_inst("dyn_str", dst, T.mk_str(), [t, p], false); }
+fn ii_print_lit(val: Val)            { return ir_void_inst("print_lit", [val], false); }
 fn ii_print_newline()           { return ir_void_inst("print_newline", [], false); }
 // Generic print op — translator code prefers the typed variants
 // (ii_print_int, ii_print_str), but ii_print stays around as a single hook
@@ -5075,7 +5076,7 @@ fn ir_get_closure(b, name: str) {
     return false;
 }
 
-fn ir_set_closure(b, name: str, fn_name: str, param_count: int) {
+fn ir_set_closure(b, name: str, fn_name: str, param_count: int): int {
     push(b.closure_vars, {name: name, fn_name: fn_name, param_count: param_count});
     return 0;
 }
@@ -6427,7 +6428,7 @@ fn ir_emit_binop(b, nd) {
 // Helper for arithmetic when at least one side is float. Promotes both sides
 // to double, emits the named float op, then bitcasts the result back to i64
 // for storage. Returns an ir_reg holding the i64-storage form of the result.
-fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
+fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt): Val {
     var ld <- ir_to_double_reg(b, lhs, lt);
     var rd <- ir_to_double_reg(b, rhs, rt);
     var fr <- ir_fresh_tmp(b, "fr");
@@ -6455,7 +6456,7 @@ fn ir_emit_fbinop(b, fop: str, lhs, lt, rhs, rt) {
 // Pool a literal string in the module string table, then emit code that calls
 // arrow_print_lit on it. Used for all the static glue between formatted parts:
 // "[", "]", ", ", "{", "}", and field-name labels like "name: ".
-fn ir_emit_lit(b, text: str) {
+fn ir_emit_lit(b, text: str): int {
     var sid <- ir_mod_add_str(b.mod, text);
     var tmp <- ir_fresh_tmp(b, "lit");
     ir_push_inst(b.cur_block, ii_ptrtoint(tmp, ir_const_str(sid)));
@@ -6463,7 +6464,7 @@ fn ir_emit_lit(b, text: str) {
     return 0;
 }
 
-fn ir_emit_format_value(b, val, t, top_level: int) {
+fn ir_emit_format_value(b, val, t, top_level: int): int {
     if (t.kind = "int") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_int(val)); }
         else { ir_push_inst(b.cur_block, ii_format_int(val)); }
@@ -6529,7 +6530,7 @@ fn ir_emit_format_value(b, val, t, top_level: int) {
 // Emit `[a, b, c]` for an array value. No newline — the caller adds one if
 // this is a top-level print. Walks the array via a runtime loop driven by
 // an alloca'd index counter (the existing while-stmt pattern).
-fn ir_emit_format_array(b, arr_val, elem_type) {
+fn ir_emit_format_array(b, arr_val: Val, elem_type): int {
     ir_emit_lit(b, "[");
 
     // len_reg = array_len(arr_val)
@@ -6607,7 +6608,7 @@ fn ir_emit_format_array(b, arr_val, elem_type) {
 // Emit `{name: val, ...}` for a struct value. No newline (caller handles top
 // level). Fields are unrolled at compile time using the static struct_lit
 // type — we know names and per-field types up front.
-fn ir_emit_format_struct(b, struct_val, fields) {
+fn ir_emit_format_struct(b, struct_val, fields): int {
     ir_emit_lit(b, "{");
     var i <- 0;
     while (i < len(fields)) {
@@ -6649,7 +6650,7 @@ fn any_tag_of(k: str): int {
 // Wrap a value into a tagged any-cell, keyed by its static type. Already-
 // any values pass through (they are cells); unions cannot be stored into
 // any (their positional tags are meaningless outside their member list).
-fn ir_wrap_any(b, vreg, st) {
+fn ir_wrap_any(b, vreg, st): Val {
     if (st.kind = "any") { return vreg; }
     if (st.kind = "union") {
         report_error(0, 0, "cannot store a union value into any; match it and store the member");
@@ -6680,7 +6681,7 @@ fn ir_unwrap_any(b, vreg, st) {
 // promoting an int/bool payload to double bits inside the helper (the
 // reverse raw-bits edge is deliberate — spec-tagged-any). A mismatch
 // prints `Error: expected <kind> in any, got <kind>` and exits 1.
-fn ir_unwrap_any_checked(b, vreg, st, want: int) {
+fn ir_unwrap_any_checked(b, vreg, st, want: int): Val {
     if (st.kind != "any") { return vreg; }
     var c <- ir_fresh_tmp(b, "auc");
     ir_push_inst(b.cur_block, ii_call(c, T.mk_int(), "arrow_any_unwrap", [vreg, ir_const_int(want)]));
@@ -6726,7 +6727,7 @@ fn ir_emit_arg(b, e) {
     return ir_unwrap_any(b, ir_emit_expr(b, e), typeof_expr(e));
 }
 
-fn ir_union_wrap(b, val, member_type, union_type) {
+fn ir_union_wrap(b, val, member_type, union_type): Val {
     if (member_type.kind = "any") {
         report_error(0, 0, "cannot widen a value of unknown type (any) into union " + T.type_str(union_type) + "; give the source a concrete member type");
     }
@@ -6739,7 +6740,7 @@ fn ir_union_wrap(b, val, member_type, union_type) {
 // Format a union value: load its tag, then an if-chain selecting the member
 // formatter on the reinterpreted payload. top_level flows through so scalar
 // members use the print* path (with newline) and nested ones use format*.
-fn ir_emit_format_union(b, cell_val, members, top_level: int) {
+fn ir_emit_format_union(b, cell_val, members, top_level: int): int {
     var ms <- T.union_normalize(members);
     var tag <- ir_fresh_tmp(b, "utag");
     ir_push_inst(b.cur_block, ii_union_tag(tag, cell_val));
@@ -6871,7 +6872,7 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
     }
     return ir_emit_expr(b, expr);
 }
-fn ir_emit_stmt(b, stmt) {
+fn ir_emit_stmt(b, stmt): int {
     if (stmt.node = "ReturnStmt") {
         if (stmt.expr = false) {
             // bare `return;` — still require a terminator for well-formed IR.
@@ -7598,7 +7599,7 @@ fn backend_emit_preamble(b) {
 
 // Emit declarations for the program's global variables. The list of names
 // comes from scan_globals; each backend chooses how to lay them out.
-fn backend_emit_globals(b, global_names) {
+fn backend_emit_globals(b, global_names: [str]) {
     if (b.kind = "llvm") {
         llvm_emit_globals(global_names);
     }
@@ -7673,7 +7674,7 @@ fn llvm_emit_preamble() {
     emit("");
 }
 
-fn llvm_emit_globals(global_names) {
+fn llvm_emit_globals(global_names: [str]) {
     var i <- 0;
     while (i < len(global_names)) {
         emit("@g_" + global_names[i] + " = global i64 0");

@@ -103,16 +103,16 @@ print(first_word("single"));
 
 // ── Simple number parser ────────────────
 fn parse_int(s) {
-    result <- 0;
-    i <- 0;
-    while (i < str_len(s)) {
-        var c <- char_code(char_at(s, i));
+    var r <- 0;
+    var j <- 0;
+    while (j < str_len(s)) {
+        var c <- char_code(char_at(s, j));
         if (c >= 48 && c <= 57) {
-            result <- result * 10 + (c - 48);
+            r <- r * 10 + (c - 48);
         }
-        i <- i + 1;
+        j <- j + 1;
     }
-    return result;
+    return r;
 }
 print(parse_int("42"));
 print(parse_int("12345"));
