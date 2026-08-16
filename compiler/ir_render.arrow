@@ -66,7 +66,7 @@ fn ir_str_len(s: str): int {
 fn ir_llvm_type(t): str {
     // For now: nearly everything is i64. The exceptions are rendered inline
     // (alloca uses ptr types; string constants use [N x i8] arrays).
-    if (t.kind = "none") { return "void"; }
+    if (t.kind = "") { return "void"; }
     if (t.kind = "ptr")  { return "ptr"; }
     if (t.kind = "i32")  { return "i32"; }
     return "i64";

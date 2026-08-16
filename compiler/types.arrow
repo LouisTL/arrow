@@ -19,7 +19,7 @@ fn mk_struct(): any { return {kind: "struct"}; }
 fn mk_ptr(): any { return {kind: "ptr"}; }
 fn mk_i32(): any { return {kind: "i32"}; }
 fn mk_fn(): any { return {kind: "fn"}; }
-fn mk_none(): any { return {kind: "none"}; }
+fn mk_unann(): any { return {kind: ""}; }
 fn mk_array(elem): any { return {kind: "array", elem: elem, tname: ""}; }
 fn mk_struct_lit(fields): any { return {kind: "struct_lit", fields: fields, tname: ""}; }
 
@@ -191,7 +191,7 @@ fn type_str(t): str {
     return t.kind;
 }
 
-// Look up a field's type in a struct_lit fields list. Returns mk_none()
+// Look up a field's type in a struct_lit fields list. Returns mk_unann()
 // if no field with that name exists — callers treat none as "missing".
 fn struct_has_field(fields, fname: str): int {
     var i <- 0;
@@ -208,7 +208,7 @@ fn struct_field_type(fields, name: str): any {
         if (fields[i].name = name) { return fields[i].type; }
         i <- i + 1;
     }
-    return mk_none();
+    return mk_unann();
 }
 
 // Recursive structural equality on Types. Used by union_normalize (member
@@ -245,8 +245,8 @@ fn type_eq(a, b): int {
 // to widen variable types across multiple writes. Falls back to `any` for
 // anything that can't be cleanly merged.
 fn types_join(a, b): any {
-    if (a.kind = "none") { return b; }
-    if (b.kind = "none") { return a; }
+    if (a.kind = "") { return b; }
+    if (b.kind = "") { return a; }
     if (a.kind = "union" || b.kind = "union") {
         if (a.kind = "union" && b.kind = "union" && types_compat(a, b) && types_compat(b, a)) { return a; }
         return mk_any();
@@ -280,8 +280,8 @@ fn types_join(a, b): any {
 // none/any/struct/fn slots accept anything, numeric kinds are
 // interchangeable, arrays/struct_lits recurse with width subtyping.
 fn types_compat(annot, actual): int {
-    if (annot.kind = "none") { return true; }
-    if (actual.kind = "none") { return true; }
+    if (annot.kind = "") { return true; }
+    if (actual.kind = "") { return true; }
     if (annot.kind = "any") { return true; }
     if (actual.kind = "any") { return true; }
     if (annot.kind = "struct") { return true; }

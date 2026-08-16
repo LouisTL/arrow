@@ -155,13 +155,13 @@ fn pim(){
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!="none"){return T.mk_named(al,n);}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!=""){return T.mk_named(al,n);}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
-fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:"none"};}
+fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:""};}
 // type Name <- Type;  structural alias (3d). Registers the alias and is
 // elided from the AST (handled in pp), so no later pass sees a new node.
 fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-ev("IDENT");eat("ARROW");var ty<-pty();eat("SEMI");set_type_alias(name,ty);return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
-fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:"none"},is_decl:false,line:ln,col:cl};}
+fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:""},is_decl:false,line:ln,col:cl};}
 fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
 // scope checker can enforce same-scope no-redeclaration and reject bare
@@ -175,25 +175,25 @@ fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");
         parse_error(toks[pos[0]].line, toks[pos[0]].col, "expected IDENT, got " + toks[pos[0]].type);
         // Return a stub Assignment so pp()'s resync sees a recorded error
         // and skips to the next statement boundary.
-        return {node:"Assignment",name:"<error>",expr:{node:"NumberLit",value:0},type_ann:{kind:"none"},is_decl:true,line:ln,col:cl};
+        return {node:"Assignment",name:"<error>",expr:{node:"NumberLit",value:0},type_ann:{kind:""},is_decl:true,line:ln,col:cl};
     }
-    var nt<-eat("IDENT");var n<-nt.value;var ta<-{kind:"none"};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};
+    var nt<-eat("IDENT");var n<-nt.value;var ta<-{kind:""};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};
 }
 fn ppa(){var e<-pe();if(ci("ARROW")){eat("ARROW");var v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");var e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}var e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
-fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-ev("IDENT");eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){var pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
-fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"none"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
+fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-ev("IDENT");eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){var pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:""});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:""});}}}eat("RPAREN");var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
+fn ppl(){eat("LPAREN");var p<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:""});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:""});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
 fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
-fn match_destructure_body(bindName: str, ptype, body, ln: int, cl: int){var out<-[];var i<-0;while(i<len(ptype.fields)){var fname<-ptype.fields[i].name;push(out,{node:"Assignment",name:fname,expr:{node:"DotExpr",obj:{node:"Identifier",name:bindName,line:ln,col:cl},field:fname},type_ann:{kind:"none"},is_decl:true,line:ln,col:cl});i<-i+1;}var j<-0;while(j<len(body)){push(out,body[j]);j<-j+1;}return out;}
+fn match_destructure_body(bindName: str, ptype, body, ln: int, cl: int){var out<-[];var i<-0;while(i<len(ptype.fields)){var fname<-ptype.fields[i].name;push(out,{node:"Assignment",name:fname,expr:{node:"DotExpr",obj:{node:"Identifier",name:bindName,line:ln,col:cl},field:fname},type_ann:{kind:""},is_decl:true,line:ln,col:cl});i<-i+1;}var j<-0;while(j<len(body)){push(out,body[j]);j<-j+1;}return out;}
 fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();if(pat.ptype.kind="struct_lit"&&!pat.wild){var bn<-pat.name;if(bn=""&&sc.node="Identifier"){bn<-sc.name;}if(bn!=""){body<-match_destructure_body(bn,pat.ptype,body,ln,cl);}}push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
-fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:"none"};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
+fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:""};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
 fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
-fn paf(){var pl<-ppl();var rt<-{kind:"none"};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
+fn paf(){var pl<-ppl();var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
 fn por(){var l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
 fn pan(){var l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
 fn peq(){var l<-pcm();while(ci("EQ")||ci("NEQ")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
@@ -864,7 +864,7 @@ fn get_decl_type(name: str): any {
         if (types[i].name = name) { return types[i].dtype; }
         i <- i - 1;
     }
-    return T.mk_none();
+    return T.mk_unann();
 }
 
 // Equality for the shadowing rule. int and bool share the i64
@@ -890,10 +890,10 @@ fn shadow_declare(name: str, t, line: int, col: int) {
     while (i < len(lst)) {
         if (lst[i].name = name) {
             var prev <- lst[i].dtype;
-            if (prev.kind != "none" && t.kind != "none" && !shadow_eq(prev, t)) {
+            if (prev.kind != "" && t.kind != "" && !shadow_eq(prev, t)) {
                 report_error(line, col, "re-declaration of '" + name + "' changes its type from " + T.type_str(prev) + " to " + T.type_str(t) + "; shadowing may not change a variable's type (rename the variable)");
             }
-            if (prev.kind = "none" && t.kind != "none") {
+            if (prev.kind = "" && t.kind != "") {
                 lst[i] <- {name: name, dtype: t};
             }
             return false;
@@ -941,12 +941,12 @@ fn get_field_type(fields, fname: str) {
             if (ft = "struct") { return T.mk_struct(); }
             if (ft = "fn") { return T.mk_fn(); }
             // Unrecognized recorded kind: raw tier.
-            return T.mk_none();
+            return T.mk_unann();
         }
         i <- i + 1;
     }
     // Miss: raw tier.
-    return T.mk_none();
+    return T.mk_unann();
 }
 
 // Track array element types: var_name -> elem_type ("int" or "str")
@@ -1005,7 +1005,7 @@ fn get_array_elem_type(var_name: str) {
         i <- i + 1;
     }
     // Miss: raw tier.
-    return T.mk_none();
+    return T.mk_unann();
 }
 
 // Function declarations we need to track
@@ -1055,7 +1055,7 @@ fn set_fn_ret_type(name: str, rtype, rfields: int) {
     while (i < len(declared_fns)) {
         if (declared_fns[i].name = name) {
             // Don't override explicit user annotations — let the checker complain instead
-            if (declared_fns[i].ret_type_ann.kind != "none") {
+            if (declared_fns[i].ret_type_ann.kind != "") {
                 return false;
             }
             declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann, is_arrow_var: declared_fns[i].is_arrow_var};
@@ -1073,7 +1073,7 @@ fn set_fn_param_type(fn_name: str, param_idx: int, ptype) {
     if (param_idx < len(fi.param_types)) {
         // Don't override explicit user annotations — let the checker complain instead
         if (param_idx < len(fi.param_types_ann)) {
-            if (fi.param_types_ann[param_idx].kind != "none") {
+            if (fi.param_types_ann[param_idx].kind != "") {
                 return false;
             }
         }
@@ -1207,7 +1207,7 @@ fn scs_expr(nd, work) {
 //    "int", "str", "any", "struct", "fn"     — primitive
 //    "array" with field `elem: Type`           — [T]
 //    "struct_lit" with field `fields: [...]`   — {name: T, ...}
-//    "none"                                    — sentinel: no annotation
+//    ""                                        — sentinel: no annotation
 //  Stored in var_types and declared_fns; returned by typeof_expr.
 //  Distinct from the .type string field on typed values (universe 2)
 //  used by the IR emitter for codegen decisions.
@@ -1254,16 +1254,16 @@ fn scan_fns(stmts) {
     var i <- 0;
     while (i < len(stmts)) {
         if (stmts[i].node = "FnDecl") {
-            // param_types_ann from AST is already a list of Type values (T.mk_none() if absent)
+            // param_types_ann from AST is already a list of Type values (T.mk_unann() if absent)
             // param_types is the working type used for inference (starts at any, widens via call sites)
             var pt <- [];
             var j <- 0;
             while (j < len(stmts[i].params)) {
-                var ann <- T.mk_none();
+                var ann <- T.mk_unann();
                 if (j < len(stmts[i].param_types_ann)) {
                     ann <- stmts[i].param_types_ann[j];
                 }
-                if (ann.kind != "none") {
+                if (ann.kind != "") {
                     push(pt, ann);
                 } else {
                     push(pt, T.mk_any());
@@ -1272,7 +1272,7 @@ fn scan_fns(stmts) {
             }
             // Use return type annotation if present (a Type value)
             var rt <- T.mk_any();
-            if (stmts[i].ret_type_ann.kind != "none") {
+            if (stmts[i].ret_type_ann.kind != "") {
                 rt <- stmts[i].ret_type_ann;
             }
             push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
@@ -1293,12 +1293,12 @@ fn scan_fns(stmts) {
                 var apt_ann <- [];
                 var k <- 0;
                 while (k < len(afn.params)) {
-                    var ann <- T.mk_none();
+                    var ann <- T.mk_unann();
                     if (k < len(afn.param_types_ann)) {
                         ann <- afn.param_types_ann[k];
                     }
                     push(apt_ann, ann);
-                    if (ann.kind != "none") {
+                    if (ann.kind != "") {
                         push(apt, ann);
                     } else {
                         push(apt, T.mk_any());
@@ -1306,7 +1306,7 @@ fn scan_fns(stmts) {
                     k <- k + 1;
                 }
                 var art <- T.mk_any();
-                if (afn.ret_type_ann.kind != "none") { art <- afn.ret_type_ann; }
+                if (afn.ret_type_ann.kind != "") { art <- afn.ret_type_ann; }
                 push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
             }
         }
@@ -1732,7 +1732,7 @@ fn match_expr_result_type(nd) {
     var ai <- 0;
     while (ai < len(nd.arms)) {
         var arm <- nd.arms[ai];
-        var vt <- T.mk_none();
+        var vt <- T.mk_unann();
         if (arm.wild) {
             vt <- typeof_expr(arm.value);
         } else {
@@ -1757,7 +1757,7 @@ fn match_expr_result_type(nd) {
         ai <- ai + 1;
     }
     var norm <- T.union_normalize(members);
-    if (len(norm) = 0) { return T.mk_none(); }
+    if (len(norm) = 0) { return T.mk_unann(); }
     if (len(norm) = 1) { return norm[0]; }
     return T.mk_union(norm);
 }
@@ -1835,7 +1835,7 @@ fn typeof_expr(nd): any {
             // else is raw tier.
             if (get_decl_type(nd.name).kind != "any") {
                 if (find_fn(nd.name) != false) { return T.mk_fn(); }
-                return T.mk_none();
+                return T.mk_unann();
             }
         }
         return vt2;
@@ -1894,7 +1894,7 @@ fn typeof_expr(nd): any {
                     var at <- typeof_expr(nd.args[0]);
                     if (at.kind = "array") { return at.elem; }
                 }
-                return T.mk_none();
+                return T.mk_unann();
             }
             if (nm = "keys") { return T.mk_array(T.mk_str()); }
             if (nm = "print") { return T.mk_int(); }
@@ -1909,7 +1909,7 @@ fn typeof_expr(nd): any {
                 // callers type by it too. Without one, an inferred `any`
                 // is raw-tier: nothing wrapped it, so callers must not
                 // expect a tagged cell.
-                if (fi.ret_type_ann.kind != "none") { return fi.ret_type_ann; }
+                if (fi.ret_type_ann.kind != "") { return fi.ret_type_ann; }
                 // Param-passthrough specialization: if this fn always returns
                 // a specific parameter unchanged (set by scan_fn_param_returns),
                 // the return type at this call site is the corresponding arg's
@@ -1921,23 +1921,23 @@ fn typeof_expr(nd): any {
                     var arg_t <- typeof_expr(nd.args[ridx]);
                     // Only specialize when the arg has a more specific type
                     // than the declared return — never widen.
-                    if (arg_t.kind != "any" && arg_t.kind != "none") {
+                    if (arg_t.kind != "any" && arg_t.kind != "") {
                         return arg_t;
                     }
                 }
-                if (fi.ret_type.kind = "any") { return T.mk_none(); }
+                if (fi.ret_type.kind = "any") { return T.mk_unann(); }
                 return fi.ret_type;
             }
         }
         // Unknown callee (indirect / closure calls): raw tier.
-        return T.mk_none();
+        return T.mk_unann();
     }
     if (nd.node = "ArrayLit") {
         // Empty array → element type not yet known (`none`). Push-refinement
         // (see infer_body) narrows this as elements get pushed, keeping the
         // idiom on the raw tier; a declared [any] never narrows — it is the
         // tagged tier by request.
-        if (len(nd.elements) = 0) { return T.mk_array(T.mk_none()); }
+        if (len(nd.elements) = 0) { return T.mk_array(T.mk_unann()); }
         // Unify element types across the literal: matching kinds collapse to
         // that kind, mismatched primitives collapse to `any`, mismatched
         // composite shapes recurse field/elem-wise. So
@@ -1954,7 +1954,7 @@ fn typeof_expr(nd): any {
         // the array) read them as raw words. Only an annotation-declared
         // [any] slot puts elements on the tagged tier (the coercion path
         // wraps them at the store).
-        if (et.kind = "any") { et <- T.mk_none(); }
+        if (et.kind = "any") { et <- T.mk_unann(); }
         return T.mk_array(et);
     }
     if (nd.node = "IndexExpr") {
@@ -1972,7 +1972,7 @@ fn typeof_expr(nd): any {
         if (ot.kind = "str") { return T.mk_str(); }
         if (ot.kind = "array") { return ot.elem; }
         // Unknown base: raw tier — nothing wrapped this value.
-        return T.mk_none();
+        return T.mk_unann();
     }
     if (nd.node = "DotExpr") {
         if (nd.obj.node = "Identifier") {
@@ -1980,7 +1980,7 @@ fn typeof_expr(nd): any {
             var ot <- get_var_type(nd.obj.name);
             if (ot.kind = "struct_lit") {
                 var ft <- T.struct_field_type(ot.fields, nd.field);
-                if (ft.kind != "none") { return ft; }
+                if (ft.kind != "") { return ft; }
             }
             // Fall back to legacy struct_layouts side table
             var layout <- get_struct_layout(nd.obj.name);
@@ -1992,10 +1992,10 @@ fn typeof_expr(nd): any {
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "struct_lit") {
             var ft <- T.struct_field_type(ot.fields, nd.field);
-            if (ft.kind != "none") { return ft; }
+            if (ft.kind != "") { return ft; }
         }
         // Unknown base or field: raw tier — nothing wrapped this value.
-        return T.mk_none();
+        return T.mk_unann();
     }
     if (nd.node = "StructLit") {
         // Build a struct_lit type from the literal's fields
@@ -2008,7 +2008,7 @@ fn typeof_expr(nd): any {
             // record may cross into raw-tier scopes, whose readers expect
             // raw words. An annotated struct slot wraps fields through the
             // coercion path instead.
-            if (fvt.kind = "any") { fvt <- T.mk_none(); }
+            if (fvt.kind = "any") { fvt <- T.mk_unann(); }
             push(fs, {name: f.key, type: fvt});
             i <- i + 1;
         }
@@ -2017,7 +2017,7 @@ fn typeof_expr(nd): any {
     if (nd.node = "ArrowFn") { return T.mk_fn(); }
     // Unrecognized expression forms are raw tier: only positions the
     // emitter actually wraps may type as `any`.
-    return T.mk_none();
+    return T.mk_unann();
 }
 
 // Walk a body of statements, updating var_types for each assignment
@@ -2137,7 +2137,7 @@ fn infer_body(stmts) {
         var s <- stmts[i];
         if (s.node = "Assignment") {
             // Use explicit type annotation if present (already a Type), otherwise infer
-            if (s.type_ann.kind != "none") {
+            if (s.type_ann.kind != "") {
                 set_var_type(s.name, s.type_ann);
                 if (s.is_decl) {
                     set_decl_type(s.name, s.type_ann);
@@ -2159,7 +2159,7 @@ fn infer_body(stmts) {
                     // variable's declared type. any/union/union-container and
                     // not-yet-known (none) declared types are permissive.
                     var dt <- get_decl_type(s.name);
-                    if (dt.kind != "none" && dt.kind != "any" && dt.kind != "union"
+                    if (dt.kind != "" && dt.kind != "any" && dt.kind != "union"
                         && !T.union_in_container(dt) && !T.types_compat(dt, ty)) {
                         report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + s.name + "' of type " + T.type_str(dt));
                     }
@@ -2178,7 +2178,7 @@ fn infer_body(stmts) {
                 var rdt <- get_decl_type(s.name);
                 if (!T.union_in_container(existing) && existing.kind != "union"
                     && rdt.kind != "any") {
-                    if (ty.kind != "any" || rdt.kind = "none" || rdt.kind = "union"
+                    if (ty.kind != "any" || rdt.kind = "" || rdt.kind = "union"
                         || T.union_in_container(rdt)) {
                         set_var_type(s.name, ty);
                     }
@@ -2250,7 +2250,7 @@ fn infer_body(stmts) {
                 set_var_type(s.var_name, T.mk_str());
             } else {
                 // Array iteration: elem type from array
-                var et <- T.mk_none();
+                var et <- T.mk_unann();
                 if (s.iterable.node = "Identifier") {
                     et <- get_array_elem_type(s.iterable.name);
                 }
@@ -2287,14 +2287,14 @@ fn infer_body(stmts) {
                     // whose cells poison raw-tier readers in other scopes.
                     // The value itself unwraps at the push edge like any
                     // other any -> raw store.
-                    if (val_t.kind = "any") { val_t <- T.mk_none(); }
+                    if (val_t.kind = "any") { val_t <- T.mk_unann(); }
                     // Treat current `any` as "unknown" (bottom) rather than
                     // "could be anything" (top): narrow toward the pushed
                     // type. Once we have a concrete element type, future
                     // pushes use types_join which correctly collapses to any
                     // if they conflict.
                     var new_elem <- T.mk_any();
-                    if (cur_t.elem.kind = "none") {
+                    if (cur_t.elem.kind = "") {
                         new_elem <- val_t;
                     } else {
                         if (cur_t.elem.kind = "union") {
@@ -2315,7 +2315,7 @@ fn infer_body(stmts) {
                                 if (d_el.kind = "array") {
                                     if (d_el.elem.kind = "any") { keep_any <- true; }
                                 }
-                                if (!keep_any) { new_elem <- T.mk_none(); }
+                                if (!keep_any) { new_elem <- T.mk_unann(); }
                             }
                         }
                     }
@@ -2785,14 +2785,14 @@ fn struct_has_field(fields, fname: str): int {
 fn declared_base_type(e) {
     if (e.node = "Identifier") {
         var dt <- get_decl_type(e.name);
-        if (dt.kind != "none") { return dt; }
+        if (dt.kind != "") { return dt; }
     }
     return typeof_expr(e);
 }
 
 fn check_stmt(s) {
     if (s.node = "Assignment") {
-        if (s.type_ann.kind != "none") {
+        if (s.type_ann.kind != "") {
             if (s.type_ann.kind = "array" && s.type_ann.elem.kind = "union") {
                 // Array-of-union slot. A literal RHS wraps its elements into the
                 // union at construction; a non-literal RHS must already be an
@@ -2814,7 +2814,7 @@ fn check_stmt(s) {
                 }
             }
         }
-        if (s.type_ann.kind = "none") {
+        if (s.type_ann.kind = "") {
             // Bare reassignment to an array-of-union variable: the variable keeps
             // its declared [union] type (see infer_body), so guard the new value
             // exactly like a declaration. A literal wraps and member-checks its
@@ -2856,7 +2856,7 @@ fn check_stmt(s) {
             if (current_fn[0] != "") {
                 var fi <- find_fn(current_fn[0]);
                 if (fi != false) {
-                    if (fi.ret_type_ann.kind != "none") {
+                    if (fi.ret_type_ann.kind != "") {
                         var actual <- typeof_expr(s.expr);
                         if (fi.ret_type_ann.kind = "array" && fi.ret_type_ann.elem.kind = "union") {
                             if (!array_union_src_ok(fi.ret_type_ann.elem, actual, s.expr)) {
@@ -2930,7 +2930,7 @@ fn check_stmt(s) {
                         report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), T.type_str(ivt) + " is not a member of the array element type " + T.type_str(ibt.elem));
                     }
                 }
-            } else if (ibt.elem.kind != "any" && ibt.elem.kind != "none") {
+            } else if (ibt.elem.kind != "any" && ibt.elem.kind != "") {
                 if (!T.types_compat(ibt.elem, ivt)) {
                     report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: array element is " + T.type_str(ibt.elem) + " but assigned " + T.type_str(ivt));
                 }
@@ -2951,7 +2951,7 @@ fn check_stmt(s) {
             var fft <- T.struct_field_type(dot.fields, s.field);
             if (!struct_has_field(dot.fields, s.field)) {
                 report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "unknown field '" + s.field + "' on " + T.type_str(dot));
-            } else if (fft.kind != "any" && fft.kind != "none") {
+            } else if (fft.kind != "any" && fft.kind != "") {
                 var dval <- typeof_expr(s.value);
                 if (!T.types_compat(fft, dval)) {
                     report_error(expr_pos_line(s.obj), expr_pos_col(s.obj), "type mismatch: field '" + s.field + "' is " + T.type_str(fft) + " but assigned " + T.type_str(dval));
@@ -2997,7 +2997,7 @@ fn check_expr(e) {
                 var marm <- e.arms[mxi];
                 var mbn <- "";
                 if (!marm.wild) { mbn <- match_bind_name(marm, e.scrutinee); }
-                var msaved <- T.mk_none();
+                var msaved <- T.mk_unann();
                 var mfsv <- [];
                 if (mbn != "") { msaved <- get_var_type(mbn); set_var_type(mbn, marm.ptype); mfsv <- arm_destructure_set_types(marm.ptype); }
                 check_expr(marm.value);
@@ -3030,7 +3030,7 @@ fn check_expr(e) {
             // tracked type; union elements are handled by the member check
             // above.
             var pdb <- declared_base_type(e.args[0]);
-            if (pdb.kind = "array" && pdb.elem.kind != "union" && pdb.elem.kind != "any" && pdb.elem.kind != "none") {
+            if (pdb.kind = "array" && pdb.elem.kind != "union" && pdb.elem.kind != "any" && pdb.elem.kind != "") {
                 var pvd <- typeof_expr(e.args[1]);
                 if (!T.types_compat(pdb.elem, pvd)) {
                     report_error(e.line, e.col, "type mismatch: pushed " + T.type_str(pvd) + " to array of " + T.type_str(pdb.elem));
@@ -3051,7 +3051,7 @@ fn check_expr(e) {
                     if (j < fi.param_count) {
                         var ann <- fi.param_types_ann[j];
                         // Only check args against EXPLICIT annotations
-                        if (ann.kind != "none") {
+                        if (ann.kind != "") {
                             var actual <- typeof_expr(e.args[j]);
                             if (ann.kind = "array" && ann.elem.kind = "union") {
                                 if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
@@ -4538,7 +4538,7 @@ if (rc_detect = 0) {
 //    Instruction =
 //      { op: str,            // "add", "strcat", "call", ...
 //        dst: str,           // result register name, or "" when void
-//        dst_type: Type,     // T.mk_none() when void
+//        dst_type: Type,     // T.mk_unann() when void
 //        operands: [Value],  // inputs
 //        extra: <any> }      // op-specific (call target, field name, etc.)
 //
@@ -4636,7 +4636,7 @@ fn ir_inst(op: str, dst: str, dst_type, operands, extra) {
 
 // Convenience: a void instruction (no result).
 fn ir_void_inst(op: str, operands, extra: int) {
-    return {op: op, dst: "", dst_type: T.mk_none(), operands: operands, extra: extra};
+    return {op: op, dst: "", dst_type: T.mk_unann(), operands: operands, extra: extra};
 }
 
 // ── BasicBlock ──────────────────────────────────────
@@ -4848,7 +4848,7 @@ fn ii_array_set(prefix: str, arr: Val, idx, val) {
     // prefix is a fresh register-name root used by the renderer to synthesize
     // the intermediate cast/GEP/store registers. Caller's responsibility to
     // make it unique within the function (e.g. ir_fresh_tmp(b, "aset")).
-    return ir_inst("array_set", prefix, T.mk_none(), [arr, idx, val], false);
+    return ir_inst("array_set", prefix, T.mk_unann(), [arr, idx, val], false);
 }
 fn ii_array_push(dst: str, arr: Val, val) {
     // Returns updated array pointer (realloc may move it)
@@ -4873,7 +4873,7 @@ fn ii_struct_get(dst: str, field_type, s: Val, field: str) {
     return ir_inst("struct_get", dst, field_type, [s], field);
 }
 fn ii_struct_set(prefix: str, s: Val, field: str, val) {
-    return ir_inst("struct_set", prefix, T.mk_none(), [s, val], field);
+    return ir_inst("struct_set", prefix, T.mk_unann(), [s, val], field);
 }
 fn ii_struct_keys(dst: str, s: Val) {
     return ir_inst("struct_keys", dst, T.mk_array(T.mk_str()), [s], false);
@@ -4908,7 +4908,7 @@ fn ii_br(label: str)            { return ir_void_inst("br", [ir_label(label)], f
 fn ii_cond_br(i1_reg: str, cond, then_lbl: str, else_lbl: str) {
     // i1_reg is the name for the intermediate icmp-ne result (e.g. "%br1").
     // Must be unique within the function — caller's responsibility.
-    return ir_inst("cond_br", i1_reg, T.mk_none(), [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
+    return ir_inst("cond_br", i1_reg, T.mk_unann(), [cond, ir_label(then_lbl), ir_label(else_lbl)], false);
 }
 fn ii_ret(val)                  { return ir_void_inst("ret", [val], false); }
 fn ii_ret_void()                { return ir_void_inst("ret_void", [], false); }
@@ -4921,7 +4921,7 @@ fn ii_print_int(val)            { return ir_void_inst("print_int", [val], false)
 fn ii_print_str(ptr_reg: str, val: Val) {
     // ptr_reg is the name for the intermediate inttoptr cast (e.g. "%pp1").
     // Caller's responsibility to make it unique within the function.
-    return ir_inst("print_str", ptr_reg, T.mk_none(), [val], false);
+    return ir_inst("print_str", ptr_reg, T.mk_unann(), [val], false);
 }
 fn ii_print_bool(val)           { return ir_void_inst("print_bool", [val], false); }
 fn ii_print_float(val: Val)          { return ir_void_inst("print_float", [val], false); }
@@ -5434,7 +5434,7 @@ fn ir_emit_expr(b, nd) {
             var add_idx <- -1;
             var saved_reg <- "";
             var saved_boxed <- false;
-            var saved_vt <- T.mk_none();
+            var saved_vt <- T.mk_unann();
             var fld_rec <- {saves: [], pre: 0};
             if (bn != "") {
                 var payload <- ir_fresh_tmp(b, "mxpay");
@@ -5566,7 +5566,7 @@ fn ir_emit_expr(b, nd) {
             // Element slot unknown (none-typed array param, etc.): raw
             // tier — wrapping here would poison raw-tier readers of the
             // same array in other scopes.
-            var pelem <- T.mk_none();
+            var pelem <- T.mk_unann();
             if (parrt.kind = "array") { pelem <- parrt.elem; }
             var val <- ir_coerce_slot_value(b, nd.args[1], pelem);
             var tmp <- ir_fresh_tmp(b, "push");
@@ -5744,9 +5744,9 @@ fn ir_emit_expr(b, nd) {
             var args <- [];
             var i <- 0;
             while (i < len(nd.args)) {
-                var cl_pann <- T.mk_none();
+                var cl_pann <- T.mk_unann();
                 if (cl_fi != false && i < len(cl_fi.param_types_ann)) { cl_pann <- cl_fi.param_types_ann[i]; }
-                if (cl_pann.kind = "none") {
+                if (cl_pann.kind = "") {
                     push(args, ir_emit_arg(b, nd.args[i]));
                 } else {
                     push(args, ir_coerce_slot_value(b, nd.args[i], cl_pann));
@@ -5804,9 +5804,9 @@ fn ir_emit_expr(b, nd) {
                 var args <- [];
                 var i <- 0;
                 while (i < len(nd.args)) {
-                    var iv_pann <- T.mk_none();
+                    var iv_pann <- T.mk_unann();
                     if (fi_lookup != false && i < len(fi_lookup.param_types_ann)) { iv_pann <- fi_lookup.param_types_ann[i]; }
-                    if (iv_pann.kind = "none") {
+                    if (iv_pann.kind = "") {
                         push(args, ir_emit_arg(b, nd.args[i]));
                     } else {
                         push(args, ir_coerce_slot_value(b, nd.args[i], iv_pann));
@@ -5827,7 +5827,7 @@ fn ir_emit_expr(b, nd) {
         var args <- [];
         var i <- 0;
         while (i < len(nd.args)) {
-            var pann <- T.mk_none();
+            var pann <- T.mk_unann();
             if (cfi != false && i < len(cfi.param_types_ann)) { pann <- cfi.param_types_ann[i]; }
             // ir_coerce_slot_value owns every slot-keyed coercion: union
             // params wrap member values, any-annotated params receive a
@@ -5938,7 +5938,7 @@ fn ir_emit_expr(b, nd) {
         // when set), so this aligns the body half with the caller half.
         // set_fn_ret_type skips annotated entries, so the later
         // inferred-type mirror becomes a no-op rather than a conflict.
-        if (nd.ret_type_ann.kind != "none") {
+        if (nd.ret_type_ann.kind != "") {
             if (find_fn(afn_name) = false) {
                 push(declared_fns, {
                     name: afn_name,
@@ -6020,13 +6020,13 @@ fn ir_emit_expr(b, nd) {
             // annotation, and an explicitly-any param joins the tagged
             // tier (call sites wrap arguments into cells) — enrolled as
             // declared-any for typeof's tier gate. Unannotated stays raw.
-            var pann3 <- T.mk_none();
+            var pann3 <- T.mk_unann();
             if (i < len(nd.param_types_ann)) { pann3 <- nd.param_types_ann[i]; }
             if (pann3.kind = "any") { set_decl_type(pname, pann3); }
-            if (pann3.kind != "none") {
+            if (pann3.kind != "") {
                 set_var_type(pname, pann3);
             } else {
-                set_var_type(pname, T.mk_none());
+                set_var_type(pname, T.mk_unann());
             }
             shadow_declare(pname, pann3, 0, 0);
             i <- i + 1;
@@ -6123,7 +6123,7 @@ fn ir_emit_expr(b, nd) {
         }
 
         if (nd.is_expr) {
-            if (nd.ret_type_ann.kind != "none") {
+            if (nd.ret_type_ann.kind != "") {
                 // An annotated expression body returns
                 // through the same slot machinery as a ReturnStmt —
                 // the value is built for the annotation, wrapped for an
@@ -6196,7 +6196,7 @@ fn ir_emit_expr(b, nd) {
                 ret_fields: false,
                 param_types: [],
                 param_types_ann: nd.param_types_ann,
-                ret_type_ann: T.mk_none(),
+                ret_type_ann: T.mk_unann(),
                 is_arrow_var: false
             });
         } else {
@@ -6307,7 +6307,7 @@ fn ir_emit_binop(b, nd) {
         // is the magnitude heuristic, which is what dynamic-vs-dynamic
         // comparison always meant (string content, not pointer identity).
         if (lt.kind = "any" || rt.kind = "any"
-            || (lt.kind = "none" && rt.kind = "none")) {
+            || (lt.kind = "" && rt.kind = "")) {
             var ls <- ir_dyn_side(b, lhs, lt);
             var rs <- ir_dyn_side(b, rhs, rt);
             var dc <- ir_fresh_tmp(b, "dcmp");
@@ -6517,7 +6517,7 @@ fn ir_emit_format_value(b, val, t, top_level: int): int {
     // type joined across mixed-shape literals to `any`. For untyped structs
     // (the `struct` kind, distinct from `struct_lit`) we still fall back to
     // int — there's no general way to walk an opaque struct at runtime.
-    if (t.kind = "any" || t.kind = "none") {
+    if (t.kind = "any" || t.kind = "") {
         if (top_level) { ir_push_inst(b.cur_block, ii_print_any(val)); }
         else { ir_push_inst(b.cur_block, ii_format_any(val)); }
         return 0;
@@ -6865,7 +6865,7 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
         // stay raw defensively. Every concrete slot verifies the tag
         // here — this tail owns the checked unwrap for assignments,
         // returns, element/field stores and annotated call arguments.
-        if (slot_t.kind = "none" || slot_t.kind = "union") {
+        if (slot_t.kind = "" || slot_t.kind = "union") {
             return ir_unwrap_any(b, ir_emit_expr(b, expr), dvt);
         }
         return ir_unwrap_any_checked(b, ir_emit_expr(b, expr), dvt, any_tag_of(slot_t.kind));
@@ -6879,7 +6879,7 @@ fn ir_emit_stmt(b, stmt): int {
             ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
         } else {
             var rfn <- find_fn(b.func.name);
-            var rslot <- T.mk_none();
+            var rslot <- T.mk_unann();
             if (rfn != false) { rslot <- rfn.ret_type_ann; }
             var v: any <- ir_emit_value_for_slot(b, stmt.expr, rslot);
             // Return coercion: a member value returned from a union-typed
@@ -6903,8 +6903,8 @@ fn ir_emit_stmt(b, stmt): int {
         return 0;
     }
     if (stmt.node = "Assignment") {
-        var slot_t <- T.mk_none();
-        if (stmt.type_ann.kind != "none") {
+        var slot_t <- T.mk_unann();
+        if (stmt.type_ann.kind != "") {
             slot_t <- stmt.type_ann;
         } else {
             // Look up existing var type — same name may have been declared earlier.
@@ -6914,7 +6914,7 @@ fn ir_emit_stmt(b, stmt): int {
             // (A miss also reads as any — synthetic desugar temps like
             // for-in counters must stay raw.)
             if (slot_t.kind = "any" && get_decl_type(stmt.name).kind != "any") {
-                slot_t <- T.mk_none();
+                slot_t <- T.mk_unann();
             }
         }
         // An array-of-union literal wraps each element into the union at
@@ -7026,7 +7026,7 @@ fn ir_emit_stmt(b, stmt): int {
         // wrapped (and a nested container has its own unions wrapped,
         // recursively) instead of landing as a raw word.
         var at <- typeof_expr(stmt.obj);
-        var eslot <- T.mk_none();
+        var eslot <- T.mk_unann();
         if (at.kind = "array") { eslot <- at.elem; }
         var val <- ir_coerce_slot_value(b, stmt.value, eslot);
         var prefix <- ir_fresh_tmp(b, "aset");
@@ -7040,7 +7040,7 @@ fn ir_emit_stmt(b, stmt): int {
         // field stores a {tag,payload} cell, so a member value is wrapped
         // (and a nested container has its own unions wrapped, recursively).
         var ot <- typeof_expr(stmt.obj);
-        var fslot <- T.mk_none();
+        var fslot <- T.mk_unann();
         if (ot.kind = "struct_lit") { fslot <- T.struct_field_type(ot.fields, stmt.field); }
         var val <- ir_coerce_slot_value(b, stmt.value, fslot);
         var fid <- ir_mod_add_str(b.mod, stmt.field);
@@ -7120,7 +7120,7 @@ fn ir_emit_stmt(b, stmt): int {
             var add_idx <- -1;
             var saved_reg <- "";
             var saved_boxed <- false;
-            var saved_vt <- T.mk_none();
+            var saved_vt <- T.mk_unann();
             if (bn != "") {
                 var payload <- ir_fresh_tmp(b, "mpay");
                 ir_push_inst(b.cur_block, ii_union_payload(payload, cell));
@@ -7285,7 +7285,7 @@ fn ir_emit_stmt(b, stmt): int {
         b.for_idx_counter[0] <- b.for_idx_counter[0] + 1;
         var idx_name <- "_for_idx_" + b.for_idx_counter[0];
 
-        var idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: T.mk_none(), is_decl: true};
+        var idx_init <- {node: "Assignment", name: idx_name, expr: {node: "NumberLit", value: 0}, type_ann: T.mk_unann(), is_decl: true};
         ir_emit_stmt(b, idx_init);
 
         // condition: idx_name < len(coll)
@@ -7301,14 +7301,14 @@ fn ir_emit_stmt(b, stmt): int {
             node: "Assignment",
             name: stmt.var_name,
             expr: {node: "IndexExpr", obj: stmt.iterable, index: {node: "Identifier", name: idx_name}},
-            type_ann: T.mk_none(),
+            type_ann: T.mk_unann(),
             is_decl: true
         };
         var inc_idx <- {
             node: "Assignment",
             name: idx_name,
             expr: {node: "BinOp", op: "+", left: {node: "Identifier", name: idx_name}, right: {node: "NumberLit", value: 1}},
-            type_ann: T.mk_none(),
+            type_ann: T.mk_unann(),
             is_decl: false
         };
         // Statement nodes of mixed shapes go in here. Use the parser's
@@ -7436,15 +7436,15 @@ fn emit_function_via_ir(nd, mod) {
         // an annotation, a call-site join landing on `any` still maps to
         // `none`: nothing wraps those arguments (raw tier).
         var pt2 <- T.mk_any();
-        var pann2 <- T.mk_none();
+        var pann2 <- T.mk_unann();
         if (fi_info != false && i < len(fi_info.param_types)) {
             pt2 <- fi_info.param_types[i];
         }
         if (fi_info != false && i < len(fi_info.param_types_ann)) {
             pann2 <- fi_info.param_types_ann[i];
         }
-        if (pann2.kind != "none") { pt2 <- pann2; }
-        if (pt2.kind = "any" && pann2.kind != "any") { pt2 <- T.mk_none(); }
+        if (pann2.kind != "") { pt2 <- pann2; }
+        if (pt2.kind = "any" && pann2.kind != "any") { pt2 <- T.mk_unann(); }
         if (pann2.kind = "any") { set_decl_type(nd.params[i], pann2); }
         set_var_type(nd.params[i], pt2);
         shadow_declare(nd.params[i], pann2, 0, 0);
@@ -7805,7 +7805,7 @@ fn compile_via_ir(stmts, backend) {
         ret_fields: [],
         param_types: [],
         param_types_ann: [],
-        ret_type_ann: T.mk_none(),
+        ret_type_ann: T.mk_unann(),
         is_arrow_var: false
     });
     ir_mod_add_function(m, emit_function_via_ir(main_logic_fn, m));
