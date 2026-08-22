@@ -1,0 +1,44 @@
+// EXPECT: ok
+//OUT: [1, "two", none]
+//OUT: two
+//OUT: [7]
+//OUT: 0
+//OUT: []
+//OUT: [1, "a", 3.5]
+//OUT: 3.5
+//OUT: [42]
+//OUT: [{path: "hello"}]
+
+// ONETIER dial (`[]` leg, SPEC 1.4; gap 6.5 retired). The empty
+// literal is [any]: cell elements (tag 10), mixed pushes legal,
+// element reads are cells. At annotated edges the empty literal
+// adopts the expected array type (decl, argument, return). A mixed
+// nonempty literal is [any] too - elements wrap by their own static
+// types. Cross-scope pushes through any-typed params ride
+// arrow_push_dyn, which branches on the array's runtime tier tag.
+
+var xs <- [];
+push(xs, 1);
+push(xs, "two");
+push(xs, none);
+print(xs);
+print(xs[1]);
+var ys: [int] <- [];
+push(ys, 7);
+print(ys);
+fn takes(zs: [int]): int { return len(zs); }
+print(takes([]));
+fn gives(): [str] { return []; }
+print(gives());
+var mixed <- [1, "a", 3.5];
+print(mixed);
+print(mixed[2]);
+var a: any <- [];
+push(a, 42);
+print(a);
+fn fill(wp) {
+    push(wp, {path: "hello"});
+}
+var work <- [];
+fill(work);
+print(work);

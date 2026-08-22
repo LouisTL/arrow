@@ -1,0 +1,18 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected int in any, got str
+
+// SPEC-ONETIER section 6.2 original example, pinned verbatim. An
+// unannotated return defaults to checked any (ONETIER retired return
+// inference); the any-held str traps at take's annotated int edge.
+// Mechanism sibling: any_trap_str_int_fail (explicit `: any` decl);
+// this file pins the spec's provenance -- the checked-any DEFAULT.
+// Deliberately runtime_fail TODAY: if flow typing ever lands, this
+// may promote to type_fail -- re-decide then, do not silently move.
+fn make() {
+    return "hello";
+}
+fn take(n: int) {
+    print(n + 1);
+}
+var v <- make();
+take(v);
