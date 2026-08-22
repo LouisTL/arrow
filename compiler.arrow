@@ -211,9 +211,9 @@ fn ppm(){
     if(ci("FLOAT")){var v<-cv();adv();return{node:"FloatLit",value:v};}
     if(ci("STRING")){var v<-cv();adv();return{node:"StringLit",value:v};}
     if(ci("BOOL")){var v<-cv();adv();return{node:"BoolLit",value:v};}
-    if(ci("IDENT")){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var v<-cv();adv();return{node:"Identifier",name:v,line:ln,col:cl};}
+    if(ci("IDENT")){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var v<-cv();adv();if(v="none"){return{node:"NoneLit",line:ln,col:cl};}return{node:"Identifier",name:v,line:ln,col:cl};}
     if(ci("LBRACKET")){eat("LBRACKET");var el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
-    if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var k<-ev("IDENT");eat("COLON");var v<-pe();push(fs,{key:k,val:v});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");v<-pe();push(fs,{key:k,val:v});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
+    if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var k<-ev("IDENT");eat("COLON");var vv<-pe();push(fs,{key:k,val:vv});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");vv<-pe();push(fs,{key:k,val:vv});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
     if(ci("LPAREN")){eat("LPAREN");var e<-pe();eat("RPAREN");return e;}
     parse_error(toks[pos[0]].line, toks[pos[0]].col, "unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
 }
@@ -1826,6 +1826,7 @@ fn typeof_expr(nd): any {
     if (nd.node = "FloatLit") { return T.mk_float(); }
     if (nd.node = "StringLit") { return T.mk_str(); }
     if (nd.node = "BoolLit") { return T.mk_bool(); }
+    if (nd.node = "NoneLit") { return {kind: "none"}; }
     if (nd.node = "Identifier") {
         var vt2 <- get_var_type(nd.name);
         if (vt2.kind = "any") {
@@ -3069,6 +3070,7 @@ fn check_stmt(s) {
 
 fn expr_pos_line(e): int {
     if (e.node = "Identifier") { return e.line; }
+    if (e.node = "NoneLit") { return e.line; }
     if (e.node = "CallExpr") { return e.line; }
     if (e.node = "IndexExpr") { return expr_pos_line(e.obj); }
     if (e.node = "DotExpr") { return expr_pos_line(e.obj); }
@@ -3076,6 +3078,7 @@ fn expr_pos_line(e): int {
 }
 fn expr_pos_col(e): int {
     if (e.node = "Identifier") { return e.col; }
+    if (e.node = "NoneLit") { return e.col; }
     if (e.node = "CallExpr") { return e.col; }
     if (e.node = "IndexExpr") { return expr_pos_col(e.obj); }
     if (e.node = "DotExpr") { return expr_pos_col(e.obj); }
@@ -3116,7 +3119,37 @@ fn check_expr(e) {
             }
         }
     }
-    if (e.node = "BinOp") { check_no_union(e.left, "in arithmetic or comparison"); check_no_union(e.right, "in arithmetic or comparison"); check_expr(e.left); check_expr(e.right); }
+    if (e.node = "BinOp") {
+        var bl_t <- typeof_expr(e.left);
+        var br_t <- typeof_expr(e.right);
+        // ONETIER DELTA-1: `= none` / `!= none` is the one legal union
+        // BinOp - the nullability probe. The union side of exactly that
+        // shape skips the union rejection; everything else narrows first.
+        var bl_skip <- false;
+        var br_skip <- false;
+        if (e.op = "=" || e.op = "!=") {
+            if (br_t.kind = "none") { bl_skip <- true; }
+            if (bl_t.kind = "none") { br_skip <- true; }
+        }
+        if (!bl_skip) { check_no_union(e.left, "in arithmetic or comparison"); }
+        if (!br_skip) { check_no_union(e.right, "in arithmetic or comparison"); }
+        // ONETIER DELTA-1: none supports = and != (and renders "none" in
+        // str concatenation, and is falsy in boolean contexts); arithmetic
+        // and ordered comparison reject it.
+        if (bl_t.kind = "none" || br_t.kind = "none") {
+            var bn_bad <- false;
+            if (e.op = "<" || e.op = ">" || e.op = "<=" || e.op = ">=") { bn_bad <- true; }
+            if (e.op = "-" || e.op = "*" || e.op = "/" || e.op = "%") { bn_bad <- true; }
+            if (e.op = "+" && bl_t.kind != "str" && br_t.kind != "str") { bn_bad <- true; }
+            if (bn_bad) {
+                var bn_e <- e.left;
+                if (br_t.kind = "none") { bn_e <- e.right; }
+                report_error(expr_pos_line(bn_e), expr_pos_col(bn_e), "none cannot be used with '" + e.op + "'; only = and != test none");
+            }
+        }
+        check_expr(e.left);
+        check_expr(e.right);
+    }
     if (e.node = "UnaryOp") { check_no_union(e.operand, "in a unary operation"); check_expr(e.operand); }
     if (e.node = "CallExpr") {
         if (e.callee.node = "Identifier" && e.callee.name = "push" && len(e.args) >= 2) {
@@ -3872,7 +3905,8 @@ fn emit_trap_helpers() {
     emit("@.rt.kstruct = private constant [7 x i8] c\"struct\\00\"");
     emit("@.rt.kfn = private constant [3 x i8] c\"fn\\00\"");
     emit("@.rt.kopq = private constant [7 x i8] c\"opaque\\00\"");
-    emit("@.rt.knames = private constant [8 x ptr] [ptr @.rt.kint, ptr @.rt.kfloat, ptr @.rt.kbool, ptr @.rt.kstr, ptr @.rt.karr, ptr @.rt.kstruct, ptr @.rt.kfn, ptr @.rt.kopq]");
+    emit("@.rt.knone = private constant [5 x i8] c\"none\\00\"");
+    emit("@.rt.knames = private constant [11 x ptr] [ptr @.rt.kint, ptr @.rt.kfloat, ptr @.rt.kbool, ptr @.rt.kstr, ptr @.rt.karr, ptr @.rt.kstruct, ptr @.rt.kfn, ptr @.rt.kopq, ptr @.rt.kopq, ptr @.rt.knone, ptr @.rt.karr]");
     emit("define i64 @arrow_any_unwrap(i64 %cell.i, i64 %want) {");
     emit("entry:");
     emit("  %p = inttoptr i64 %cell.i to ptr");
@@ -3932,6 +3966,10 @@ fn emit_dyn_helpers() {
     emit("@.dyn.arr = private constant [8 x i8] c\"<array>\\00\"");
     emit("@.dyn.struct = private constant [9 x i8] c\"<struct>\\00\"");
     emit("@.dyn.fnv = private constant [5 x i8] c\"<fn>\\00\"");
+    emit("@.dyn.none = private constant [5 x i8] c\"none\\00\"");
+    emit("@.ps_lb = private constant [2 x i8] c\"{\\00\"");
+    emit("@.ps_rb = private constant [2 x i8] c\"}\\00\"");
+    emit("@.ps_nm = private constant [5 x i8] c\"%s: \\00\"");
     emit("@.dyn.true = private constant [5 x i8] c\"true\\00\"");
     emit("@.dyn.false = private constant [6 x i8] c\"false\\00\"");
     emit("@.dyn.fmtg = private constant [3 x i8] c\"%g\\00\"");
@@ -3947,7 +3985,8 @@ fn emit_dyn_helpers() {
     emit("    i64 3, label %ts");
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
-    emit("    i64 6, label %tn ]");
+    emit("    i64 6, label %tn");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %pay)");
     emit("  call i32 @fflush(ptr null)");
@@ -3970,11 +4009,15 @@ fn emit_dyn_helpers() {
     emit("  call i32 @fflush(ptr null)");
     emit("  ret void");
     emit("tt:");
-    emit("  call i32 @puts(ptr @.dyn.struct)");
-    emit("  call i32 @fflush(ptr null)");
+    emit("  call void @arrow_format_struct(i64 %pay)");
+    emit("  call void @arrow_print_newline()");
     emit("  ret void");
     emit("tn:");
     emit("  call i32 @puts(ptr @.dyn.fnv)");
+    emit("  call i32 @fflush(ptr null)");
+    emit("  ret void");
+    emit("tnone:");
+    emit("  call i32 @puts(ptr @.dyn.none)");
     emit("  call i32 @fflush(ptr null)");
     emit("  ret void");
     emit("opq:");
@@ -3994,7 +4037,8 @@ fn emit_dyn_helpers() {
     emit("    i64 3, label %ts");
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
-    emit("    i64 6, label %tn ]");
+    emit("    i64 6, label %tn");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  call void @arrow_format_int(i64 %pay)");
     emit("  ret void");
@@ -4011,13 +4055,52 @@ fn emit_dyn_helpers() {
     emit("  call void @arrow_format_arr(i64 %pay)");
     emit("  ret void");
     emit("tt:");
-    emit("  call i32 (ptr, ...) @printf(ptr @.dyn.struct)");
+    emit("  call void @arrow_format_struct(i64 %pay)");
     emit("  ret void");
     emit("tn:");
     emit("  call i32 (ptr, ...) @printf(ptr @.dyn.fnv)");
     emit("  ret void");
+    emit("tnone:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.dyn.none)");
+    emit("  ret void");
     emit("opq:");
     emit("  call void @arrow_format_any(i64 %pay)");
+    emit("  ret void");
+    emit("}");
+    emit("");
+    emit("define void @arrow_format_struct(i64 %pay) {");
+    emit("entry:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.ps_lb)");
+    emit("  %sp = inttoptr i64 %pay to ptr");
+    emit("  %n = load i64, ptr %sp");
+    emit("  br label %loop");
+    emit("loop:");
+    emit("  %i = phi i64 [ 0, %entry ], [ %ni, %next ]");
+    emit("  %more = icmp slt i64 %i, %n");
+    emit("  br i1 %more, label %elem, label %done");
+    emit("elem:");
+    emit("  %first = icmp eq i64 %i, 0");
+    emit("  br i1 %first, label %noc, label %comma");
+    emit("comma:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.pa_cm)");
+    emit("  br label %noc");
+    emit("noc:");
+    emit("  %nsi = add i64 %n, 1");
+    emit("  %nsj = add i64 %nsi, %i");
+    emit("  %npp = getelementptr i64, ptr %sp, i64 %nsj");
+    emit("  %np = load i64, ptr %npp");
+    emit("  %npr = inttoptr i64 %np to ptr");
+    emit("  call i32 (ptr, ...) @printf(ptr @.ps_nm, ptr %npr)");
+    emit("  %vsi = add i64 %i, 1");
+    emit("  %vpp = getelementptr i64, ptr %sp, i64 %vsi");
+    emit("  %vc = load i64, ptr %vpp");
+    emit("  call void @arrow_format_dyn(i64 %vc)");
+    emit("  br label %next");
+    emit("next:");
+    emit("  %ni = add i64 %i, 1");
+    emit("  br label %loop");
+    emit("done:");
+    emit("  call i32 (ptr, ...) @printf(ptr @.ps_rb)");
     emit("  ret void");
     emit("}");
     emit("");
@@ -4155,7 +4238,8 @@ fn emit_dyn_helpers() {
     emit("    i64 3, label %ts");
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
-    emit("    i64 6, label %tn ]");
+    emit("    i64 6, label %tn");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  %is = call ptr @arrow_itoa(i64 %pay)");
     emit("  %ii = ptrtoint ptr %is to i64");
@@ -4182,6 +4266,9 @@ fn emit_dyn_helpers() {
     emit("tn:");
     emit("  %ni = ptrtoint ptr @.dyn.fnv to i64");
     emit("  ret i64 %ni");
+    emit("tnone:");
+    emit("  %nni = ptrtoint ptr @.dyn.none to i64");
+    emit("  ret i64 %nni");
     emit("opq:");
     emit("  %op = call ptr @arrow_to_str(i64 %pay)");
     emit("  %oi = ptrtoint ptr %op to i64");
@@ -5622,6 +5709,11 @@ fn ir_emit_expr(b, nd) {
         if (nd.value = "true") { return ir_const_int(1); }
         return ir_const_int(0);
     }
+    if (nd.node = "NoneLit") {
+        // ONETIER DELTA-1: none is payload 0; its static kind ("none")
+        // drives wrapping (tag 9), formatting, and comparison routing.
+        return ir_const_int(0);
+    }
     if (nd.node = "Identifier") {
         // Locals shadow globals: scan the builder's locals first; only fall
         // back to a global @g_<n> load if the name isn't found locally.
@@ -6652,6 +6744,8 @@ fn ir_emit_binop(b, nd) {
         ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, T.mk_int())));
 
         var lhs <- ir_emit_expr(b, nd.left);
+        // ONETIER dial: payload truthiness (P3-24 convention).
+        lhs <- ir_unwrap_any(b, lhs, typeof_expr(nd.left));
 
         var rhs_lbl <- ir_fresh_block_lbl(b, "and_r");
         var end_lbl <- ir_fresh_block_lbl(b, "and_e");
@@ -6662,6 +6756,7 @@ fn ir_emit_binop(b, nd) {
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
         var rhs <- ir_emit_expr(b, nd.right);
+        rhs <- ir_unwrap_any(b, rhs, typeof_expr(nd.right));
         ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
@@ -6681,6 +6776,8 @@ fn ir_emit_binop(b, nd) {
         ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, T.mk_int())));
 
         var lhs <- ir_emit_expr(b, nd.left);
+        // ONETIER dial: payload truthiness (P3-24 convention).
+        lhs <- ir_unwrap_any(b, lhs, typeof_expr(nd.left));
 
         var rhs_lbl <- ir_fresh_block_lbl(b, "or_r");
         var end_lbl <- ir_fresh_block_lbl(b, "or_e");
@@ -6692,6 +6789,7 @@ fn ir_emit_binop(b, nd) {
         ir_fn_add_block(b.func, rhs_bb);
         b.cur_block <- rhs_bb;
         var rhs <- ir_emit_expr(b, nd.right);
+        rhs <- ir_unwrap_any(b, rhs, typeof_expr(nd.right));
         ir_push_inst(b.cur_block, ii_store(rhs, ir_reg(res_slot_name, T.mk_int())));
         ir_set_terminator(b.cur_block, ii_br(end_lbl));
 
@@ -6721,7 +6819,30 @@ fn ir_emit_binop(b, nd) {
         // Two raw-tier (`none`) sides also route here: their opaque lane
         // is the magnitude heuristic, which is what dynamic-vs-dynamic
         // comparison always meant (string content, not pointer identity).
+        // ONETIER DELTA-1: `= none` / `!= none` against a union operand
+        // tests the union tag against the none member index (member-index
+        // tags never enter the universal dyn lane). A union with no none
+        // member compares constant-false: nothing is nullable by default.
+        if ((op = "=" || op = "!=")
+            && ((lt.kind = "union" && rt.kind = "none")
+                || (rt.kind = "union" && lt.kind = "none"))) {
+            var ucell <- lhs;
+            var uty <- lt;
+            if (rt.kind = "union") { ucell <- rhs; uty <- rt; }
+            var nmi <- union_member_index(uty, {kind: "none"});
+            if (nmi < 0) {
+                var cres <- 0;
+                if (op = "!=") { cres <- 1; }
+                return ir_const_int(cres);
+            }
+            var utg <- ir_fresh_tmp(b, "untag");
+            ir_push_inst(b.cur_block, ii_union_tag(utg, ucell));
+            var ncmp <- ir_fresh_tmp(b, "ncmp");
+            ir_push_inst(b.cur_block, ii_icmp(ncmp, ir_cmp_op(op), ir_reg(utg, T.mk_int()), ir_const_int(nmi)));
+            return ir_reg(ncmp, T.mk_int());
+        }
         if (lt.kind = "any" || rt.kind = "any"
+            || lt.kind = "none" || rt.kind = "none"
             || (lt.kind = "" && rt.kind = "")) {
             var ls <- ir_dyn_side(b, lhs, lt);
             var rs <- ir_dyn_side(b, rhs, rt);
@@ -6783,6 +6904,20 @@ fn ir_emit_binop(b, nd) {
                 var rt2 <- ir_fresh_tmp(b, "dstr");
                 ir_push_inst(b.cur_block, ii_dyn_str(rt2, rds.t, rds.p));
                 rhs_s <- ir_reg(rt2, T.mk_str());
+            }
+            // ONETIER DELTA-1: a none side of str concatenation renders
+            // as the text "none" (interp _format parity).
+            if (lt.kind = "none") {
+                var lns <- ir_mod_add_str(b.mod, "none");
+                var lnp <- ir_fresh_tmp(b, "nstr");
+                ir_push_inst(b.cur_block, ii_ptrtoint(lnp, ir_const_str(lns)));
+                lhs_s <- ir_reg(lnp, T.mk_str());
+            }
+            if (rt.kind = "none") {
+                var rns <- ir_mod_add_str(b.mod, "none");
+                var rnp <- ir_fresh_tmp(b, "nstr");
+                ir_push_inst(b.cur_block, ii_ptrtoint(rnp, ir_const_str(rns)));
+                rhs_s <- ir_reg(rnp, T.mk_str());
             }
             var tmp <- ir_fresh_tmp(b, "scat");
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
@@ -7081,6 +7216,7 @@ fn any_tag_of(k: str): int {
     if (k = "struct_lit") { return 5; }
     if (k = "struct") { return 5; }
     if (k = "fn") { return 6; }
+    if (k = "none") { return 9; }
     return 7;
 }
 
@@ -7861,6 +7997,7 @@ fn ir_emit_stmt(b, stmt): int {
             || stmt.node = "FloatLit"
             || stmt.node = "StringLit"
             || stmt.node = "BoolLit"
+            || stmt.node = "NoneLit"
             || stmt.node = "Identifier") {
         ir_emit_expr(b, stmt);
         return 0;
@@ -8279,92 +8416,11 @@ fn llvm_link(ll_file: str, exe_file: str): int {
 // ═══════════════════════════════════════════
 
 // ── ONETIER P3-22: whole-program ret-type pre-pass ──
-fn pr_join(a: str, b: str): str {
-    if (a = b) { return a; }
-    // "" is "unknowable here" (struct-lits, locals) — it TAINTS the
-    // join rather than deferring to the other side: parser fns mix
-    // struct-lit returns with `return false` error paths, and a
-    // confident bool made pre-refinement callers wrap node structs
-    // as bool-cells (the arrow1 scope-check trap). The init-break
-    // still sets the raw placeholder; the per-emit infer refines.
-    if (a = "") { return ""; }
-    if (b = "") { return ""; }
-    if (a = "any" || b = "any") { return "any"; }
-    return "any";
-}
-fn pr_is_param(name: str, params): int {
-    var i <- 0;
-    while (i < len(params)) {
-        if (params[i] = name) { return true; }
-        i <- i + 1;
-    }
-    return false;
-}
-fn pr_typeof(e, params): str {
-    if (e.node = "NumberLit") { return "int"; }
-    if (e.node = "FloatLit") { return "float"; }
-    if (e.node = "StringLit") { return "str"; }
-    if (e.node = "BoolLit") { return "bool"; }
-    if (e.node = "ArrayLit") { return "array"; }
-    if (e.node = "StructLit") { return ""; }
-    if (e.node = "ArrowFn") { return "fn"; }
-    if (e.node = "Identifier") {
-        if (pr_is_param(e.name, params)) { return "any"; }
-        return "";
-    }
-    if (e.node = "UnaryOp") {
-        if (e.op = "!") { return "bool"; }
-        return pr_typeof(e.operand, params);
-    }
-    if (e.node = "BinOp") {
-        if (e.op = "=" || e.op = "!=" || e.op = "<" || e.op = ">" || e.op = "<=" || e.op = ">=" || e.op = "&&" || e.op = "||") { return "bool"; }
-        var lk <- pr_typeof(e.left, params);
-        var rk <- pr_typeof(e.right, params);
-        if (e.op = "+" && (lk = "str" || rk = "str")) { return "str"; }
-        if (lk = "float" || rk = "float") { return "float"; }
-        if ((lk = "int" || lk = "bool" || lk = "any" || lk = "") && (rk = "int" || rk = "bool" || rk = "any" || rk = "")) { return "int"; }
-        return "";
-    }
-    if (e.node = "CallExpr") {
-        if (e.callee.node = "Identifier") {
-            var pfi <- find_fn(e.callee.name);
-            if (pfi != false) {
-                if (pfi.ret_type_ann.kind != "") { return pfi.ret_type_ann.kind; }
-                return pfi.ret_type.kind;
-            }
-        }
-        return "";
-    }
-    return "";
-}
-fn pr_scan_rets(body, params, acc): int {
-    var i <- 0;
-    while (i < len(body)) {
-        var s <- body[i];
-        if (s.node = "ReturnStmt") {
-            if (s.expr != false) {
-                acc[0] <- pr_join(acc[0], pr_typeof(s.expr, params));
-            }
-        }
-        if (s.node = "IfStmt") {
-            pr_scan_rets(s.then_body, params, acc);
-            pr_scan_rets(s.else_body, params, acc);
-        }
-        if (s.node = "WhileStmt") { pr_scan_rets(s.body, params, acc); }
-        if (s.node = "ForInStmt") { pr_scan_rets(s.body, params, acc); }
-        if (s.node = "MatchStmt") {
-            var j <- 0;
-            while (j < len(s.arms)) {
-                pr_scan_rets(s.arms[j].body, params, acc);
-                j <- j + 1;
-            }
-        }
-        i <- i + 1;
-    }
-    return 0;
-}
-// ONETIER P3-26: classify a fn's return-expr mix. flags = [saw_boollit,
-// saw_other, saw_structlit]. Mirrors pr_scan_rets' statement walk.
+// ONETIER dial (returns leg): classify a fn's return-expr mix.
+// flags = [saw_boollit, saw_other, saw_structlit]; any flag set means
+// the fn returns a value on some path. (Formerly P3-26's walker; the
+// promotion it powered is subsumed - every unannotated value-returning
+// fn is eff_any under the dial.)
 fn pr_scan_mix(body, flags): int {
     var i <- 0;
     while (i < len(body)) {
@@ -8399,37 +8455,18 @@ fn pr_fns(stmts): int {
         var s <- stmts[i];
         if (s.node = "FnDecl") {
             if (s.ret_type_ann.kind = "") {
-                var acc <- [""];
-                pr_scan_rets(s.body, s.params, acc);
-                var rk <- acc[0];
-                // ONETIER P3-26: a BoolLit return mixed with any
-                // non-BoolLit return (struct-lit exempt) is the
-                // false-sentinel search idiom — the honest ret is the
-                // checked dynamic tier, not last-return-wins bool.
+                // ONETIER dial (returns leg, SPEC 1.2 + DELTA-1):
+                // unannotated ret defaults to checked `any` when any
+                // path returns a value, and to `none` when no path
+                // does (the result then unifies only with none and
+                // T | none). Inference is retired; never a wrong
+                // concrete lock.
                 var mixf <- [0, 0, 0];
                 pr_scan_mix(s.body, mixf);
-                if (mixf[0] = 1 && mixf[1] = 1 && mixf[2] = 0) {
+                if (mixf[0] = 1 || mixf[1] = 1 || mixf[2] = 1) {
                     set_fn_ret_type(s.name, T.mk_any(), false);
-                    rk <- "any-promoted";
-                }
-                if (rk = "") {
-                    // No value returns, or only raw-class-unknowable
-                    // ones: explicitly break the any-INIT with the raw
-                    // placeholder so eff_any doesn't fire and the
-                    // per-emit infer can refine within the class.
-                    set_fn_ret_type(s.name, T.mk_unann(), false);
-                }
-                if (rk != "") {
-                    if (rk = "int") { set_fn_ret_type(s.name, T.mk_int(), false); }
-                    if (rk = "float") { set_fn_ret_type(s.name, T.mk_float(), false); }
-                    if (rk = "str") { set_fn_ret_type(s.name, T.mk_str(), false); }
-                    if (rk = "bool") { set_fn_ret_type(s.name, T.mk_bool(), false); }
-                    if (rk = "array") { set_fn_ret_type(s.name, T.mk_array(T.mk_any()), false); }
-                    // struct returns are raw-class: leave "" so the
-                    // per-emit infer refines to the precise struct_lit
-                    // type (field-aware printing and dot access).
-                    if (rk = "fn") { set_fn_ret_type(s.name, T.mk_fn(), false); }
-                    if (rk = "any") { set_fn_ret_type(s.name, T.mk_any(), false); }
+                } else {
+                    set_fn_ret_type(s.name, {kind: "none"}, false);
                 }
             }
             pr_fns(s.body);
@@ -8439,11 +8476,9 @@ fn pr_fns(stmts): int {
     return 0;
 }
 fn prepass_ret_infer(stmts): int {
-    var r <- 0;
-    while (r < 3) {
-        pr_fns(stmts);
-        r <- r + 1;
-    }
+    // Single pass: the dial's defaulting is per-fn and order-independent
+    // (the old 3x fixpoint served cross-fn return inference, now retired).
+    pr_fns(stmts);
     return 0;
 }
 

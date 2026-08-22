@@ -1,0 +1,14 @@
+// EXPECT: runtime_fail
+//OUT: before
+//ERR: expected int in any, got none
+
+// ONETIER DELTA-1: a none riding an any-cell (tag 9) fails every
+// concrete unwrap expectation at annotated edges - byte-identical trap
+// on both hosts, exit 1.
+
+fn take(v: any): int {
+    var n: int <- v;
+    return n;
+}
+print("before");
+print(take(none));

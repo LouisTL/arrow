@@ -1,0 +1,39 @@
+// EXPECT: ok
+//OUT: 5
+//OUT: 15
+//OUT: tag!
+//OUT: 1.5
+//OUT: 1
+//OUT: {x: 1, y: 2}
+//OUT: log: hi
+//OUT: none
+//OUT: true
+//OUT: false
+
+// ONETIER dial (returns leg, SPEC 1.2 + DELTA-1). Unannotated
+// value-returning fns are checked `any`: results ride tag-carrying
+// cells through arithmetic, concat, float formatting, dot access, and
+// field-aware struct printing (arrow_format_struct). A fn that never
+// returns a value returns none - binding and probing its result is
+// legal. The last line pins payload truthiness in && (the short-circuit
+// arms unwrap any operands; cell pointers are not truthiness).
+
+fn add(a: int, b: int) { return a + b; }
+fn label() { return "tag"; }
+fn half(x: float) { return x / 2.0; }
+fn mkpt() { return {x: 1, y: 2}; }
+fn logline(s: str) { print("log: " + s); }
+fn even(n: int) { return n % 2 = 0; }
+fn pos(n: int) { return n > 0; }
+var r <- add(2, 3);
+print(r);
+print(r + 10);
+print(label() + "!");
+print(half(3.0));
+var p <- mkpt();
+print(p.x);
+print(p);
+var v <- logline("hi");
+print(v);
+print(v = none);
+print(even(3) && pos(3));

@@ -1,0 +1,8 @@
+// EXPECT: type_fail
+//ERR: 'bad' returns a value on some paths but none on others; annotate ': T | none' or return on every path
+fn bad(a: bool) {
+    if (a) {
+        return "a";
+    }
+}
+print(bad(true));

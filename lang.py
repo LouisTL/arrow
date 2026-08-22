@@ -257,6 +257,12 @@ class BoolLit:
     value: bool
 
 @dataclass
+class NoneLit:
+    # ONETIER DELTA-1: the `none` literal expression. Evaluates to
+    # Python None; classified as kind "none" everywhere.
+    pass
+
+@dataclass
 class Identifier:
     name: str
 
@@ -1016,6 +1022,10 @@ class Parser:
             self.pos += 1
             return BoolLit(tok.value)
         if tok.type == TokenType.IDENT:
+            if tok.value == "none":
+                # ONETIER DELTA-1: `none` is the none-literal, not a name.
+                self.pos += 1
+                return NoneLit()
             self.pos += 1
             return Identifier(tok.value)
 
@@ -1092,6 +1102,7 @@ def _value_kind(v) -> str:
     """Map a runtime value to its universal kind name (native tag order;
     bool tested before int because Python bool subclasses int). Values
     with no mapping are 'opaque' and pass every runtime kind expectation."""
+    if v is None: return "none"
     if isinstance(v, bool): return "bool"
     if isinstance(v, int): return "int"
     if isinstance(v, float): return "float"
@@ -1367,13 +1378,10 @@ class Interpreter:
                         # classified static kind; unknown locks open (any).
                         dk = _classify_static(expr, self.env)
                         if dk == "unit":
-                            cn = expr.callee.name \
-                                if isinstance(expr, CallExpr) \
-                                and isinstance(expr.callee, Identifier) \
-                                else "<fn>"
-                            raise RuntimeError_(
-                                f"cannot use result of {cn}: fn returns "
-                                f"no value at line {line}, col {col}")
+                            # ONETIER DELTA-1: a no-value call yields
+                            # none; binding it is legal and locks the
+                            # name to kind "none".
+                            dk = "none"
                     try:
                         self.env.declare(name, val, dk)
                     except RuntimeError_ as e:
@@ -1509,7 +1517,8 @@ class Interpreter:
         """Select the matching arm for `val` (shared by statement and
         expression match), or None. bool is checked before int (Python bool
         subclasses int), matching the native tag order."""
-        if isinstance(val, bool): kind = "bool"
+        if val is None: kind = "none"
+        elif isinstance(val, bool): kind = "bool"
         elif isinstance(val, int): kind = "int"
         elif isinstance(val, str): kind = "str"
         elif isinstance(val, float): kind = "float"
@@ -1551,6 +1560,7 @@ class Interpreter:
             case NumberLit(v): return v
             case StringLit(v): return v
             case BoolLit(v): return v
+            case NoneLit(): return None
             case Identifier(name): return self.env.get(name)
 
             case ArrayLit(elements):
