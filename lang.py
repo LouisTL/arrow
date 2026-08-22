@@ -311,7 +311,7 @@ class Assignment:
     is_decl: bool = False  # True when introduced via `var`
     line: int = 0
     col: int = 0
-    type_kind: str = "none"  # annotation kind head ("none" = unchecked)
+    type_kind: str = ""  # annotation kind head ("" = unannotated)
 
 @dataclass
 class PrintStmt:
@@ -377,14 +377,14 @@ class FnDecl:
     params: list[str]
     body: list
     param_kinds: list = None   # per-param annotation kind heads
-    ret_kind: str = "none"     # return annotation kind head
+    ret_kind: str = ""     # return annotation kind head
 
 @dataclass
 class ArrowFn:
     params: list[str]
     body: Any
     param_kinds: list = None   # per-param annotation kind heads
-    ret_kind: str = "none"     # return annotation kind head
+    ret_kind: str = ""     # return annotation kind head
 
 @dataclass
 class ReturnStmt:
@@ -618,22 +618,24 @@ class Parser:
     def _type_ann_kind(self) -> str:
         """Parse a type annotation (consuming exactly what _skip_type_ann
         would) and return its kind head for the runtime kind checks: int / float /
-        bool / str / array / struct / any — or "none" for unions, unresolved
+        bool / str / array / struct / any — or "" for unresolved
         alias names, and anything the kind-level check does not cover.
         Aliases resolve through the same registry the match arms use."""
         kind, _ = self._parse_type_kind()
         if self._current().type == TokenType.PIPE:
+            members = [kind]
             while self._match(TokenType.PIPE):
-                self._parse_type_kind()
-            return "none"
+                mk, _ = self._parse_type_kind()
+                members.append(mk)
+            return "union_none" if "none" in members else "union"
         if kind in ("int", "float", "bool", "str", "array", "struct", "any"):
             return kind
-        return "none"
+        return ""
 
     def _assignment(self, typed: bool = False) -> Assignment:
         ident_tok = self._eat(TokenType.IDENT)
         name = ident_tok.value
-        tkind = "none"
+        tkind = ""
         if typed:
             # ': type' on a reassignment — kind head retained for the runtime check.
             self._eat(TokenType.COLON)
@@ -650,7 +652,7 @@ class Parser:
         name = ident_tok.value
         # Optional type annotation: var x: int <- expr; the kind head is
         # retained for the runtime kind check at this declaration edge.
-        tkind = "none"
+        tkind = ""
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             tkind = self._type_ann_kind()
@@ -711,7 +713,7 @@ class Parser:
         name = self._eat(TokenType.IDENT).value
         params, pkinds = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
-        rkind = "none"
+        rkind = ""
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             rkind = self._type_ann_kind()
@@ -731,14 +733,14 @@ class Parser:
                 self._eat(TokenType.COLON)
                 kinds.append(self._type_ann_kind())
             else:
-                kinds.append("none")
+                kinds.append("")
             while self._match(TokenType.COMMA):
                 params.append(self._eat(TokenType.IDENT).value)
                 if self._current().type == TokenType.COLON:
                     self._eat(TokenType.COLON)
                     kinds.append(self._type_ann_kind())
                 else:
-                    kinds.append("none")
+                    kinds.append("")
         self._eat(TokenType.RPAREN)
         return params, kinds
 
@@ -916,7 +918,7 @@ class Parser:
     def _arrow_fn(self) -> ArrowFn:
         params, pkinds = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
-        rkind = "none"
+        rkind = ""
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             rkind = self._type_ann_kind()
@@ -1107,7 +1109,7 @@ def _any_check(val, want: str):
     storage-representation detail the interpreter does not need). The
     message matches the native trap byte-for-byte once main() prefixes
     'Error: '."""
-    if want == "none" or want == "any":
+    if want == "" or want == "any" or want == "union" or want == "union_none":
         return
     got = _value_kind(val)
     if got == "opaque" or got == want:
@@ -1116,6 +1118,103 @@ def _any_check(val, want: str):
     if want in num and got in num:
         return
     raise RuntimeError_(f"expected {want} in any, got {got}")
+
+
+_BUILTIN_RET_KINDS = {
+    "len": "int", "push": "int", "pop": "any", "keys": "array",
+    "read_file": "str", "write_file": "int", "append_file": "int",
+    "input": "str", "exec_cmd": "int", "args": "any",
+    "char_code": "int", "from_char_code": "str", "substring": "str",
+    "char_at": "str", "str_len": "int", "file_exists": "bool",
+}
+
+
+def _fn_is_unit(fn) -> bool:
+    """True when no path returns a value (ONETIER 1.10). Cached."""
+    c = getattr(fn, "_unit_cached", None)
+    if c is not None:
+        return c
+    if not isinstance(fn.body, list):      # expression-bodied arrow fn
+        fn._unit_cached = False
+        return False
+    found = [False]
+    def walk(n):
+        if found[0] or n is None or isinstance(n, (str, int, float, bool)):
+            return
+        if isinstance(n, list):
+            for x in n:
+                walk(x)
+            return
+        if isinstance(n, ReturnStmt):
+            if n.expr is not None and n.expr is not False:
+                found[0] = True
+            return
+        if isinstance(n, (FnDecl, ArrowFn)):
+            return
+        for v in getattr(n, "__dict__", {}).values():
+            walk(v)
+    walk(fn.body)
+    fn._unit_cached = not found[0]
+    return fn._unit_cached
+
+
+def _classify_static(node, env) -> str:
+    """ONETIER 3.2, head-level v1. Returns a kind head, "any" when
+    unknown, or "unit" for calls of functions that return no value."""
+    if isinstance(node, NumberLit):
+        return "float" if isinstance(node.value, float) else "int"
+    if isinstance(node, StringLit):
+        return "str"
+    if isinstance(node, BoolLit):
+        return "bool"
+    if isinstance(node, ArrayLit):
+        return "array"
+    if isinstance(node, StructLit):
+        return "struct"
+    if isinstance(node, ArrowFn):
+        return "fn"
+    if isinstance(node, Identifier):
+        e = env
+        while e is not None:
+            if node.name in e.vars:
+                k = e.kinds.get(node.name, "any")
+                return k if k != "" else "any"
+            e = e.parent
+        return "any"
+    if isinstance(node, UnaryOp):
+        if node.op == "!":
+            return "bool"
+        return _classify_static(node.operand, env)
+    if isinstance(node, BinOp):
+        if node.op in ("=", "==", "!=", "<", ">", "<=", ">=", "&&", "||"):
+            return "bool"
+        lk = _classify_static(node.left, env)
+        rk = _classify_static(node.right, env)
+        if node.op == "+" and "str" in (lk, rk):
+            return "str"
+        if node.op in ("+", "-", "*", "/", "%"):
+            if "float" in (lk, rk):
+                return "float"
+            if lk in ("int", "bool") and rk in ("int", "bool"):
+                return "int"
+        return "any"
+    if isinstance(node, CallExpr) and isinstance(node.callee, Identifier):
+        n = node.callee.name
+        if n in _BUILTIN_RET_KINDS:
+            return _BUILTIN_RET_KINDS[n]
+        e, fnv = env, None
+        while e is not None:
+            if n in e.vars:
+                fnv = e.vars[n]
+                break
+            e = e.parent
+        if isinstance(fnv, Function):
+            if fnv.ret_kind != "":
+                return fnv.ret_kind
+            return "unit" if _fn_is_unit(fnv) else "any"
+        return "any"
+    return "any"
+
 
 
 class Environment:
@@ -1141,7 +1240,7 @@ class Environment:
             return self.parent.get(name)
         raise RuntimeError_(f"Undefined variable '{name}'")
 
-    def declare(self, name: str, value: Any, kind: str = "none"):
+    def declare(self, name: str, value: Any, kind: str = ""):
         # Always create a fresh binding in the *current* scope. Error if a
         # name with the same identifier already exists in this same scope
         # (catches accidental redeclaration). Outer-scope bindings of the
@@ -1149,7 +1248,7 @@ class Environment:
         if name in self.vars:
             raise RuntimeError_(f"redeclaration of '{name}' in the same scope")
         self.vars[name] = value
-        if kind != "none":
+        if kind != "":
             self.kinds[name] = kind
 
     def assign(self, name: str, value: Any) -> bool:
@@ -1163,8 +1262,8 @@ class Environment:
             if name in env.vars:
                 # A binding declared with an annotation keeps its kind
                 # for life — later writes re-check, like the native slot.
-                k = env.kinds.get(name, "none")
-                if k != "none":
+                k = env.kinds.get(name, "")
+                if k != "":
                     _any_check(value, k)
                 env.vars[name] = value
                 return True
@@ -1183,7 +1282,7 @@ class Environment:
 
 class Function:
     def __init__(self, name: str, params: list[str], body: Any, closure: Environment,
-                 param_kinds: list | None = None, ret_kind: str = "none"):
+                 param_kinds: list | None = None, ret_kind: str = ""):
         self.name = name
         self.params = params
         self.body = body
@@ -1258,12 +1357,25 @@ class Interpreter:
                     # before binding. This runs OUTSIDE the try below — the
                     # trap message carries no position info, matching the
                     # native trap byte-for-byte.
-                    if node.type_kind != "none":
+                    if node.type_kind != "":
                         _any_check(val, node.type_kind)
                     # `var x <- expr;` — fresh binding in current scope.
                     # Redeclaration in the same scope is an error.
+                    dk = node.type_kind
+                    if dk == "":
+                        # ONETIER: unannotated decls lock to their
+                        # classified static kind; unknown locks open (any).
+                        dk = _classify_static(expr, self.env)
+                        if dk == "unit":
+                            cn = expr.callee.name \
+                                if isinstance(expr, CallExpr) \
+                                and isinstance(expr.callee, Identifier) \
+                                else "<fn>"
+                            raise RuntimeError_(
+                                f"cannot use result of {cn}: fn returns "
+                                f"no value at line {line}, col {col}")
                     try:
-                        self.env.declare(name, val, node.type_kind)
+                        self.env.declare(name, val, dk)
                     except RuntimeError_ as e:
                         # Re-raise with position info for better diagnostics.
                         raise RuntimeError_(f"{e} at line {line}, col {col}")
@@ -1278,7 +1390,7 @@ class Interpreter:
                     # A typed reassignment (`x: str <- e;`) checks its
                     # own annotation; assign() then re-checks the kind
                     # recorded at declaration, whichever scope owns it.
-                    if node.type_kind != "none":
+                    if node.type_kind != "":
                         _any_check(val, node.type_kind)
                     if not self.env.assign(name, val):
                         raise RuntimeError_(
@@ -1525,7 +1637,7 @@ class Interpreter:
         arg_vals = []
         for ai, a in enumerate(args):
             av = self._eval(a)
-            _any_check(av, pkinds[ai] if ai < len(pkinds) else "none")
+            _any_check(av, pkinds[ai] if ai < len(pkinds) else "")
             arg_vals.append(av)
         if len(arg_vals) != len(fn.params):
             raise RuntimeError_(
@@ -1537,7 +1649,7 @@ class Interpreter:
             # a same-named binding in the enclosing closure scope. The
             # annotation kind rides along so body reassignments re-check.
             call_env.declare(param, val,
-                             pkinds[pi] if pi < len(pkinds) else "none")
+                             pkinds[pi] if pi < len(pkinds) else "")
 
         prev_env = self.env
         self.env = call_env
@@ -1551,7 +1663,7 @@ class Interpreter:
             result = ret.value
         finally:
             self.env = prev_env
-        if fn.ret_kind != "none":
+        if fn.ret_kind != "":
             # Annotated return edge — same matrix as the native
             # checked unwrap at the return slot. A body that falls off
             # the end yields None, which maps to opaque and passes.
@@ -1789,6 +1901,8 @@ class Interpreter:
         return val is not None
 
     def _format(self, val, in_collection: bool = False) -> str:
+        if val is None:
+            return "none"
         if isinstance(val, bool):
             return "true" if val else "false"
         if isinstance(val, float):
@@ -2171,6 +2285,85 @@ def run_source(source: str, src_file: str = "<input>") -> Interpreter:
     return interp
 
 
+def _paths_return(body) -> bool:
+    """True when every path through this statement list returns a value.
+    Conservative: while/for never guarantee; match guarantees only with
+    a catch-all arm; if needs both branches."""
+    for st in body:
+        if isinstance(st, ReturnStmt):
+            return st.expr is not None and st.expr is not False
+        if isinstance(st, IfStmt):
+            if st.else_body and _paths_return(st.then_body) \
+                    and _paths_return(st.else_body):
+                return True
+        if isinstance(st, MatchStmt):
+            arms = st.arms
+            if arms and all(_paths_return(a.body) for a in arms) \
+                    and any(getattr(a, "ptype_kind", "") == "_"
+                            and not getattr(a, "lit_kind", None)
+                            for a in arms):
+                return True
+    return False
+
+
+def _check_totality(stmts) -> list:
+    """Collect 1.10 violations over every FnDecl / block-bodied ArrowFn."""
+    errors = []
+
+    def scan_fn(name, body, ret_kind):
+        has_val, has_bare = False, False
+        def walk(n):
+            nonlocal has_val, has_bare
+            if n is None or isinstance(n, (str, int, float, bool)):
+                return
+            if isinstance(n, list):
+                for x in n:
+                    walk(x)
+                return
+            if isinstance(n, ReturnStmt):
+                if n.expr is not None and n.expr is not False:
+                    has_val = True
+                else:
+                    has_bare = True
+                return
+            if isinstance(n, (FnDecl, ArrowFn)):
+                return
+            for v in getattr(n, "__dict__", {}).values():
+                walk(v)
+        for s in body:
+            walk(s)
+        if ret_kind == "union_none":
+            return    # declared nullable: mixed paths are legal
+        if has_val and (has_bare or not _paths_return(body)):
+            errors.append(
+                f"'{name}' returns a value on some paths but "
+                f"none on others; annotate ': T | none' or "
+                f"return on every path")
+
+    def find(n):
+        if n is None or isinstance(n, (str, int, float, bool)):
+            return
+        if isinstance(n, list):
+            for x in n:
+                find(x)
+            return
+        if isinstance(n, FnDecl):
+            scan_fn(n.name, n.body, n.ret_kind)
+            find(n.body)
+            return
+        if isinstance(n, ArrowFn):
+            if isinstance(n.body, list):
+                scan_fn("<arrow fn>", n.body,
+                        getattr(n, "ret_kind", ""))
+                find(n.body)
+            return
+        for v in getattr(n, "__dict__", {}).values():
+            find(v)
+
+    find(stmts)
+    return errors
+
+
 def run_file(filepath: str) -> Interpreter:
     """Like run_source but with import resolution rooted at the given file."""
     with open(filepath, encoding="utf-8") as f:
@@ -2201,6 +2394,13 @@ def run_file(filepath: str) -> Interpreter:
             print(e)
         print("--")
         print(f"{len(other_errs)} import error(s). Compilation aborted.")
+        sys.exit(1)
+    type_errs = _check_totality(resolved)
+    if type_errs:
+        for e in type_errs:
+            print(e)
+        print("--")
+        print(f"{len(type_errs)} type error(s). Compilation aborted.")
         sys.exit(1)
     interp = Interpreter()
     interp.run(Program(resolved))
