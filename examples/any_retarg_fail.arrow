@@ -8,6 +8,11 @@
 // this file pins the spec's provenance -- the checked-any DEFAULT.
 // Deliberately runtime_fail TODAY: if flow typing ever lands, this
 // may promote to type_fail -- re-decide then, do not silently move.
+// Doubles as the runtime graduation pin for checking coverage
+// (C19): the bare call 'take(v);' routes through arg checking,
+// which admits the checked-any arg, and defers to take's entry
+// unwrap -- the trap below. Over-strict bare-call checking would
+// surface here as UNEXPECTED (compile failed).
 fn make() {
     return "hello";
 }

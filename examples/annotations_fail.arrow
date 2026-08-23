@@ -2,16 +2,20 @@
 //ERR: 'x' annotated as int but assigned str
 //ERR: argument 2 expected int but got str
 //ERR: argument 1 expected str but got int
+//ERR: call to 'add': argument 1 expected int but got str
 //ERR: 'words' annotated as [int] but assigned [str]
 //ERR: argument 1 expected [int] but got [str]
 //ERR: return type mismatch
 //ERR: 'bad1' annotated as {x: int, y: int}
 //ERR: 'bad2' annotated as {x: int, y: int}
 //ERR: call to 'dist'
-//ERR: 10 type error(s)
+//ERR: 11 type error(s)
 
 // Annotation rejections, consolidated from test_fail / test_arr_fail /
-// test_struct_fail (the checker batches all ten).
+// test_struct_fail (the checker batches all eleven). The bare-call
+// statement below is the check-time graduation pin for checking
+// coverage (C19): bare calls route through the same arg checking as
+// expression calls, so a concrete mismatch is a type error.
 
 // scalars: bad decl, bad arg each direction
 var x: int <- "this is a string, not int";
@@ -23,6 +27,7 @@ fn greet(name: str): str {
 }
 print(add(1, "two"));
 print(greet(42));
+add("two", 1);
 
 // arrays: bad decl, bad arg, bad return
 var words: [int] <- ["a", "b", "c"];
