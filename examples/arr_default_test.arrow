@@ -9,12 +9,11 @@
 //OUT: [42]
 //OUT: [{path: "hello"}]
 
-// ONETIER dial (`[]` leg, SPEC 1.4; gap 6.5 retired). The empty
-// literal is [any]: cell elements (tag 10), mixed pushes legal,
-// element reads are cells. At annotated edges the empty literal
-// adopts the expected array type (decl, argument, return). A mixed
-// nonempty literal is [any] too - elements wrap by their own static
-// types. Cross-scope pushes through any-typed params ride
+// The empty literal is [any]: cell elements (tag 10), mixed pushes
+// legal, element reads are cells. At annotated edges the empty
+// literal adopts the expected array type (decl, argument, return). A
+// mixed nonempty literal is [any] too - elements wrap by their own
+// static types. Cross-scope pushes through any-typed params ride
 // arrow_push_dyn, which branches on the array's runtime tier tag.
 
 var xs <- [];

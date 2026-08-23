@@ -775,7 +775,7 @@ var alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
 
 // Track variable types: var_name -> "int" or "str"
 var var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
-// ONETIER dial: read-only fallback of TOP-LEVEL decl types, consulted
+// Read-only fallback of TOP-LEVEL decl types, consulted
 // on primary-registry misses so fn bodies see global types without the
 // save/restore/preserve dance touching them. Locals and params mask it
 // by being present in the primary registry.
@@ -1937,7 +1937,7 @@ fn typeof_expr(nd): any {
                 //   fn sort(arr) { ... return arr; }
                 //   sorted <- sort([1,2,3]);   // sorted typed as [int], not any
                 var ridx <- get_fn_returns_param(nm);
-                // ONETIER: never specialize an eff_any call — its
+                // Never specialize an eff_any call — its
                 // value is a cell, not the arg's concrete shape.
                 if (fi.ret_type.kind = "any") { ridx <- -1; }
                 if (ridx != -1 && ridx < len(nd.args)) {
@@ -1948,18 +1948,18 @@ fn typeof_expr(nd): any {
                         return arg_t;
                     }
                 }
-                // ONETIER return ABI (P3-19): F2 wraps these
+                // Dynamic-return ABI: the shim wraps these
                 // returns into cells — the call types any.
                 if (fi.ret_type.kind = "any") { return T.mk_any(); }
                 return fi.ret_type;
             }
         }
         // Unknown callee (indirect / closure calls): the dynamic
-        // result convention is a cell (P3-19).
+        // result convention is a cell.
         return T.mk_any();
     }
     if (nd.node = "ArrayLit") {
-        // ONETIER dial (`[]` leg, SPEC 1.4): the empty literal is [any]
+        // The empty literal is [any]
         // - cell elements (tag 10), never narrowed. At annotated edges it
         // adopts the expected array type instead (empty_arr_lit guards).
         if (len(nd.elements) = 0) { return T.mk_array(T.mk_any()); }
@@ -1974,7 +1974,7 @@ fn typeof_expr(nd): any {
             et <- T.types_join(et, typeof_expr(nd.elements[i]));
             i <- i + 1;
         }
-        // ONETIER dial (`[]` leg): a join landing on `any` STAYS [any] -
+        // A join landing on `any` STAYS [any] -
         // the emitter wraps each element by its own static type (tag-10
         // cell array), so the static and dynamic tiers agree.
         return T.mk_array(et);
@@ -1999,7 +1999,7 @@ fn typeof_expr(nd): any {
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "str") { return T.mk_str(); }
         if (ot.kind = "any") {
-            // ONETIER: an any-typed EXPRESSION base (F1'd dot, dyn
+            // An any-typed EXPRESSION base (dot read, dyn
             // result) has no decl to tier-key on — the index result is
             // genuinely a cell.
             return T.mk_any();
@@ -2028,7 +2028,7 @@ fn typeof_expr(nd): any {
             var ft <- T.struct_field_type(ot.fields, nd.field);
             if (ft.kind != "") { return ft; }
         }
-        // ONETIER DELTA 2: every field slot is a cell — an unknown
+        // Every field slot is a cell — an unknown
         // dot is an any read.
         return T.mk_any();
     }
@@ -2187,7 +2187,7 @@ fn infer_body(stmts) {
                 var existing <- get_var_type(s.name);
                 var ty <- typeof_expr(s.expr);
                 if (s.is_decl) {
-                    // ONETIER dial (decl leg, SPEC 1.2): unknown
+                    // Unknown
                     // classifies as checked any - never a wrong
                     // concrete lock; the any-slot store wraps ("" ->
                     // opaque). Both registries: decl_type is the
@@ -2304,7 +2304,7 @@ fn infer_body(stmts) {
             if (s.expr != false) {
                 var rt <- typeof_expr(s.expr);
                 if (current_fn[0] != "") {
-                    // P3-22: the pre-pass fixes the raw-vs-cell
+                    // The ret-type pre-pass fixes the raw-vs-cell
                     // CLASS of every ret before emission; the per-emit
                     // infer may still refine WITHIN the raw class
                     // (e.g. "" -> a precise struct_lit) but never
@@ -2368,15 +2368,14 @@ fn infer_body(stmts) {
                                 if (d_el.kind = "array") {
                                     if (d_el.elem.kind = "any") { keep_any <- true; }
                                 }
-                                // C15: a checked-any-locked decl
-                                // (C2 tier key "any") is tagged
-                                // tier too -- its [] birth is
-                                // cells, its pushes wrap. The
-                                // "" demotion here laundered the
-                                // tier past C9 (rename_module's
+                                // A checked-any-locked decl (tier
+                                // key "any") is tagged tier too --
+                                // its [] birth is cells, its pushes
+                                // wrap. A "" demotion here would
+                                // launder the tier (rename_module's
                                 // top_names: the import door).
                                 if (d_el.kind = "any") { keep_any <- true; }
-                                // C15v2: an any push teaches
+                                // An any push teaches
                                 // nothing -- never demote on
                                 // its account. Concrete pushes
                                 // keep the refine ladder.
@@ -2703,10 +2702,9 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set: [str], fn_names: [str])
     if (s.node = "ForInStmt") {
         scope_check_expr(s.iterable, fn_scopes, captured, globals_set, fn_names);
         // Push body scope with loop variable already declared in it.
-        // C20: build the level like every sibling (empty, then
-        // push). The one-element literal [s.var_name] births a
-        // shape the native membership walk misreads (any-elem
-        // literal tier -- section 6 follow-up, probe for1).
+        // Build the level like every sibling (empty, then push). The
+        // one-element literal [s.var_name] births a shape the native
+        // membership walk misreads (any-elem literal tier).
         push(fn_scopes, []);
         push(fn_scopes[len(fn_scopes) - 1], s.var_name);
         scope_check_stmts(s.body, fn_scopes, captured, globals_set, fn_names);
@@ -2793,7 +2791,7 @@ fn scope_check_program(stmts) {
     return false;
 }
 
-// ── ONETIER totality (SPEC DELTA 1). A fn with value returns must
+// ── Return totality. A fn with value returns must
 // return on every path unless its return annotation includes none.
 // Statement-level walk; arrow-fn bodies (expression position) are out
 // of scope here and covered by the interp pre-pass. ──
@@ -2938,7 +2936,7 @@ fn declared_base_type(e) {
     return typeof_expr(e);
 }
 
-// ONETIER dial (`[]` leg): an EMPTY array literal adopts the expected
+// An EMPTY array literal adopts the expected
 // array type at annotated edges - it is trivially every element tier.
 fn empty_arr_lit(e): int {
     if (e.node = "ArrayLit") {
@@ -3001,12 +2999,8 @@ fn check_stmt(s) {
         check_expr(s.expr);
     }
     if (s.node = "CallExpr") {
-        // Bare call statement. Only route `push` through the expression checker
-        // (for the [union] member-check); general bare-call arg-checking is left
-        // off deliberately to preserve the loosely-typed self-host.
-        // C19: route EVERY bare call statement through check_expr
-        // (section 6.10 closed). Bare-call args were the one
-        // conduit never checked against param annotations.
+        // Bare call statement: route it through check_expr so its args
+        // are checked against param annotations like expression calls.
         if (s.callee.node = "Identifier") { check_expr(s); }
     }
     if (s.node = "PrintStmt") { check_expr(s.expr); }
@@ -3176,7 +3170,7 @@ fn check_expr(e) {
     if (e.node = "BinOp") {
         var bl_t <- typeof_expr(e.left);
         var br_t <- typeof_expr(e.right);
-        // ONETIER DELTA-1: `= none` / `!= none` is the one legal union
+        // `= none` / `!= none` is the one legal union
         // BinOp - the nullability probe. The union side of exactly that
         // shape skips the union rejection; everything else narrows first.
         var bl_skip <- false;
@@ -3187,7 +3181,7 @@ fn check_expr(e) {
         }
         if (!bl_skip) { check_no_union(e.left, "in arithmetic or comparison"); }
         if (!br_skip) { check_no_union(e.right, "in arithmetic or comparison"); }
-        // ONETIER DELTA-1: none supports = and != (and renders "none" in
+        // none supports = and != (and renders "none" in
         // str concatenation, and is falsy in boolean contexts); arithmetic
         // and ordered comparison reject it.
         if (bl_t.kind = "none" || br_t.kind = "none") {
@@ -5822,7 +5816,7 @@ fn ir_ensure_fn_shim(m, fn_name: str, param_count: int): str {
     }
     var rtmp <- "%shim_r";
     ir_push_inst(bb, ii_call(rtmp, T.mk_int(), fn_name, fwd_args));
-    // ONETIER return ABI (P3-19): the dynamic result is a cell. The
+    // Dynamic-return ABI: the result is a cell. The
     // target's inferred ret keys the adaptation: any -> already a
     // cell, pass through; concrete -> wrap by its tag; "" -> wrap
     // opaque (unknown payload kind, honest cell).
@@ -5872,7 +5866,7 @@ fn ir_emit_expr(b, nd) {
         return ir_const_int(0);
     }
     if (nd.node = "NoneLit") {
-        // ONETIER DELTA-1: none is payload 0; its static kind ("none")
+        // none is payload 0; its static kind ("none")
         // drives wrapping (tag 9), formatting, and comparison routing.
         return ir_const_int(0);
     }
@@ -6046,7 +6040,7 @@ fn ir_emit_expr(b, nd) {
     }
     if (nd.node = "UnaryOp") {
         // Any-typed operands route through the dyn binop machinery:
-        // raw sub on a cell pointer corrupts it (ONETIER dial fallout).
+        // raw sub on a cell pointer corrupts it.
         if (nd.op = "-" && typeof_expr(nd.operand).kind = "any") {
             return ir_emit_binop(b, {node: "BinOp", op: "-", left: {node: "NumberLit", value: "0"}, right: nd.operand});
         }
@@ -6068,7 +6062,7 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_int());
         }
         if (nd.op = "!") {
-            // ONETIER P3-24: lnot the PAYLOAD, not the cell pointer.
+            // lnot the PAYLOAD, not the cell pointer.
             // Any operands follow the same truthiness convention as
             // IfStmt/WhileStmt conditions (ir_unwrap_any); raw lnot
             // on a cell was constant-false — the binder-arm door.
@@ -6087,7 +6081,7 @@ fn ir_emit_expr(b, nd) {
         // pointer and route through closure_call, which already handles
         // unpacking [fn_ptr, env_ptr] and prepending env to the args.
         if (nd.callee.node != "Identifier") {
-            // ONETIER: an any-typed callee holds a tag-6 cell — verify
+            // An any-typed callee holds a tag-6 cell — verify
             // and unwrap to the raw closure pair. (`: any` keeps the
             // reassignment legal under the fixed-type rule: Imm and
             // Val shapes both flow through this slot.)
@@ -6099,7 +6093,7 @@ fn ir_emit_expr(b, nd) {
                 callee_val <- ir_reg(euw, T.mk_int());
             }
             // Unknown target: uniform dynamic ABI — every arg rides as
-            // an any-cell (P3-5).
+            // an any-cell.
             var args <- [];
             var i <- 0;
             while (i < len(nd.args)) {
@@ -6108,7 +6102,7 @@ fn ir_emit_expr(b, nd) {
             }
             var tmp <- ir_fresh_tmp(b, "icc");
             ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), callee_val, args));
-            // ONETIER return ABI: dynamic results are cells.
+            // Dynamic results are cells.
             return ir_reg(tmp, T.mk_any());
         }
         var nm <- nd.callee.name;
@@ -6118,7 +6112,7 @@ fn ir_emit_expr(b, nd) {
             var argt <- typeof_expr(nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "len");
             if (argt.kind = "any") {
-                // ONETIER: the operand is a cell — dispatch by tag at
+                // The operand is a cell — dispatch by tag at
                 // runtime (str -> strlen, else array word 0).
                 var lcell <- ir_emit_expr(b, nd.args[0]);
                 var lds <- ir_dyn_side(b, lcell, argt);
@@ -6138,11 +6132,11 @@ fn ir_emit_expr(b, nd) {
         if (nm = "push") {
             var parrt <- typeof_expr(nd.args[0]);
             if (parrt.kind = "any") {
-                // ONETIER dial: the element tier of an any-held array
+                // The element tier of an any-held array
                 // is only knowable at runtime (tag 4 raw vs tag 10
                 // cells) - branch in arrow_push_dyn, value via
                 // dyn_side so cells re-cell content-identically.
-                // C18: pass the CELL itself; push_dyn loads
+                // Pass the CELL itself; push_dyn loads
                 // tag+payload from it and stores the possibly
                 // realloc'd buffer pointer back into the cell
                 // payload in place. Every alias heals at once,
@@ -6174,18 +6168,18 @@ fn ir_emit_expr(b, nd) {
             // this, the source variable still holds the old pointer after a
             // realloc — which silently shrinks the array next time it's read.
             if (nd.args[0].node = "Identifier") {
-                // ONETIER: an any-declared slot holds a cell — re-wrap
+                // An any-declared slot holds a cell — re-wrap
                 // the (possibly reallocated) raw array before storing.
                 var wbv: any <- ir_reg(tmp, T.mk_int());
                 if (get_decl_type(nd.args[0].name).kind = "any") {
-                    // P3-23 amendment: the element tier rides in the
+                    // The element tier rides in the
                     // tag now — key it on the variable's static array
                     // type (raw-elem 4 unless genuinely [any]).
                     var wbt <- get_var_type(nd.args[0].name);
                     if (wbt.kind != "array") { wbt <- T.mk_array(T.mk_unann()); }
                     wbv <- ir_wrap_any(b, ir_reg(tmp, T.mk_int()), wbt);
                 }
-                // ONETIER P3-25: locals/params SHADOW globals — same
+                // Locals/params SHADOW globals — same
                 // resolution order as the Identifier load arm. Without
                 // the local check, a callee pushing to a param named
                 // like a global stored the (cell-wrapped) pointer into
@@ -6202,9 +6196,9 @@ fn ir_emit_expr(b, nd) {
                 // would point at the *old* pointer; we need the obj struct.
                 var obj_v <- ir_emit_arg(b, nd.args[0].obj);
                 var fid <- ir_mod_add_str(b.mod, nd.args[0].field);
-                // ONETIER DELTA 2: field slots hold cells — wrap the
+                // Field slots hold cells — wrap the
                 // (possibly reallocated) raw array before the set.
-                // C14: the write-back keeps the FIELD's element tier
+                // The write-back keeps the FIELD's element tier
                 // (parrt is the dot's static type) — ir_wrap_any picks
                 // 4 vs 10 from the elem; non-array statics stay raw-4.
                 var pwbt <- parrt;
@@ -6223,7 +6217,7 @@ fn ir_emit_expr(b, nd) {
         if (nm = "pop") {
             var popt <- typeof_expr(nd.args[0]);
             if (popt.kind = "any") {
-                // ONETIER dial: branch on the runtime element tier.
+                // Branch on the runtime element tier.
                 var pdc2 <- ir_emit_expr(b, nd.args[0]);
                 var pds2 <- ir_dyn_side(b, pdc2, popt);
                 var pdt <- ir_fresh_tmp(b, "popd");
@@ -6381,7 +6375,7 @@ fn ir_emit_expr(b, nd) {
                 if (cl_pann.kind = "") {
                     push(args, ir_emit_arg(b, nd.args[i]));
                 } else if (cl_pann.kind = "int" || cl_pann.kind = "float" || cl_pann.kind = "bool" || cl_pann.kind = "str" || cl_pann.kind = "array" || cl_pann.kind = "fn") {
-                    // ONETIER P3-27: concrete-annotated closure params
+                    // Concrete-annotated closure params
                     // ride the uniform cell ABI; the arrow entry
                     // unwrap-checks against the annotation.
                     push(args, ir_coerce_slot_value(b, nd.args[i], T.mk_any()));
@@ -6392,7 +6386,7 @@ fn ir_emit_expr(b, nd) {
             }
             var tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
-            // ONETIER return ABI: dynamic results are cells.
+            // Dynamic results are cells.
             return ir_reg(tmp, T.mk_any());
         }
 
@@ -6446,13 +6440,13 @@ fn ir_emit_expr(b, nd) {
                     if (fi_lookup != false && i < len(fi_lookup.param_types_ann)) { iv_pann <- fi_lookup.param_types_ann[i]; }
                     if (fi_lookup = false) {
                         // Unknown target: uniform dynamic ABI — every
-                        // arg rides as an any-cell (ONETIER P3-5).
+                        // arg rides as an any-cell.
                         iv_pann <- T.mk_any();
                     }
                     if (iv_pann.kind = "") {
                         push(args, ir_emit_arg(b, nd.args[i]));
                     } else if (iv_pann.kind = "int" || iv_pann.kind = "float" || iv_pann.kind = "bool" || iv_pann.kind = "str" || iv_pann.kind = "array" || iv_pann.kind = "fn") {
-                        // ONETIER P3-27: same uniform-cell leg as the
+                        // Same uniform-cell leg as the
                         // known-arrow-var site; entry unwraps.
                         push(args, ir_coerce_slot_value(b, nd.args[i], T.mk_any()));
                     } else {
@@ -6462,7 +6456,7 @@ fn ir_emit_expr(b, nd) {
                 }
                 var tmp <- ir_fresh_tmp(b, "cc");
                 ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
-                // ONETIER return ABI: dynamic results are cells.
+                // Dynamic results are cells.
                 return ir_reg(tmp, T.mk_any());
             }
         }
@@ -6524,9 +6518,9 @@ fn ir_emit_expr(b, nd) {
         // the raw regime for that edge.
         var ot <- typeof_expr(nd.obj);
         if (ot.kind = "any") {
-            // ONETIER: dispatch by the cell's tag at runtime; the
+            // Dispatch by the cell's tag at runtime; the
             // result is a cell (str-cell for chars, opaque for raw
-            // array elements until the array dial).
+            // array elements).
             var icell <- ir_emit_expr(b, nd.obj);
             // Keep the want-8 indexable trap (message + exit 1) before
             // dispatching; the result is discarded.
@@ -6556,7 +6550,7 @@ fn ir_emit_expr(b, nd) {
         var fid <- ir_mod_add_str(b.mod, nd.field);
         var tmp <- ir_fresh_tmp(b, "dot");
         ir_push_inst(b.cur_block, ii_struct_get(tmp, T.mk_int(), obj, fid));
-        // ONETIER DELTA 2: the slot holds a cell. Read per the dot's
+        // The slot holds a cell. Read per the dot's
         // own static type.
         var dft <- typeof_expr(nd);
         if (dft.kind = "any") {
@@ -6580,7 +6574,7 @@ fn ir_emit_expr(b, nd) {
             // Each AST field is {key: <str>, val: <expr>}; pool the name and
             // emit the value expression.
             var key_id <- ir_mod_add_str(b.mod, nd.fields[i].key);
-            // ONETIER DELTA 2: every field slot holds an any-cell.
+            // Every field slot holds an any-cell.
             // Concrete values wrap; any values keep their cell; union
             // words pass through (their own cell kind, spec 1.9); ""
             // wraps as opaque so raw-unknown words become honest cells.
@@ -6662,7 +6656,7 @@ fn ir_emit_expr(b, nd) {
         i <- 0;
         while (i < len(captures)) {
             push(cap_outer_types, get_var_type(captures[i]));
-            // ONETIER: the decl type travels with the capture, so the
+            // The decl type travels with the capture, so the
             // closure body still knows which slots hold cells.
             push(cap_decl_types, get_decl_type(captures[i]));
             i <- i + 1;
@@ -6699,7 +6693,7 @@ fn ir_emit_expr(b, nd) {
         while (i < len(nd.params)) {
             var pname <- nd.params[i];
             var pslot <- ir_get_local_slot(sub, pname);
-            // ONETIER dial: params MASK the global fallback - register
+            // Params MASK the global fallback - register
             // annotation-or-any so a param sharing a global's name never
             // types by the global (the a/b-vs-globals collision).
             var pmt <- T.mk_any();
@@ -6714,7 +6708,7 @@ fn ir_emit_expr(b, nd) {
             // declared-any for typeof's tier gate. Unannotated stays raw.
             var pann3 <- T.mk_unann();
             if (i < len(nd.param_types_ann)) { pann3 <- nd.param_types_ann[i]; }
-            // ONETIER P3-27: concrete-annotated params arrive as cells
+            // Concrete-annotated params arrive as cells
             // on EVERY call path now — unwrap-check against the
             // annotation (trap message matches the interp) and store
             // the raw payload. Other kinds store the incoming as-is.
@@ -6843,7 +6837,7 @@ fn ir_emit_expr(b, nd) {
                 ret_type_inferred <- nd.ret_type_ann;
             } else {
                 var v: any <- ir_emit_expr(sub, nd.body);
-                // ONETIER return ABI (P3-20): arrows are only called
+                // Arrows are only called
                 // dynamically — the result is a cell. Concrete bodies
                 // wrap by their type; any bodies are already cells;
                 // "" wraps opaque.
@@ -6947,7 +6941,7 @@ fn ir_emit_binop(b, nd) {
         ir_push_inst(b.cur_block, ii_store(ir_const_int(0), ir_reg(res_slot_name, T.mk_int())));
 
         var lhs <- ir_emit_expr(b, nd.left);
-        // ONETIER dial: payload truthiness (P3-24 convention).
+        // Payload truthiness for any operands.
         lhs <- ir_unwrap_any(b, lhs, typeof_expr(nd.left));
 
         var rhs_lbl <- ir_fresh_block_lbl(b, "and_r");
@@ -6979,7 +6973,7 @@ fn ir_emit_binop(b, nd) {
         ir_push_inst(b.cur_block, ii_store(ir_const_int(1), ir_reg(res_slot_name, T.mk_int())));
 
         var lhs <- ir_emit_expr(b, nd.left);
-        // ONETIER dial: payload truthiness (P3-24 convention).
+        // Payload truthiness for any operands.
         lhs <- ir_unwrap_any(b, lhs, typeof_expr(nd.left));
 
         var rhs_lbl <- ir_fresh_block_lbl(b, "or_r");
@@ -7022,7 +7016,7 @@ fn ir_emit_binop(b, nd) {
         // Two raw-tier (`none`) sides also route here: their opaque lane
         // is the magnitude heuristic, which is what dynamic-vs-dynamic
         // comparison always meant (string content, not pointer identity).
-        // ONETIER DELTA-1: `= none` / `!= none` against a union operand
+        // `= none` / `!= none` against a union operand
         // tests the union tag against the none member index (member-index
         // tags never enter the universal dyn lane). A union with no none
         // member compares constant-false: nothing is nullable by default.
@@ -7108,7 +7102,7 @@ fn ir_emit_binop(b, nd) {
                 ir_push_inst(b.cur_block, ii_dyn_str(rt2, rds.t, rds.p));
                 rhs_s <- ir_reg(rt2, T.mk_str());
             }
-            // ONETIER DELTA-1: a none side of str concatenation renders
+            // A none side of str concatenation renders
             // as the text "none" (interp _format parity).
             if (lt.kind = "none") {
                 var lns <- ir_mod_add_str(b.mod, "none");
@@ -7385,7 +7379,7 @@ fn ir_emit_format_struct(b, struct_val, fields): int {
         var fid <- ir_mod_add_str(b.mod, f.name);
         var fld_reg <- ir_fresh_tmp(b, "fld");
         ir_push_inst(b.cur_block, ii_struct_get(fld_reg, T.mk_int(), struct_val, fid));
-        // ONETIER DELTA 2: the slot holds a cell — unwrap per f.type.
+        // The slot holds a cell — unwrap per f.type.
         if (f.type.kind = "any") {
             ir_emit_format_value(b, ir_reg(fld_reg, T.mk_any()), f.type, false);
         } else {
@@ -7423,7 +7417,7 @@ fn any_tag_of(k: str): int {
     return 7;
 }
 
-// Type-aware want/wrap tag (C13): the element tier rides in the tag,
+// Type-aware want/wrap tag: the element tier rides in the tag,
 // so an unwrap edge whose STATIC expectation is [any] must ask 10,
 // not 4 -- any_tag_of sees only the kind string and cannot know.
 // Doubles as the wrap-tag map (wrap tag = want tag by construction).
@@ -7445,7 +7439,7 @@ fn ir_wrap_any(b, vreg, st): Val {
     }
     var aw_tag <- any_tag_of(st.kind);
     if (st.kind = "array") {
-        // ONETIER P3-23: element tier rides in the tag — 4 = raw
+        // Element tier rides in the tag — 4 = raw
         // elements, 10 = cell elements ([any]).
         if (st.elem.kind = "any") { aw_tag <- 10; }
     }
@@ -7636,7 +7630,7 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
             var fkey <- expr.fields[fi].key;
             var fslot <- T.struct_field_type(slot_t.fields, fkey);
             var fval <- ir_coerce_slot_value(b, expr.fields[fi].val, fslot);
-            // ONETIER DELTA 2: every field slot holds an any-cell.
+            // Every field slot holds an any-cell.
             if (fslot.kind != "union" && fslot.kind != "any") {
                 var fwt <- fslot;
                 if (fwt.kind = "") { fwt <- typeof_expr(expr.fields[fi].val); }
@@ -7683,7 +7677,7 @@ fn ir_emit_stmt(b, stmt): int {
     if (stmt.node = "ReturnStmt") {
         if (stmt.expr = false) {
             // bare `return;` — a `| none`-returning fn yields the none
-            // member (SPEC DELTA 1); otherwise keep the raw terminator.
+            // member; otherwise keep the raw terminator.
             var brfn <- find_fn(b.func.name);
             var brslot <- T.mk_unann();
             if (brfn != false) { brslot <- brfn.ret_type_ann; }
@@ -7704,7 +7698,7 @@ fn ir_emit_stmt(b, stmt): int {
             if (rslot.kind = "" && rfn != false) {
                 if (rfn.ret_type.kind = "any") { eff_any <- true; }
             }
-            // ONETIER return ABI: a ReturnStmt in a fn NOT in the
+            // A ReturnStmt in a fn NOT in the
             // table is an arrow fn — arrows are only ever called
             // dynamically, and the dynamic result convention is a
             // cell.
@@ -7727,8 +7721,8 @@ fn ir_emit_stmt(b, stmt): int {
             // Tagged-any return edges: an any-returning function wraps a
             // concrete value; a concrete/raw-returning function unwraps a
             // tagged one.
-            // (P3-7 amended) annotation-any wrapping now happens at
-            // the single F2B edge below — this pre-restructure line
+            // Annotation-any wrapping happens at the single edge
+            // below — an earlier extra wrap here
             // double-celled annotated-arrow returns (rslot = any fired
             // BOTH wraps; named eff_any fns with rslot "" fired only
             // one, which hid it).
@@ -7752,7 +7746,7 @@ fn ir_emit_stmt(b, stmt): int {
                 slot_t <- T.mk_unann();
             }
         }
-        // ONETIER: the tier key is the declaration — and for an
+        // The tier key is the declaration — and for an
         // unannotated decl the inferred type IS the declaration.
         // Record it here so emit-time reads see the same key the infer
         // pass recorded (decl_types resets per-fn; only params
@@ -7800,11 +7794,11 @@ fn ir_emit_stmt(b, stmt): int {
         // any is wrapped into a tagged cell. (The reverse edge — a tagged
         // value into a non-any slot — is unwrapped inside
         // ir_emit_value_for_slot, which built `v` above.)
-        // ONETIER P3-15 (neutralized): the reassignment lock
+        // No explicit unwrap edge here: the reassignment lock
         // edge lives in ir_emit_value_for_slot's tail, which
-        // checked-unwraps any->concrete for every slot route. The
-        // explicit edge here DOUBLE-unwrapped (the arrow1 match-arm
-        // wall: saved_reg <- b.locals[i].reg emitted two want-3
+        // checked-unwraps any->concrete for every slot route. An
+        // explicit edge here DOUBLE-unwrapped (match-arm case:
+        // saved_reg <- b.locals[i].reg emitted two want-3
         // unwraps; the second read the raw string's bytes as a tag).
         if (slot_t.kind = "any" && rhs_t.kind != "any") {
             v <- ir_wrap_any(b, v, rhs_t);
@@ -7873,9 +7867,9 @@ fn ir_emit_stmt(b, stmt): int {
     if (stmt.node = "IndexAssign") {
         var isat <- typeof_expr(stmt.obj);
         if (isat.kind = "any") {
-            // ONETIER dial: the element tier of an any-held array is
+            // The element tier of an any-held array is
             // runtime state (tag 4 raw vs tag 10 cells). Guard with
-            // want 11 = either array tier (C13); branch in arrow_iset_dyn;
+            // want 11 = either array tier; branch in arrow_iset_dyn;
             // bounds trap rides @arrow_index_set unchanged.
             var isc <- ir_emit_expr(b, stmt.obj);
             var ispay <- ir_unwrap_any_checked(b, isc, isat, 11);
@@ -7911,7 +7905,7 @@ fn ir_emit_stmt(b, stmt): int {
         var ot <- typeof_expr(stmt.obj);
         var fslot <- T.mk_unann();
         if (ot.kind = "struct_lit") { fslot <- T.struct_field_type(ot.fields, stmt.field); }
-        // ONETIER DELTA 2: every field slot holds an any-cell.
+        // Every field slot holds an any-cell.
         // An UNKNOWN fslot ("") coerces against any: tagged values keep
         // their cells (coerce's ""-tail would plain-unwrap them and the
         // any-passthrough below would store the RAW record — whose
@@ -8434,7 +8428,7 @@ fn emit_function_via_ir(nd, mod) {
 
     // If the source function fell off the end without an explicit return,
     // close the final block. A `| none`-returning fn yields the none
-    // member (SPEC DELTA 1); anything else keeps `ret i64 0`.
+    // member; anything else keeps `ret i64 0`.
     if (b.cur_block.terminator = false) {
         if (nd.name != "__main_logic" && tot_ret_includes_none(nd.ret_type_ann)) {
             ir_set_terminator(b.cur_block, ii_ret(ir_union_none_ret(b, nd.ret_type_ann)));
@@ -8645,12 +8639,10 @@ fn llvm_link(ll_file: str, exe_file: str): int {
 //  be retargeted).
 // ═══════════════════════════════════════════
 
-// ── ONETIER P3-22: whole-program ret-type pre-pass ──
-// ONETIER dial (returns leg): classify a fn's return-expr mix.
+// ── Whole-program ret-type pre-pass ──
+// Classify a fn's return-expr mix.
 // flags = [saw_boollit, saw_other, saw_structlit]; any flag set means
-// the fn returns a value on some path. (Formerly P3-26's walker; the
-// promotion it powered is subsumed - every unannotated value-returning
-// fn is eff_any under the dial.)
+// the fn returns a value on some path.
 fn pr_scan_mix(body, flags): int {
     var i <- 0;
     while (i < len(body)) {
@@ -8685,8 +8677,7 @@ fn pr_fns(stmts): int {
         var s <- stmts[i];
         if (s.node = "FnDecl") {
             if (s.ret_type_ann.kind = "") {
-                // ONETIER dial (returns leg, SPEC 1.2 + DELTA-1):
-                // unannotated ret defaults to checked `any` when any
+                // Unannotated ret defaults to checked `any` when any
                 // path returns a value, and to `none` when no path
                 // does (the result then unifies only with none and
                 // T | none). Inference is retired; never a wrong
@@ -8706,13 +8697,12 @@ fn pr_fns(stmts): int {
     return 0;
 }
 fn prepass_ret_infer(stmts): int {
-    // Single pass: the dial's defaulting is per-fn and order-independent
-    // (the old 3x fixpoint served cross-fn return inference, now retired).
+    // Single pass: the defaulting is per-fn and order-independent
     pr_fns(stmts);
     return 0;
 }
 
-// ONETIER dial: register top-level decl types into the read-only
+// Register top-level decl types into the read-only
 // fallback BEFORE plain fns emit (they emit ahead of __main_logic,
 // whose infer used to be the only registrar; a miss typed globals ""
 // - raw-tier dot/index on what are now cell elements).

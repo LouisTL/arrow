@@ -258,7 +258,7 @@ class BoolLit:
 
 @dataclass
 class NoneLit:
-    # ONETIER DELTA-1: the `none` literal expression. Evaluates to
+    # The `none` literal expression. Evaluates to
     # Python None; classified as kind "none" everywhere.
     pass
 
@@ -1023,7 +1023,7 @@ class Parser:
             return BoolLit(tok.value)
         if tok.type == TokenType.IDENT:
             if tok.value == "none":
-                # ONETIER DELTA-1: `none` is the none-literal, not a name.
+                # `none` is the none-literal, not a name.
                 self.pos += 1
                 return NoneLit()
             self.pos += 1
@@ -1141,7 +1141,7 @@ _BUILTIN_RET_KINDS = {
 
 
 def _fn_is_unit(fn) -> bool:
-    """True when no path returns a value (ONETIER 1.10). Cached."""
+    """True when no path returns a value. Cached."""
     c = getattr(fn, "_unit_cached", None)
     if c is not None:
         return c
@@ -1170,7 +1170,7 @@ def _fn_is_unit(fn) -> bool:
 
 
 def _classify_static(node, env) -> str:
-    """ONETIER 3.2, head-level v1. Returns a kind head, "any" when
+    """Returns a kind head, "any" when
     unknown, or "unit" for calls of functions that return no value."""
     if isinstance(node, NumberLit):
         return "float" if isinstance(node.value, float) else "int"
@@ -1374,11 +1374,11 @@ class Interpreter:
                     # Redeclaration in the same scope is an error.
                     dk = node.type_kind
                     if dk == "":
-                        # ONETIER: unannotated decls lock to their
+                        # Unannotated decls lock to their
                         # classified static kind; unknown locks open (any).
                         dk = _classify_static(expr, self.env)
                         if dk == "unit":
-                            # ONETIER DELTA-1: a no-value call yields
+                            # A no-value call yields
                             # none; binding it is legal and locks the
                             # name to kind "none".
                             dk = "none"

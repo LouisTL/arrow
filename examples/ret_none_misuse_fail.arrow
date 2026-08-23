@@ -4,7 +4,7 @@
 //ERR: none cannot be used with '+'; only = and != test none
 //ERR: 3 type error(s)
 
-// ONETIER dial + DELTA-1: a fn that never returns a value returns
+// A fn that never returns a value returns
 // none; its result unifies only with none and T | none. Misuse at
 // concrete edges and in arithmetic is an ordinary type error.
 

@@ -3,7 +3,7 @@
 //OUT: 7
 //OUT: 4
 
-// C1: pushing a struct-with-union-field into a [union] array. Each pushed
+// Pushing a struct-with-union-field into a [union] array. Each pushed
 // value's inner union field (tag: int | str) must be stored as a real cell so
 // it can be re-matched after being read back out of the array.
 var arr: [{tag: int | str} | {flag: int}] <- [];

@@ -14,7 +14,7 @@
 //OUT: true
 //OUT: false
 
-// ONETIER DELTA-1: none as a first-class value. Pins the none literal,
+// none as a first-class value. Pins the none literal,
 // = / != probes on union and any operands, tag-9 any-cells (wrap, print,
 // concat, truthiness), the none => match arm, and explicit `return none;`
 // in a `: T | none` function.

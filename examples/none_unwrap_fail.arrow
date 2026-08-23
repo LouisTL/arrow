@@ -2,7 +2,7 @@
 //OUT: before
 //ERR: expected int in any, got none
 
-// ONETIER DELTA-1: a none riding an any-cell (tag 9) fails every
+// A none riding an any-cell (tag 9) fails every
 // concrete unwrap expectation at annotated edges - byte-identical trap
 // on both hosts, exit 1.
 

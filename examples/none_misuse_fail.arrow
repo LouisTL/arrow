@@ -6,7 +6,7 @@
 //ERR: none cannot be used with '<'; only = and != test none
 //ERR: 5 type error(s)
 
-// ONETIER DELTA-1: none unifies only with none and T | none. Misuse of
+// none unifies only with none and T | none. Misuse of
 // none at concrete edges and in arithmetic/ordering is an ordinary
 // type error.
 

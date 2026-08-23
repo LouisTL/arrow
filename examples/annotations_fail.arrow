@@ -11,11 +11,10 @@
 //ERR: call to 'dist'
 //ERR: 11 type error(s)
 
-// Annotation rejections, consolidated from test_fail / test_arr_fail /
-// test_struct_fail (the checker batches all eleven). The bare-call
-// statement below is the check-time graduation pin for checking
-// coverage (C19): bare calls route through the same arg checking as
-// expression calls, so a concrete mismatch is a type error.
+// Annotation rejections; the checker batches all eleven. The bare
+// call statement `add("two", 1);` pins that bare calls route through
+// the same arg checking as expression calls, so a concrete mismatch
+// is a type error.
 
 // scalars: bad decl, bad arg each direction
 var x: int <- "this is a string, not int";

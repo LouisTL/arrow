@@ -1,12 +1,10 @@
 // EXPECT: runtime_fail
 //ERR: Error: expected int in any, got str
 
-// SPEC-ONETIER section 6.1 original example, pinned verbatim. `x` is
-// locked int at declaration (fixed-type rule); a checked-any str
-// crossing the reassign edge traps at the want-0 unwrap on both
-// hosts. Mechanism sibling: any_trap_reassign_fail (str <- int
-// flavor, with a pre-trap print); this file pins the spec's exact
-// int <- str direction.
+// `x` is locked int at declaration (fixed-type rule); a checked-any
+// str crossing the reassign edge traps at the unwrap on both hosts.
+// Mechanism sibling: any_trap_reassign_fail (str <- int flavor, with
+// a pre-trap print); this file pins the int <- str direction.
 var x <- 5;
 var v: any <- "hello";
 x <- v;

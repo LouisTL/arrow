@@ -1,18 +1,16 @@
 // EXPECT: runtime_fail
 //ERR: Error: expected int in any, got str
 
-// SPEC-ONETIER section 6.2 original example, pinned verbatim. An
-// unannotated return defaults to checked any (ONETIER retired return
-// inference); the any-held str traps at take's annotated int edge.
-// Mechanism sibling: any_trap_str_int_fail (explicit `: any` decl);
-// this file pins the spec's provenance -- the checked-any DEFAULT.
-// Deliberately runtime_fail TODAY: if flow typing ever lands, this
-// may promote to type_fail -- re-decide then, do not silently move.
-// Doubles as the runtime graduation pin for checking coverage
-// (C19): the bare call 'take(v);' routes through arg checking,
-// which admits the checked-any arg, and defers to take's entry
-// unwrap -- the trap below. Over-strict bare-call checking would
-// surface here as UNEXPECTED (compile failed).
+// An unannotated return defaults to checked any (return-type
+// inference does not exist); the any-held str traps at take's
+// annotated int edge. Mechanism sibling: any_trap_str_int_fail
+// (explicit `: any` decl); this file pins the checked-any DEFAULT as
+// the provenance. Deliberately runtime_fail today: if flow typing
+// ever lands, this may promote to type_fail -- re-decide then, do
+// not silently move. Also pins that bare-call arg checking admits
+// checked-any args: the bare call `take(v);` compiles and defers to
+// take's entry unwrap -- over-strict checking would surface here as
+// UNEXPECTED (compile failed).
 fn make() {
     return "hello";
 }

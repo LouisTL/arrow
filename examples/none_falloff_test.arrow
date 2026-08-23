@@ -1,5 +1,5 @@
 // EXPECT: ok
-// SPEC-ONETIER DELTA 1: a `| none` fn may fall off the end or use bare
+// A `| none` fn may fall off the end or use bare
 // `return;` — both yield the none member, printing as `none`.
 fn f(a: bool): str | none {
     if (a) {
