@@ -1,0 +1,11 @@
+// EXPECT: runtime_fail
+//ERR: Error: expected int in any, got str
+
+// `x` is locked int at declaration (fixed-type rule); a checked-any
+// str crossing the reassign edge traps at the unwrap on both hosts.
+// Mechanism sibling: any_trap_reassign_fail (str <- int flavor, with
+// a pre-trap print); this file pins the int <- str direction.
+var x <- 5;
+var v: any <- "hello";
+x <- v;
+print(x);

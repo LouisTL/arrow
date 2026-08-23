@@ -1,0 +1,22 @@
+// EXPECT: ok
+// A `| none` fn may fall off the end or use bare
+// `return;` — both yield the none member, printing as `none`.
+fn f(a: bool): str | none {
+    if (a) {
+        return "a";
+    }
+}
+fn g(a: bool): int | none {
+    if (a) {
+        return 7;
+    }
+    return;
+}
+print(f(true));
+//OUT: a
+print(f(false));
+//OUT: none
+print(g(true));
+//OUT: 7
+print(g(false));
+//OUT: none

@@ -1,0 +1,36 @@
+// EXPECT: type_fail
+//ERR: pushed str to array of int
+//ERR: 'zs' annotated as [int] but assigned [any]
+//ERR: argument 1 expected [int] but got [any]
+//ERR: return type mismatch in 'bad': declared [str] but returning [any]
+//ERR: 'n' annotated as int but assigned [any]
+//ERR: 5 type error(s)
+
+// Misuse twin of arr_default_test. The empty literal is [any]; at
+// annotated array edges it adopts the expected type -- and that
+// adoption is a real lock: a later wrong-kind push is rejected
+// (mechanism sibling: push_conform_fail, where the lock comes from a
+// populated literal instead). A POPULATED [any] never crosses a
+// concrete-element edge -- decl, argument, and return edges all
+// reject; the remedy is a truthful annotation. At a non-array edge
+// there is no adoption: the literal stays [any] and the diagnostic
+// names it.
+
+// adoption is a lock
+var ys: [int] <- [];
+push(ys, "two");
+
+// populated [any] vs concrete element edges: decl, argument, return
+var xs <- [];
+push(xs, 1);
+var zs: [int] <- xs;
+fn takes(ws: [int]): int { return len(ws); }
+print(takes(xs));
+fn bad(): [str] {
+    var e <- [];
+    push(e, 1);
+    return e;
+}
+
+// no adoption at a non-array edge; [] stays [any]
+var n: int <- [];

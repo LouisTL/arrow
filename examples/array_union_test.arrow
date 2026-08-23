@@ -18,9 +18,6 @@
 // An array annotated with a union element type stores each element as a tagged
 // union cell. Elements are wrapped at construction, and indexing yields the
 // union type — which you narrow with match, exactly as for a scalar union.
-// This is the sound replacement for [any]: 5000000 (>= 2^20) round-trips
-// correctly here, whereas under [any]'s magnitude heuristic it would misread
-// as a string pointer.
 var xs: [int | str] <- [5000000, "big", 7];
 var i <- 0;
 while (i < 3) {

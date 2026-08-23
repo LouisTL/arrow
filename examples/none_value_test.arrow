@@ -1,0 +1,50 @@
+// EXPECT: ok
+//OUT: none
+//OUT: hit
+//OUT: r is none
+//OUT: s not none
+//OUT: none
+//OUT: v=none
+//OUT: a is none
+//OUT: was none
+//OUT: real
+//OUT: was none
+//OUT: [1, none, "s"]
+//OUT: none is falsy
+//OUT: true
+//OUT: false
+
+// none as a first-class value. Pins the none literal,
+// = / != probes on union and any operands, tag-9 any-cells (wrap, print,
+// concat, truthiness), the none => match arm, and explicit `return none;`
+// in a `: T | none` function.
+
+fn find(k: int): str | none {
+    if (k > 0) { return "hit"; }
+    return none;
+}
+fn pick(p: str | none): str {
+    match (p) {
+        s: str => { return s; }
+        none => { return "was none"; }
+    }
+    return "unreachable";
+}
+var r <- find(0);
+var s <- find(1);
+print(r);
+print(s);
+if (r = none) { print("r is none"); }
+if (s != none) { print("s not none"); }
+var a: any <- none;
+print(a);
+print("v=" + a);
+if (a = none) { print("a is none"); }
+print(pick(r));
+print(pick("real"));
+print(pick(none));
+var xs: [any] <- [1, none, "s"];
+print(xs);
+if (!a) { print("none is falsy"); }
+print(r = none);
+print(r != none);

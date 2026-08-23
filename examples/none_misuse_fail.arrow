@@ -1,0 +1,18 @@
+// EXPECT: type_fail
+//ERR: return type mismatch in 'g': declared int but returning none
+//ERR: 'x' annotated as int but assigned none
+//ERR: argument 1 expected int but got none
+//ERR: none cannot be used with '+'; only = and != test none
+//ERR: none cannot be used with '<'; only = and != test none
+//ERR: 5 type error(s)
+
+// none unifies only with none and T | none. Misuse of
+// none at concrete edges and in arithmetic/ordering is an ordinary
+// type error.
+
+fn wants(p: int): int { return p; }
+fn g(): int { return none; }
+var x: int <- none;
+print(wants(none));
+print(none + 1);
+print(none < 1);

@@ -320,6 +320,15 @@ fn types_compat(annot, actual): int {
     if (annot.kind = "int" && actual.kind = "float") { return true; }
     if (annot.kind = "bool" && actual.kind = "float") { return true; }
     if (annot.kind = "array" && actual.kind = "array") {
+        // The element TIER is baked into the allocation
+        // - [any] holds cell words, [T] raw words. A populated array
+        // cannot cross tiers (the empty literal adopts instead);
+        // elem-any on exactly one side is a layout lie: reject.
+        if (annot.elem.kind = "any" && actual.elem.kind = "any") { return true; }
+        if (annot.elem.kind = "any" || actual.elem.kind = "any") {
+            if (annot.elem.kind = "" || actual.elem.kind = "") { return true; }
+            return false;
+        }
         return types_compat(annot.elem, actual.elem);
     }
     if (annot.kind = "struct_lit" && actual.kind = "struct_lit") {
