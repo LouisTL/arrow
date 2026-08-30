@@ -1,0 +1,6 @@
+// Alias-of-alias fixture: Pack resolves through Inner, which is not
+// exported anywhere else — resolution must follow this file's own view.
+type Inner <- {v: int};
+type Pack <- Inner;
+
+fn wrap(x: int): Pack { return {v: x}; }

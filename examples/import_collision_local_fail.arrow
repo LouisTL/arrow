@@ -1,0 +1,6 @@
+// EXPECT: check_fail
+//ERR: import error: 'mk' collides with a declaration in this file
+
+import "modules/geom" {mk};
+fn mk(): int { return 0; }
+print(1);

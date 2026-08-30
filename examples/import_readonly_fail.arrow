@@ -1,0 +1,6 @@
+// EXPECT: check_fail
+//ERR: import error: cannot assign to imported 'mk'
+
+import "modules/geom" {mk};
+mk <- 5;
+print(1);

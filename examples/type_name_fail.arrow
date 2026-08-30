@@ -1,0 +1,6 @@
+// EXPECT: check_fail
+//ERR: unknown type 'Zebra'
+
+// An unknown annotation name is a check-time error on both hosts.
+var q: Zebra <- 5;
+print(q);

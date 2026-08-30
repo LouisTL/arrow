@@ -1,0 +1,7 @@
+// EXPECT: check_fail
+//ERR: circular type alias 'A'
+
+type A <- B;
+type B <- A;
+var x: A <- 1;
+print(x);

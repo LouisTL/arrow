@@ -1,0 +1,9 @@
+// EXPECT: ok
+//OUT: 20
+//OUT: 12
+
+// Destructured value imports, including a per-item rename.
+import "modules/geom" {mk, area as measure};
+import "modules/geom2" {mk as mk10};
+print(mk10(2));
+print(measure(mk(3)));

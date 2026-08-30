@@ -1,0 +1,8 @@
+// EXPECT: ok
+//OUT: 5
+
+// A type name may be used before its declaration; resolution is a
+// whole-program pass, so declaration order within a file is irrelevant.
+var p: Later <- {q: 5};
+print(p.q);
+type Later <- {q: int};

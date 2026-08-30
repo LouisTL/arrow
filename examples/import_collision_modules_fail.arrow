@@ -1,0 +1,6 @@
+// EXPECT: check_fail
+//ERR: import error: 'mk' already imported from
+
+import "modules/geom" {mk};
+import "modules/geom2" {mk};
+print(1);

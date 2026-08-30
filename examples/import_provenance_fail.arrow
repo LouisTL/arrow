@@ -1,0 +1,6 @@
+// EXPECT: scope_fail
+//ERR: modules/badscope.arrow:2:
+//ERR: scope error: undefined variable 'hh'
+
+import "modules/badscope" as bad;
+print(bad.area(3, 4));

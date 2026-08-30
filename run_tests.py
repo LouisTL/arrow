@@ -5,7 +5,7 @@ against per-file annotations.
 
 Annotation format (anywhere in the file as `// ...` comments):
 
-    // EXPECT: ok | type_fail | scope_fail | parse_fail
+    // EXPECT: ok | type_fail | scope_fail | parse_fail | check_fail
     //OUT: <line of expected stdout>     (zero or more, in source order)
     //ERR: <substring required in compiler diagnostic>  (zero or more)
 
@@ -185,6 +185,43 @@ def is_interactive(example: Path) -> bool:
 #  Dispatchers per EXPECT category
 # ─────────────────────────────────────────────────────────────────────
 
+def check_check_fail(example: Path, header: dict, verbose: bool):
+    """Both hosts must reject at check time: nonzero exit, every //ERR:
+    substring present, and the abort line, in each host's output."""
+    try:
+        ic, iout, ierr = run_interp(example)
+    except subprocess.TimeoutExpired:
+        return ("TIMEOUT (interp)", "")
+    itext = iout + ierr
+    if ic == 0:
+        return ("UNEXPECTED (check)", "interp accepted a program both hosts must reject")
+    if "Compilation aborted" not in itext:
+        return ("UNEXPECTED (check)", "interp didn't abort at check time: "
+                f"{itext.strip().splitlines()[-3:]}")
+    missing = [c for c in header["contains"] if c not in itext]
+    if missing:
+        return ("CONTAINS missing (interp)", f"required substrings absent: {missing}")
+    try:
+        rc, stdout, stderr = run_compile_only(example)
+    except subprocess.TimeoutExpired:
+        return ("TIMEOUT (compile)", "")
+    ntext = stdout + stderr
+    if "Compilation aborted" not in ntext:
+        return ("UNEXPECTED (check)", "compiler didn't abort: "
+                f"{ntext.strip().splitlines()[-3:]}")
+    missing = [c for c in header["contains"] if c not in ntext]
+    if missing:
+        return ("CONTAINS missing (native)", f"required substrings absent: {missing}")
+    if NATIVE_COMPILER is not None:
+        try:
+            rc2, stdout2, stderr2 = run_compile_only(example, native_cmd)
+        except subprocess.TimeoutExpired:
+            return ("TIMEOUT (nc-compile)", "")
+        if stdout2 != stdout:
+            return ("MISMATCH (nc diag != oracle)", brief_diff(stdout, stdout2))
+    return ("check fail", "")
+
+
 def check_ok(example: Path, header: dict, verbose: bool):
     try:
         ic, iout, ierr = run_interp(example)
@@ -337,6 +374,7 @@ def brief_diff(expected: str, actual: str, max_lines: int = 4) -> str:
 
 CATEGORY_DISPATCH = {
     "ok":          lambda ex, h, v: check_ok(ex, h, v),
+    "check_fail":  check_check_fail,
     "type_fail":   lambda ex, h, v: check_fail(ex, h, "type", v),
     "scope_fail":  lambda ex, h, v: check_fail(ex, h, "scope", v),
     "parse_fail":  lambda ex, h, v: check_fail(ex, h, "parse", v),
@@ -345,7 +383,7 @@ CATEGORY_DISPATCH = {
 
 PASS_STATUSES = {
     "ok", "type fail", "scope fail", "parse fail", "runtime fail",
-    "skipped (interactive)", "weak (no //OUT:)",
+    "check fail", "skipped (interactive)", "weak (no //OUT:)",
 }
 
 

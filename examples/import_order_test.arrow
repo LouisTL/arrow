@@ -1,0 +1,11 @@
+// EXPECT: ok
+//OUT: A init
+//OUT: B init
+//OUT: main starts
+//OUT: 11
+
+// Module top-level assignments run dependencies-first (post-order of the
+// import graph), before the importer's own statements.
+import "modules/init_b" as B;
+print("main starts");
+print(B.b_token);

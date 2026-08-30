@@ -1,0 +1,8 @@
+// Shared fixture for the import tests: one exported type, two fns, one var.
+type Pair <- {a: int, b: int};
+
+fn mk(x: int): Pair { return {a: x, b: x + 1}; }
+
+fn area(p: Pair): int { return p.a * p.b; }
+
+var origin_units <- 2;

@@ -82,9 +82,9 @@ fn pp(){
         var start_errs <- len(parse_errors);
         panic_mode[0] <- false;  // fresh statement → fresh error budget
         if (ci("IDENT") && cv() = "type" && pi(1, "IDENT") && pi(2, "ARROW")) {
-            // type Name <- Type;  register the structural alias (3d); it
-            // yields no AST node, so nothing downstream needs to handle it.
-            ptype_decl();
+            // type Name <- Type;  the declaration node carries the (still
+            // unresolved) right-hand type for the whole-program pass.
+            push(ss, ptype_decl());
             if (len(parse_errors) > start_errs) {
                 if (pos[0] = start_pos) { adv(); }
                 sync_to_stmt_boundary();
@@ -149,18 +149,38 @@ fn pim(){
             adv();
         }
     }
+    var its<-[];
+    if(ci("LBRACE")){
+        eat("LBRACE");
+        push(its, pimitem());
+        var more<-ci("COMMA");
+        while(more){
+            eat("COMMA");
+            if(ci("RBRACE")){more<-false;}
+            else{push(its, pimitem());more<-ci("COMMA");}
+        }
+        eat("RBRACE");
+    }
     eat("SEMI");
-    return{node:"ImportStmt",path:pth,name:base,line:ln,col:cl};
+    return{node:"ImportStmt",path:pth,name:base,items:its,line:ln,col:cl};
+}
+// One `name` or `name as bound` entry of an import list.
+fn pimitem(){
+    if(!ci("IDENT")){var t<-toks[pos[0]];parse_error(t.line,t.col,"import list expects an identifier, got "+t.type);adv();return{orig:"",bound:""};}
+    var orig<-cv();adv();
+    var bound<-orig;
+    if(ci("IDENT")&&cv()="as"){adv();if(!ci("IDENT")){var t2<-toks[pos[0]];parse_error(t2.line,t2.col,"`as` expects an identifier, got "+t2.type);}else{bound<-cv();adv();}}
+    return{orig:orig,bound:bound};
 }
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}var al<-get_type_alias(n);if(al.kind!=""){return T.mk_named(al,n);}report_error(toks[pos[0]-1].line,toks[pos[0]-1].col,"unknown type '"+n+"'");return{kind:"any"};}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+ev("IDENT");}return{kind:"unresolved",name:n,line:toks[pos[0]-1].line,col:toks[pos[0]-1].col};}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
 fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:""};}
 // type Name <- Type;  structural alias (3d). Registers the alias and is
 // elided from the AST (handled in pp), so no later pass sees a new node.
-fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-ev("IDENT");eat("ARROW");var ty<-pty();eat("SEMI");set_type_alias(name,ty);return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
+fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-ev("IDENT");eat("ARROW");var ty<-pty();eat("SEMI");return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
 fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:""},is_decl:false,line:ln,col:cl};}
 fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
@@ -280,11 +300,11 @@ fn validate_module(stmts, path: str) {
     var i <- 0;
     while (i < len(stmts)) {
         var s <- stmts[i];
-        var ok <- (s.node = "FnDecl" || s.node = "Assignment" || s.node = "ImportStmt");
+        var ok <- (s.node = "FnDecl" || s.node = "Assignment" || s.node = "ImportStmt" || s.node = "TypeDecl");
         if (!ok) {
             var ln <- 0;
             if (s.line != false) { ln <- s.line; }
-            push(import_errors, path + ":" + ln + ": module may only contain fn declarations, assignments, or imports (got " + s.node + ")");
+            push(import_errors, path + ":" + ln + ": module may only contain fn declarations, assignments, type declarations, or imports (got " + s.node + ")");
         }
         i <- i + 1;
     }
@@ -464,6 +484,501 @@ fn mod_rewrite_expr(e, top_names: [str], scope: [str], mod_name: str): int {
     return 0;
 }
 
+
+// ── whole-program type + import resolution ──
+// File ids: 0..n-1 index the loaded-module record arrays; -1 is the main
+// file. Every helper below takes the record arrays it reads so state stays
+// local to __main_logic.
+
+fn ie_push_at(errs, label: str, ln: int, cl: int, msg: str) {
+    push(errs, label + ":" + ln + ":" + cl + ": import error: " + msg);
+    return 0;
+}
+fn ie_push_plain(errs, label: str, msg: str) {
+    push(errs, label + ": import error: " + msg);
+    return 0;
+}
+fn find_rec(paths: [str], p: str): int {
+    var i <- 0;
+    while (i < len(paths)) { if (paths[i] = p) { return i; } i <- i + 1; }
+    return 0 - 1;
+}
+fn tlist_find(tl, name: str): int {
+    var i <- 0;
+    while (i < len(tl)) { if (tl[i].name = name) { return i; } i <- i + 1; }
+    return 0 - 1;
+}
+fn dot_split_head(n: str): str {
+    var i <- 0;
+    while (i < len(n)) { if (char_at(n, i) = ".") { return substring(n, 0, i); } i <- i + 1; }
+    return "";
+}
+fn dot_split_tail(n: str): str {
+    var i <- 0;
+    while (i < len(n)) { if (char_at(n, i) = ".") { return substring(n, i + 1, len(n)); } i <- i + 1; }
+    return n;
+}
+// The per-file view: own type decls, destructured type imports, namespace
+// edges. Returns {ok, fid, atype, line, col} — fid is the file whose view
+// governs the declaration's own right-hand side.
+fn view_types(fid: int, rec_types, main_types) { if (fid < 0) { return main_types; } return rec_types[fid]; }
+fn view_edges(fid: int, rec_edges, main_edges) { if (fid < 0) { return main_edges; } return rec_edges[fid]; }
+fn view_tbinds(fid: int, rec_tbinds, main_tbinds) { if (fid < 0) { return main_tbinds; } return rec_tbinds[fid]; }
+fn view_label(fid: int, rec_paths: [str], main_label: str): str { if (fid < 0) { return main_label; } return rec_paths[fid]; }
+
+fn type_decl_of(name: str, fid: int, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds) {
+    var head <- dot_split_head(name);
+    if (head != "") {
+        var base <- dot_split_tail(name);
+        var edges <- view_edges(fid, rec_edges, main_edges);
+        var i <- 0;
+        while (i < len(edges)) {
+            if (edges[i].ns = head) {
+                var ridx <- find_rec(rec_paths, edges[i].path);
+                if (ridx >= 0) {
+                    var ti <- tlist_find(rec_types[ridx], base);
+                    if (ti >= 0) {
+                        var d <- rec_types[ridx][ti];
+                        return {ok: true, fid: ridx, atype: d.atype, line: d.line, col: d.col};
+                    }
+                }
+            }
+            i <- i + 1;
+        }
+        return {ok: false, fid: 0 - 1, atype: {kind: ""}, line: 0, col: 0};
+    }
+    var own <- view_types(fid, rec_types, main_types);
+    var oi <- tlist_find(own, name);
+    if (oi >= 0) {
+        var od <- own[oi];
+        return {ok: true, fid: fid, atype: od.atype, line: od.line, col: od.col};
+    }
+    var tb <- view_tbinds(fid, rec_tbinds, main_tbinds);
+    var bi <- 0;
+    while (bi < len(tb)) {
+        if (tb[bi].bound = name) {
+            var ridx2 <- tb[bi].ridx;
+            var ti2 <- tlist_find(rec_types[ridx2], tb[bi].orig);
+            if (ti2 >= 0) {
+                var d2 <- rec_types[ridx2][ti2];
+                return {ok: true, fid: ridx2, atype: d2.atype, line: d2.line, col: d2.col};
+            }
+        }
+        bi <- bi + 1;
+    }
+    return {ok: false, fid: 0 - 1, atype: {kind: ""}, line: 0, col: 0};
+}
+
+fn memo_find(memo, key: str): int {
+    var i <- 0;
+    while (i < len(memo)) { if (memo[i].key = key) { return i; } i <- i + 1; }
+    return 0 - 1;
+}
+
+fn resolve_tname(name: str, use_ln: int, use_cl: int, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str) {
+    var key <- "" + fid + "|" + name;
+    var mi <- memo_find(memo, key);
+    if (mi >= 0) { return memo[mi].rtype; }
+    if (name_in(skeys, key)) {
+        report_error(slines[0], scols[0], "circular type alias '" + snames[0] + "'");
+        push(memo, {key: key, rtype: {kind: "any"}});
+        return {kind: "any"};
+    }
+    var d <- type_decl_of(name, fid, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds);
+    if (!d.ok) {
+        report_error(use_ln, use_cl, "unknown type '" + name + "'");
+        push(memo, {key: key, rtype: {kind: "any"}});
+        return {kind: "any"};
+    }
+    push(skeys, key); push(slines, d.line); push(scols, d.col); push(snames, name);
+    var r <- resolve_type(d.atype, d.fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+    pop(skeys); pop(slines); pop(scols); pop(snames);
+    var wrapped <- T.mk_named(r, name);
+    push(memo, {key: key, rtype: wrapped});
+    return wrapped;
+}
+
+fn resolve_type(t, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str) {
+    if (t.kind = "unresolved") {
+        return resolve_tname(t.name, t.line, t.col, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+    }
+    if (t.kind = "array") {
+        var re <- resolve_type(t.elem, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var ra <- T.mk_array(re);
+        if (t.tname != "") { ra <- T.mk_named(ra, t.tname); }
+        return ra;
+    }
+    if (t.kind = "struct_lit") {
+        var nf <- [];
+        var i <- 0;
+        while (i < len(t.fields)) {
+            var ft <- resolve_type(t.fields[i].type, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            push(nf, {name: t.fields[i].name, type: ft});
+            i <- i + 1;
+        }
+        var rs <- T.mk_struct_lit(nf);
+        if (t.tname != "") { rs <- T.mk_named(rs, t.tname); }
+        return rs;
+    }
+    if (t.kind = "union") {
+        var nm <- [];
+        var j <- 0;
+        while (j < len(t.members)) {
+            var mt <- resolve_type(t.members[j], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            push(nm, mt);
+            j <- j + 1;
+        }
+        var ru <- T.mk_union(nm);
+        if (t.tname != "") { ru <- T.mk_named(ru, t.tname); }
+        return ru;
+    }
+    return t;
+}
+
+// Resolve every stored annotation and match pattern under a statement
+// list, in place. Alias struct patterns get the same field destructuring
+// the parser applies to literal struct patterns.
+fn rt_stmts(stmts, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str): int {
+    var i <- 0;
+    while (i < len(stmts)) {
+        rt_stmt(stmts[i], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        i <- i + 1;
+    }
+    return 0;
+}
+fn rt_stmt(s, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str): int {
+    if (s.node = "Assignment") {
+        s.type_ann <- resolve_type(s.type_ann, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_expr(s.expr, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "FnDecl") {
+        var pi2 <- 0;
+        while (pi2 < len(s.param_types_ann)) {
+            s.param_types_ann[pi2] <- resolve_type(s.param_types_ann[pi2], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            pi2 <- pi2 + 1;
+        }
+        s.ret_type_ann <- resolve_type(s.ret_type_ann, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_stmts(s.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) { rt_expr(s.expr, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); }
+        return 0;
+    }
+    if (s.node = "PrintStmt") { rt_expr(s.expr, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (s.node = "IfStmt") {
+        rt_expr(s.cond, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_stmts(s.then_body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_stmts(s.else_body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "WhileStmt") {
+        rt_expr(s.cond, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_stmts(s.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "ForInStmt") {
+        rt_expr(s.iterable, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_stmts(s.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "MatchStmt") {
+        rt_expr(s.scrutinee, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var mi <- 0;
+        while (mi < len(s.arms)) {
+            var arm <- s.arms[mi];
+            var was_name <- (arm.ptype.kind = "unresolved");
+            arm.ptype <- resolve_type(arm.ptype, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            if (was_name && arm.ptype.kind = "struct_lit" && !arm.wild) {
+                var bn <- arm.name;
+                if (bn = "" && s.scrutinee.node = "Identifier") { bn <- s.scrutinee.name; }
+                if (bn != "") { arm.body <- match_destructure_body(bn, arm.ptype, arm.body, s.line, s.col); }
+            }
+            rt_stmts(arm.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            mi <- mi + 1;
+        }
+        return 0;
+    }
+    if (s.node = "Block") { rt_stmts(s.stmts, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (s.node = "IndexAssign") {
+        rt_expr(s.obj, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_expr(s.index, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_expr(s.value, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    if (s.node = "DotAssign") {
+        rt_expr(s.obj, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        rt_expr(s.value, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        return 0;
+    }
+    rt_expr(s, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+    return 0;
+}
+fn rt_expr(e, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str): int {
+    if (e.node = "ArrowFn") {
+        var pi3 <- 0;
+        while (pi3 < len(e.param_types_ann)) {
+            e.param_types_ann[pi3] <- resolve_type(e.param_types_ann[pi3], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            pi3 <- pi3 + 1;
+        }
+        e.ret_type_ann <- resolve_type(e.ret_type_ann, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        if (e.is_expr) { rt_expr(e.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); }
+        else { rt_stmts(e.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); }
+        return 0;
+    }
+    if (e.node = "MatchExpr") {
+        rt_expr(e.scrutinee, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var mi2 <- 0;
+        while (mi2 < len(e.arms)) {
+            e.arms[mi2].ptype <- resolve_type(e.arms[mi2].ptype, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            rt_expr(e.arms[mi2].value, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            mi2 <- mi2 + 1;
+        }
+        return 0;
+    }
+    if (e.node = "BinOp") { rt_expr(e.left, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); rt_expr(e.right, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (e.node = "UnaryOp") { rt_expr(e.operand, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (e.node = "CallExpr") {
+        rt_expr(e.callee, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var j <- 0;
+        while (j < len(e.args)) { rt_expr(e.args[j], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); j <- j + 1; }
+        return 0;
+    }
+    if (e.node = "IndexExpr") { rt_expr(e.obj, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); rt_expr(e.index, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (e.node = "DotExpr") { rt_expr(e.obj, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); return 0; }
+    if (e.node = "ArrayLit") {
+        var j2 <- 0;
+        while (j2 < len(e.elements)) { rt_expr(e.elements[j2], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); j2 <- j2 + 1; }
+        return 0;
+    }
+    if (e.node = "StructLit") {
+        var j3 <- 0;
+        while (j3 < len(e.fields)) { rt_expr(e.fields[j3].val, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label); j3 <- j3 + 1; }
+        return 0;
+    }
+    return 0;
+}
+
+// Bare-identifier rewrites for destructured value imports; reads rewrite
+// to the mangled target, writes to an imported name are rejected.
+fn bindr_stmts(stmts, bnames: [str], bmang: [str], scope: [str], label: str, errs): int {
+    var i <- 0;
+    while (i < len(stmts)) {
+        bindr_stmt(stmts[i], bnames, bmang, scope, label, errs);
+        if (stmts[i].node = "Assignment" && stmts[i].is_decl) { push(scope, stmts[i].name); }
+        i <- i + 1;
+    }
+    return 0;
+}
+fn bindr_stmt(s, bnames: [str], bmang: [str], scope: [str], label: str, errs): int {
+    if (s.node = "Assignment") {
+        if (name_in(bnames, s.name) && !name_in(scope, s.name) && !s.is_decl) {
+            ie_push_at(errs, label, s.line, s.col, "cannot assign to imported '" + s.name + "'");
+        }
+        bindr_expr(s.expr, bnames, bmang, scope, label, errs);
+        return 0;
+    }
+    if (s.node = "FnDecl") {
+        var sub: [str] <- [];
+        var i <- 0;
+        while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
+        i <- 0;
+        while (i < len(s.params)) { push(sub, s.params[i]); i <- i + 1; }
+        bindr_stmts(s.body, bnames, bmang, sub, label, errs);
+        return 0;
+    }
+    if (s.node = "ReturnStmt") { if (s.expr != false) { bindr_expr(s.expr, bnames, bmang, scope, label, errs); } return 0; }
+    if (s.node = "PrintStmt") { bindr_expr(s.expr, bnames, bmang, scope, label, errs); return 0; }
+    if (s.node = "IfStmt") {
+        bindr_expr(s.cond, bnames, bmang, scope, label, errs);
+        var t1: [str] <- []; var t2: [str] <- [];
+        var i2 <- 0;
+        while (i2 < len(scope)) { push(t1, scope[i2]); push(t2, scope[i2]); i2 <- i2 + 1; }
+        bindr_stmts(s.then_body, bnames, bmang, t1, label, errs);
+        bindr_stmts(s.else_body, bnames, bmang, t2, label, errs);
+        return 0;
+    }
+    if (s.node = "WhileStmt") {
+        bindr_expr(s.cond, bnames, bmang, scope, label, errs);
+        var w1: [str] <- [];
+        var i3 <- 0;
+        while (i3 < len(scope)) { push(w1, scope[i3]); i3 <- i3 + 1; }
+        bindr_stmts(s.body, bnames, bmang, w1, label, errs);
+        return 0;
+    }
+    if (s.node = "ForInStmt") {
+        bindr_expr(s.iterable, bnames, bmang, scope, label, errs);
+        var f1: [str] <- [];
+        var i4 <- 0;
+        while (i4 < len(scope)) { push(f1, scope[i4]); i4 <- i4 + 1; }
+        push(f1, s.var_name);
+        bindr_stmts(s.body, bnames, bmang, f1, label, errs);
+        return 0;
+    }
+    if (s.node = "MatchStmt") {
+        bindr_expr(s.scrutinee, bnames, bmang, scope, label, errs);
+        var mi <- 0;
+        while (mi < len(s.arms)) {
+            var a1: [str] <- [];
+            var i5 <- 0;
+            while (i5 < len(scope)) { push(a1, scope[i5]); i5 <- i5 + 1; }
+            if (s.arms[mi].name != "") { push(a1, s.arms[mi].name); }
+            bindr_stmts(s.arms[mi].body, bnames, bmang, a1, label, errs);
+            mi <- mi + 1;
+        }
+        return 0;
+    }
+    if (s.node = "Block") {
+        var b1: [str] <- [];
+        var i6 <- 0;
+        while (i6 < len(scope)) { push(b1, scope[i6]); i6 <- i6 + 1; }
+        bindr_stmts(s.stmts, bnames, bmang, b1, label, errs);
+        return 0;
+    }
+    if (s.node = "IndexAssign") { bindr_expr(s.obj, bnames, bmang, scope, label, errs); bindr_expr(s.index, bnames, bmang, scope, label, errs); bindr_expr(s.value, bnames, bmang, scope, label, errs); return 0; }
+    if (s.node = "DotAssign") { bindr_expr(s.obj, bnames, bmang, scope, label, errs); bindr_expr(s.value, bnames, bmang, scope, label, errs); return 0; }
+    bindr_expr(s, bnames, bmang, scope, label, errs);
+    return 0;
+}
+fn bindr_expr(e, bnames: [str], bmang: [str], scope: [str], label: str, errs): int {
+    if (e.node = "Identifier") {
+        if (!name_in(scope, e.name)) {
+            var bi <- 0;
+            while (bi < len(bnames)) {
+                if (bnames[bi] = e.name) { e.name <- bmang[bi]; return 0; }
+                bi <- bi + 1;
+            }
+        }
+        return 0;
+    }
+    if (e.node = "DotExpr") { bindr_expr(e.obj, bnames, bmang, scope, label, errs); return 0; }
+    if (e.node = "BinOp") { bindr_expr(e.left, bnames, bmang, scope, label, errs); bindr_expr(e.right, bnames, bmang, scope, label, errs); return 0; }
+    if (e.node = "UnaryOp") { bindr_expr(e.operand, bnames, bmang, scope, label, errs); return 0; }
+    if (e.node = "CallExpr") {
+        bindr_expr(e.callee, bnames, bmang, scope, label, errs);
+        var j <- 0;
+        while (j < len(e.args)) { bindr_expr(e.args[j], bnames, bmang, scope, label, errs); j <- j + 1; }
+        return 0;
+    }
+    if (e.node = "IndexExpr") { bindr_expr(e.obj, bnames, bmang, scope, label, errs); bindr_expr(e.index, bnames, bmang, scope, label, errs); return 0; }
+    if (e.node = "ArrayLit") {
+        var j2 <- 0;
+        while (j2 < len(e.elements)) { bindr_expr(e.elements[j2], bnames, bmang, scope, label, errs); j2 <- j2 + 1; }
+        return 0;
+    }
+    if (e.node = "StructLit") {
+        var j3 <- 0;
+        while (j3 < len(e.fields)) { bindr_expr(e.fields[j3].val, bnames, bmang, scope, label, errs); j3 <- j3 + 1; }
+        return 0;
+    }
+    if (e.node = "ArrowFn") {
+        var sub: [str] <- [];
+        var i <- 0;
+        while (i < len(scope)) { push(sub, scope[i]); i <- i + 1; }
+        i <- 0;
+        while (i < len(e.params)) { push(sub, e.params[i]); i <- i + 1; }
+        if (e.is_expr) { bindr_expr(e.body, bnames, bmang, sub, label, errs); }
+        else { bindr_stmts(e.body, bnames, bmang, sub, label, errs); }
+        return 0;
+    }
+    if (e.node = "MatchExpr") {
+        bindr_expr(e.scrutinee, bnames, bmang, scope, label, errs);
+        var mi <- 0;
+        while (mi < len(e.arms)) { bindr_expr(e.arms[mi].value, bnames, bmang, scope, label, errs); mi <- mi + 1; }
+        return 0;
+    }
+    return 0;
+}
+
+// Collect (namespace, field) heads of every `ns.field` expression so
+// membership can be validated against the module's exports before the
+// mangling rewrite makes the reference unrecoverable.
+fn nsref_stmts(stmts, acc): int {
+    var i <- 0;
+    while (i < len(stmts)) { nsref_stmt(stmts[i], acc); i <- i + 1; }
+    return 0;
+}
+fn nsref_stmt(s, acc): int {
+    if (s.node = "Assignment") { nsref_expr(s.expr, acc); return 0; }
+    if (s.node = "FnDecl") { nsref_stmts(s.body, acc); return 0; }
+    if (s.node = "ReturnStmt") { if (s.expr != false) { nsref_expr(s.expr, acc); } return 0; }
+    if (s.node = "PrintStmt") { nsref_expr(s.expr, acc); return 0; }
+    if (s.node = "IfStmt") { nsref_expr(s.cond, acc); nsref_stmts(s.then_body, acc); nsref_stmts(s.else_body, acc); return 0; }
+    if (s.node = "WhileStmt") { nsref_expr(s.cond, acc); nsref_stmts(s.body, acc); return 0; }
+    if (s.node = "ForInStmt") { nsref_expr(s.iterable, acc); nsref_stmts(s.body, acc); return 0; }
+    if (s.node = "MatchStmt") {
+        nsref_expr(s.scrutinee, acc);
+        var mi <- 0;
+        while (mi < len(s.arms)) { nsref_stmts(s.arms[mi].body, acc); mi <- mi + 1; }
+        return 0;
+    }
+    if (s.node = "Block") { nsref_stmts(s.stmts, acc); return 0; }
+    if (s.node = "IndexAssign") { nsref_expr(s.obj, acc); nsref_expr(s.index, acc); nsref_expr(s.value, acc); return 0; }
+    if (s.node = "DotAssign") { nsref_expr(s.obj, acc); nsref_expr(s.value, acc); return 0; }
+    nsref_expr(s, acc);
+    return 0;
+}
+fn nsref_expr(e, acc): int {
+    if (e.node = "DotExpr") {
+        if (e.obj.node = "Identifier") { push(acc, {ns: e.obj.name, field: e.field}); return 0; }
+        nsref_expr(e.obj, acc);
+        return 0;
+    }
+    if (e.node = "BinOp") { nsref_expr(e.left, acc); nsref_expr(e.right, acc); return 0; }
+    if (e.node = "UnaryOp") { nsref_expr(e.operand, acc); return 0; }
+    if (e.node = "CallExpr") {
+        nsref_expr(e.callee, acc);
+        var j <- 0;
+        while (j < len(e.args)) { nsref_expr(e.args[j], acc); j <- j + 1; }
+        return 0;
+    }
+    if (e.node = "IndexExpr") { nsref_expr(e.obj, acc); nsref_expr(e.index, acc); return 0; }
+    if (e.node = "ArrayLit") {
+        var j2 <- 0;
+        while (j2 < len(e.elements)) { nsref_expr(e.elements[j2], acc); j2 <- j2 + 1; }
+        return 0;
+    }
+    if (e.node = "StructLit") {
+        var j3 <- 0;
+        while (j3 < len(e.fields)) { nsref_expr(e.fields[j3].val, acc); j3 <- j3 + 1; }
+        return 0;
+    }
+    if (e.node = "ArrowFn") {
+        if (e.is_expr) { nsref_expr(e.body, acc); } else { nsref_stmts(e.body, acc); }
+        return 0;
+    }
+    if (e.node = "MatchExpr") {
+        nsref_expr(e.scrutinee, acc);
+        var mi <- 0;
+        while (mi < len(e.arms)) { nsref_expr(e.arms[mi].value, acc); mi <- mi + 1; }
+        return 0;
+    }
+    return 0;
+}
+
+// Emit one record's statements after all of its dependencies (post-order
+// over the import graph; a back-edge to a file already on the visit stack
+// is skipped, matching the load loop's cycle tolerance).
+fn emit_post_order(fid: int, rec_paths: [str], rec_edges, rec_stmts, visited: [int], visiting: [int], out, out_srcs: [str]): int {
+    if (visited[fid] = 1) { return 0; }
+    if (visiting[fid] = 1) { return 0; }
+    visiting[fid] <- 1;
+    var edges <- rec_edges[fid];
+    var i <- 0;
+    while (i < len(edges)) {
+        var didx <- find_rec(rec_paths, edges[i].path);
+        if (didx >= 0) { emit_post_order(didx, rec_paths, rec_edges, rec_stmts, visited, visiting, out, out_srcs); }
+        i <- i + 1;
+    }
+    visiting[fid] <- 0;
+    visited[fid] <- 1;
+    var ss <- rec_stmts[fid];
+    var k <- 0;
+    while (k < len(ss)) { push(out, ss[k]); push(out_srcs, rec_paths[fid]); k <- k + 1; }
+    return 0;
+}
+
 // Rename top-level FnDecls and Assignments. Returns the same list with
 // names mangled and bodies rewritten.
 fn rename_module(stmts, mod_name: str) {
@@ -506,14 +1021,15 @@ fn rename_module(stmts, mod_name: str) {
 // import string. If the relative resolution doesn't find the file, the
 // work-loop body retries against a search-path fallback (the directory
 // containing the arrow executable — useful for std lib lookups).
-fn extract_imports(stmts, dir: str, work_paths, work_dirs: [str], mod_names: [str]) {
+fn extract_imports(stmts, dir: str, work_paths, work_dirs: [str], mod_names: [str], owner: int, owner_edges) {
     var out <- [];
     var i <- 0;
     while (i < len(stmts)) {
         var s <- stmts[i];
         if (s.node = "ImportStmt") {
             var target_path <- dir + s.path + ".arrow";
-            push(work_paths, {path: target_path, raw_path: s.path, name: s.name, line: s.line, col: s.col});
+            push(owner_edges, {path: "", ns: s.name, items: s.items, line: s.line, col: s.col});
+            push(work_paths, {path: target_path, raw_path: s.path, name: s.name, items: s.items, owner: owner, eidx: len(owner_edges) - 1, line: s.line, col: s.col});
             push(work_dirs, dir);
             if (!name_in(mod_names, s.name)) { push(mod_names, s.name); }
         } else {
@@ -606,7 +1122,7 @@ fn main_rewrite_value(e, mod_names: [str]) {
         // the canonical name so all aliases pointing at the same file
         // resolve to the same definitions.
         if (e.obj.node = "Identifier" && name_in(mod_names, e.obj.name)) {
-            return {node: "Identifier", name: "__mod_" + canonical_of(e.obj.name) + "__" + e.field};
+            return {node: "Identifier", name: "__mod_" + canonical_of(e.obj.name) + "__" + e.field, line: e.obj.line, col: e.obj.col};
         }
         e.obj <- main_rewrite_value(e.obj, mod_names);
         return e;
@@ -2422,7 +2938,7 @@ fn report_error(line: int, col: int, msg: str) {
 var scope_errors <- [];
 
 fn report_scope_error(line: int, col: int, msg: str) {
-    push(scope_errors, {line: line, col: col, msg: msg});
+    push(scope_errors, {file: src_filename[0], line: line, col: col, msg: msg});
 }
 
 // Names that always resolve regardless of scope: builtins, arena/arrow
@@ -2751,7 +3267,7 @@ fn scope_check_fn(fn_decl, outer_captured: int, globals_set: [str], fn_names: [s
 // Entry point: collect globals + top-level fn names, then check every
 // FnDecl. Top-level assignments and references are checked too so a
 // program that does `print(undeclared)` at top level fails cleanly.
-fn scope_check_program(stmts) {
+fn scope_check_program(stmts, srcs: [str]) {
     // First pass: collect every top-level FnDecl name and every top-level
     // *declared* (is_decl=true) Assignment target. Both are visible from
     // any function body — order-of-appearance doesn't matter for reads, so
@@ -2780,6 +3296,7 @@ fn scope_check_program(stmts) {
     var top_scopes <- [[]];
     i <- 0;
     while (i < len(stmts)) {
+        src_filename[0] <- srcs[i];
         var s <- stmts[i];
         if (s.node = "FnDecl") {
             scope_check_fn(s, false, globals_set, fn_names, false);
@@ -8869,7 +9386,16 @@ if (args() > 0) {
     toks <- lex.tokenize(source);
     pos[0] <- 0;
     parse_src_file[0] <- input_file;
-    var main_ast <- pp();
+    var main_ast_all <- pp();
+    var main_types <- [];
+    var main_ast <- [];
+    var mtsp <- 0;
+    while (mtsp < len(main_ast_all)) {
+        var mts <- main_ast_all[mtsp];
+        if (mts.node = "TypeDecl") { push(main_types, {name: mts.name, atype: mts.atype, line: mts.line, col: mts.col}); }
+        else { push(main_ast, mts); }
+        mtsp <- mtsp + 1;
+    }
     src_filename[0] <- input_file;
 
     // Module resolution runs here in __main_logic where writes to the
@@ -8881,29 +9407,35 @@ if (args() > 0) {
     import_errors <- [];
     var all_paths <- [];                    // dedup of files already loaded
     var all_mod_names: [str] <- [];         // namespaces seen anywhere
-    var path_canonical <- [];               // [{path, name}] — first name wins per path
-    canonical_for <- [];                // alias-name → canonical mapping
-    var work_paths <- [];                   // pending {path, name, line, col}
+    var rec_paths: [str] <- [];             // per-record resolved path
+    var rec_canons: [str] <- [];            // per-record canonical namespace
+    var rec_stmts <- [];                    // per-record statements (imports and type decls removed)
+    var rec_types <- [];                    // per-record [{name, atype, line, col}]
+    var rec_values <- [];                   // per-record exported value names
+    var rec_edges <- [];                    // per-record [{path, ns, items, line, col}]
+    var rec_tbinds <- [];                   // per-record destructured type bindings
+    var rec_vbn <- [];                      // per-record destructured value names
+    var rec_vbm <- [];                      // per-record mangled targets (parallel)
+    canonical_for <- [];                    // alias-name -> canonical mapping
+    var work_paths <- [];                   // pending {path, raw_path, name, items, owner, line, col}
     var work_dirs: [str] <- [];             // parallel: dir to resolve from
-    var all_imported_stmts <- [];           // accumulated, renamed
+    var main_edges <- [];
+    var main_tbinds <- [];
+    var main_vbn: [str] <- [];
+    var main_vbm: [str] <- [];
 
     // Seed from the main file's own imports, then filter them out.
-    main_ast <- extract_imports(main_ast, dirname(input_file), work_paths, work_dirs, all_mod_names);
+    main_ast <- extract_imports(main_ast, dirname(input_file), work_paths, work_dirs, all_mod_names, 0 - 1, main_edges);
 
     while (len(work_paths) > 0) {
-        // Pop end of list (LIFO ordering — load order matters less than dedup).
         var item <- work_paths[len(work_paths) - 1];
         var item_dir <- work_dirs[len(work_dirs) - 1];
         pop(work_paths);
         pop(work_dirs);
 
-        // Resolve the path: try relative to importer first; if not found,
-        // try the search-path fallback (the directory containing the arrow
-        // executable, where std/ lives). Probe with file_exists —
-        // read_file traps on missing files now — then read once on the
-        // settled path; a still-missing path leaves sub_src empty so the
-        // "cannot read file (missing or empty)" import error below fires
-        // exactly as before.
+        // Resolve the path: relative to importer first, then the directory
+        // containing the arrow executable (where std/ lives). Probe with
+        // file_exists before reading — read_file traps on missing files.
         var resolved_path <- item.path;
         if (!file_exists(resolved_path)) {
             var exe_dir <- dirname(args(-1));
@@ -8916,36 +9448,28 @@ if (args() > 0) {
         if (file_exists(resolved_path)) {
             sub_src <- read_file(resolved_path);
         }
+        if (len(sub_src) > 0) {
+            if (item.owner < 0) { main_edges[item.eidx].path <- resolved_path; }
+            else { rec_edges[item.owner][item.eidx].path <- resolved_path; }
+        }
 
-        // Dedup: only load each file once. Uses the resolved path so a
-        // fallback hit dedups against any future relative-path resolution
-        // that lands on the same file.
+        // Dedup by resolved path so each file loads exactly once.
         var already <- false;
         var existing_canonical <- "";
         var ii <- 0;
         while (ii < len(all_paths)) {
             if (all_paths[ii] = resolved_path) {
                 already <- true;
-                var jj <- 0;
-                while (jj < len(path_canonical)) {
-                    if (path_canonical[jj].path = resolved_path) {
-                        existing_canonical <- path_canonical[jj].name;
-                    }
-                    jj <- jj + 1;
-                }
+                existing_canonical <- rec_canons[ii];
             }
             ii <- ii + 1;
         }
         if (already) {
-            // Same file, possibly different alias. If this import uses a
-            // different `as` name from the first one, record the alias so
-            // `<this_name>.sym` resolves to `__mod_<canonical>__sym`.
             if (item.name != existing_canonical) {
                 push(canonical_for, {name: item.name, canonical: existing_canonical});
             }
         } else {
             push(all_paths, resolved_path);
-            push(path_canonical, {path: resolved_path, name: item.name});
             push(canonical_for, {name: item.name, canonical: item.name});
             if (len(sub_src) = 0) {
                 push(import_errors, "import: cannot read file (missing or empty): " + item.path);
@@ -8953,32 +9477,179 @@ if (args() > 0) {
                 toks <- lex.tokenize(sub_src);
                 pos[0] <- 0;
                 parse_src_file[0] <- resolved_path;
-                var sub_stmts <- pp();
-                validate_module(sub_stmts, resolved_path);
-                // Sub-imports resolve relative to THIS file's directory.
-                var sub_dir <- dirname(resolved_path);
-                sub_stmts <- extract_imports(sub_stmts, sub_dir, work_paths, work_dirs, all_mod_names);
-                var renamed <- rename_module(sub_stmts, item.name);
-                var kk <- 0;
-                while (kk < len(renamed)) {
-                    push(all_imported_stmts, renamed[kk]);
-                    kk <- kk + 1;
+                var sub_stmts_all <- pp();
+                validate_module(sub_stmts_all, resolved_path);
+                var sub_types <- [];
+                var sub_stmts <- [];
+                var tsp <- 0;
+                while (tsp < len(sub_stmts_all)) {
+                    var tss <- sub_stmts_all[tsp];
+                    if (tss.node = "TypeDecl") { push(sub_types, {name: tss.name, atype: tss.atype, line: tss.line, col: tss.col}); }
+                    else { push(sub_stmts, tss); }
+                    tsp <- tsp + 1;
                 }
+                push(rec_paths, resolved_path);
+                push(rec_canons, item.name);
+                push(rec_types, sub_types);
+                push(rec_edges, []);
+                push(rec_tbinds, []);
+                var nvbn: [str] <- [];
+                var nvbm: [str] <- [];
+                push(rec_vbn, nvbn);
+                push(rec_vbm, nvbm);
+                var vnames: [str] <- [];
+                var vni <- 0;
+                while (vni < len(sub_stmts)) {
+                    var vs <- sub_stmts[vni];
+                    if (vs.node = "FnDecl") { push(vnames, vs.name); }
+                    if (vs.node = "Assignment") { push(vnames, vs.name); }
+                    vni <- vni + 1;
+                }
+                push(rec_values, vnames);
+                var sub_dir <- dirname(resolved_path);
+                var owner_idx <- len(rec_paths) - 1;
+                sub_stmts <- extract_imports(sub_stmts, sub_dir, work_paths, work_dirs, all_mod_names, owner_idx, rec_edges[owner_idx]);
+                push(rec_stmts, sub_stmts);
             }
         }
     }
 
-    // Imported decls go first so scan_fns / scan_globals see them when
-    // processing the main module's bodies.
-    var combined <- [];
-    var ii <- 0;
-    while (ii < len(all_imported_stmts)) { push(combined, all_imported_stmts[ii]); ii <- ii + 1; }
-    ii <- 0;
-    while (ii < len(main_ast)) { push(combined, main_ast[ii]); ii <- ii + 1; }
+    // Destructured import bindings + conflict checks, one file at a time
+    // (fid -1 = the main file).
+    var bfid <- 0 - 1;
+    while (bfid < len(rec_paths)) {
+        var b_edges <- view_edges(bfid, rec_edges, main_edges);
+        var b_types <- view_types(bfid, rec_types, main_types);
+        var b_label <- view_label(bfid, rec_paths, input_file);
+        var b_stmts <- main_ast;
+        if (bfid >= 0) { b_stmts <- rec_stmts[bfid]; }
+        var own_decls: [str] <- [];
+        var odi <- 0;
+        while (odi < len(b_stmts)) {
+            var ods <- b_stmts[odi];
+            if (ods.node = "FnDecl") { push(own_decls, ods.name); }
+            if (ods.node = "Assignment" && ods.is_decl) { push(own_decls, ods.name); }
+            odi <- odi + 1;
+        }
+        var seen_bound: [str] <- [];
+        var seen_src: [str] <- [];
+        var bei <- 0;
+        while (bei < len(b_edges)) {
+            var be <- b_edges[bei];
+            var ridx <- find_rec(rec_paths, be.path);
+            if (ridx >= 0) {
+                var iti <- 0;
+                while (iti < len(be.items)) {
+                    var it2 <- be.items[iti];
+                    var is_val <- name_in(rec_values[ridx], it2.orig);
+                    var is_typ <- (tlist_find(rec_types[ridx], it2.orig) >= 0);
+                    var srckey <- be.path + "|" + it2.orig;
+                    if (!is_val && !is_typ) {
+                        ie_push_at(import_errors, b_label, be.line, be.col, "'" + it2.orig + "' not found in module " + rec_paths[ridx]);
+                    } else {
+                        var dup <- false;
+                        var conflict <- false;
+                        var sbi <- 0;
+                        while (sbi < len(seen_bound)) {
+                            if (seen_bound[sbi] = it2.bound) {
+                                if (seen_src[sbi] = srckey) { dup <- true; } else { conflict <- true; }
+                            }
+                            sbi <- sbi + 1;
+                        }
+                        if (conflict) {
+                            ie_push_at(import_errors, b_label, be.line, be.col, "'" + it2.bound + "' already imported from " + rec_paths[ridx]);
+                        }
+                        if (!dup && !conflict) {
+                            if (name_in(own_decls, it2.bound) || tlist_find(b_types, it2.bound) >= 0) {
+                                ie_push_at(import_errors, b_label, be.line, be.col, "'" + it2.bound + "' collides with a declaration in this file");
+                            } else {
+                                push(seen_bound, it2.bound);
+                                push(seen_src, srckey);
+                                if (is_typ) {
+                                    if (bfid < 0) { push(main_tbinds, {bound: it2.bound, ridx: ridx, orig: it2.orig}); }
+                                    else { push(rec_tbinds[bfid], {bound: it2.bound, ridx: ridx, orig: it2.orig}); }
+                                }
+                                if (is_val) {
+                                    var mangled <- "__mod_" + rec_canons[ridx] + "__" + it2.orig;
+                                    if (bfid < 0) { push(main_vbn, it2.bound); push(main_vbm, mangled); }
+                                    else { push(rec_vbn[bfid], it2.bound); push(rec_vbm[bfid], mangled); }
+                                }
+                            }
+                        }
+                    }
+                    iti <- iti + 1;
+                }
+            }
+            bei <- bei + 1;
+        }
+        bfid <- bfid + 1;
+    }
 
-    // Final pass: rewrite `mod.sym` DotExpr uses to mangled identifiers
-    // throughout. Runs after splicing so it sees both imported and main
-    // module bodies (the latter may have nested calls to `mod.sym`).
+    // Type resolution, destructured-name rewrites, namespace membership.
+    var memo <- [];
+    var skeys: [str] <- [];
+    var slines: [int] <- [];
+    var scols: [int] <- [];
+    var snames: [str] <- [];
+    var rfid <- 0 - 1;
+    while (rfid < len(rec_paths)) {
+        var r_label <- view_label(rfid, rec_paths, input_file);
+        var r_stmts <- main_ast;
+        if (rfid >= 0) { r_stmts <- rec_stmts[rfid]; }
+        rt_stmts(r_stmts, rfid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, input_file);
+        var r_vbn <- main_vbn;
+        var r_vbm <- main_vbm;
+        if (rfid >= 0) { r_vbn <- rec_vbn[rfid]; r_vbm <- rec_vbm[rfid]; }
+        if (len(r_vbn) > 0) {
+            var empty_scope: [str] <- [];
+            bindr_stmts(r_stmts, r_vbn, r_vbm, empty_scope, r_label, import_errors);
+        }
+        var refs <- [];
+        nsref_stmts(r_stmts, refs);
+        var r_edges <- view_edges(rfid, rec_edges, main_edges);
+        var rri <- 0;
+        while (rri < len(refs)) {
+            var rr <- refs[rri];
+            var rei <- 0;
+            while (rei < len(r_edges)) {
+                if (r_edges[rei].ns = rr.ns) {
+                    var vridx <- find_rec(rec_paths, r_edges[rei].path);
+                    if (vridx >= 0) {
+                        if (!name_in(rec_values[vridx], rr.field) && tlist_find(rec_types[vridx], rr.field) < 0) {
+                            ie_push_plain(import_errors, r_label, "'" + rr.field + "' not found in module " + rec_paths[vridx]);
+                        }
+                    }
+                    rei <- len(r_edges);
+                }
+                rei <- rei + 1;
+            }
+            rri <- rri + 1;
+        }
+        rfid <- rfid + 1;
+    }
+
+    // Mangle each module's own top-level names, then emit dependencies
+    // first (post-order over the import graph, back-edges skipped).
+    var rmi <- 0;
+    while (rmi < len(rec_paths)) {
+        rec_stmts[rmi] <- rename_module(rec_stmts[rmi], rec_canons[rmi]);
+        rmi <- rmi + 1;
+    }
+    var visited: [int] <- [];
+    var visiting: [int] <- [];
+    var vzi <- 0;
+    while (vzi < len(rec_paths)) { push(visited, 0); push(visiting, 0); vzi <- vzi + 1; }
+    var combined <- [];
+    var combined_srcs: [str] <- [];
+    var mei <- 0;
+    while (mei < len(main_edges)) {
+        var mdx <- find_rec(rec_paths, main_edges[mei].path);
+        if (mdx >= 0) { emit_post_order(mdx, rec_paths, rec_edges, rec_stmts, visited, visiting, combined, combined_srcs); }
+        mei <- mei + 1;
+    }
+    var cmi <- 0;
+    while (cmi < len(main_ast)) { push(combined, main_ast[cmi]); push(combined_srcs, input_file); cmi <- cmi + 1; }
+
     main_rewrite_stmts(combined, all_mod_names);
 
     // Run the static scope check before type-checking and codegen. Scope
@@ -8991,7 +9662,7 @@ if (args() > 0) {
     // unexpected node shapes) that crash before parse errors get reported.
     // Parse errors take priority anyway and are surfaced next.
     if (len(parse_errors) = 0) {
-        scope_check_program(combined);
+        scope_check_program(combined, combined_srcs);
     }
 
     if (len(parse_errors) > 0) {
@@ -9018,7 +9689,7 @@ if (args() > 0) {
         var jj <- 0;
         while (jj < len(scope_errors)) {
             var e <- scope_errors[jj];
-            print(input_file + ":" + e.line + ":" + e.col + ": scope error: " + e.msg);
+            print(e.file + ":" + e.line + ":" + e.col + ": scope error: " + e.msg);
             jj <- jj + 1;
         }
         print("--");

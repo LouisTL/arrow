@@ -1,0 +1,5 @@
+// EXPECT: check_fail
+//ERR: import error: 'nosuch' not found in module
+
+import "modules/geom" {nosuch};
+print(1);

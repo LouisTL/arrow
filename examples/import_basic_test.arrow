@@ -1,0 +1,9 @@
+// EXPECT: ok
+//OUT: 12
+//OUT: 2
+
+// Namespace access to an imported fn and var.
+import "modules/geom" as g;
+var p <- g.mk(3);
+print(g.area(p));
+print(g.origin_units);

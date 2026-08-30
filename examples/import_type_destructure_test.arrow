@@ -1,0 +1,7 @@
+// EXPECT: ok
+//OUT: 12
+
+// A destructured type name used bare in an annotation.
+import "modules/geom" {mk, area, Pair};
+var p: Pair <- mk(3);
+print(area(p));

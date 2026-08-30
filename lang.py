@@ -403,9 +403,26 @@ class CallExpr:
 
 @dataclass
 class ImportStmt:
-    """`import "path";` — namespace name defaults to basename of path."""
+    """`import "path";` — namespace name defaults to basename of path.
+    `items` lists destructured (name, bound_as) pairs from an optional
+    `{a, b as c}` clause; empty when the clause is absent."""
     path: str
     name: str
+    items: list = None
+    line: int = 0
+    col: int = 0
+
+
+@dataclass
+class TypeDecl:
+    """`type Name <- Type;` — structural alias. rhs_kind is the parsed
+    kind head (a builtin, or another type name pending resolution);
+    rhs_pfields carries struct field names for match dispatch."""
+    name: str
+    rhs_kind: str
+    rhs_pfields: Any
+    line: int = 0
+    col: int = 0
 
 
 # ─────────────────────────────────────────────
@@ -427,8 +444,6 @@ class Parser:
     def __init__(self, tokens: list[Token], src_file: str = "<unknown>"):
         self.tokens = tokens
         self.pos = 0
-        # Structural type aliases (3d): name -> (kind, pfields) for match dispatch.
-        self.type_aliases = {}
         # Accumulated parse errors for batch reporting. `parse()` returns
         # the program AND this list, so callers can decide whether to halt.
         self.errors: list[str] = []
@@ -494,7 +509,7 @@ class Parser:
                 if (cur.type == TokenType.IDENT and cur.value == "type"
                         and self._peek_type(1) == TokenType.IDENT
                         and self._peek_type(2) == TokenType.ARROW):
-                    self._type_decl()   # register alias; produces no AST node
+                    stmts.append(self._type_decl())
                 else:
                     stmts.append(self._statement())
             except ParseError as e:
@@ -618,15 +633,17 @@ class Parser:
             self._eat(TokenType.RBRACE)
         else:
             self._eat(TokenType.IDENT)
+            if self._match(TokenType.DOT):
+                self._eat(TokenType.IDENT)
         while self._match(TokenType.PIPE):
             self._skip_type_ann()
 
     def _type_ann_kind(self) -> str:
         """Parse a type annotation (consuming exactly what _skip_type_ann
         would) and return its kind head for the runtime kind checks: int / float /
-        bool / str / array / struct / any — or "" for unresolved
-        alias names, and anything the kind-level check does not cover.
-        Aliases resolve through the same registry the match arms use."""
+        bool / str / array / struct / any — or "" for anything the
+        kind-level check does not cover. Type names (bare or one-dot
+        qualified) pass through unresolved for the whole-program pass."""
         kind, _ = self._parse_type_kind()
         if self._current().type == TokenType.PIPE:
             members = [kind]
@@ -636,7 +653,9 @@ class Parser:
             return "union_none" if "none" in members else "union"
         if kind in ("int", "float", "bool", "str", "array", "struct", "any"):
             return kind
-        return ""
+        if kind in ("none", "fn"):
+            return ""
+        return kind
 
     def _assignment(self, typed: bool = False) -> Assignment:
         ident_tok = self._eat(TokenType.IDENT)
@@ -702,8 +721,34 @@ class Parser:
                 raise ParseError(f"`as` expects an identifier at line {alias_tok.line}, col {alias_tok.col}, got {alias_tok.type.name}")
             base = alias_tok.value
             self._eat(TokenType.IDENT)
+        items = []
+        if self._current().type == TokenType.LBRACE:
+            self._eat(TokenType.LBRACE)
+            items.append(self._import_item())
+            while self._match(TokenType.COMMA):
+                if self._current().type == TokenType.RBRACE:
+                    break  # trailing comma
+                items.append(self._import_item())
+            self._eat(TokenType.RBRACE)
         self._eat(TokenType.SEMI)
-        return ImportStmt(path=path, name=base)
+        return ImportStmt(path=path, name=base, items=items,
+                          line=tok.line, col=tok.col)
+
+    def _import_item(self) -> tuple:
+        """One `name` or `name as bound` entry of an import list."""
+        itok = self._current()
+        if itok.type != TokenType.IDENT:
+            raise ParseError(f"import list expects an identifier at line {itok.line}, col {itok.col}, got {itok.type.name}")
+        orig = self._eat(TokenType.IDENT).value
+        bound = orig
+        nxt = self._current()
+        if nxt.type == TokenType.IDENT and nxt.value == "as":
+            self._eat(TokenType.IDENT)
+            btok = self._current()
+            if btok.type != TokenType.IDENT:
+                raise ParseError(f"`as` expects an identifier at line {btok.line}, col {btok.col}, got {btok.type.name}")
+            bound = self._eat(TokenType.IDENT).value
+        return (orig, bound)
 
     def _return_stmt(self) -> ReturnStmt:
         self._eat(TokenType.RETURN)
@@ -750,19 +795,22 @@ class Parser:
         self._eat(TokenType.RPAREN)
         return params, kinds
 
-    def _type_decl(self):
-        """type Name <- Type; register a structural alias. Runtime-typed, so
-        only (kind, pfields) is needed, for match-arm dispatch."""
+    def _type_decl(self) -> TypeDecl:
+        """type Name <- Type; declare a structural alias. Runtime-typed, so
+        only (kind, pfields) is needed, for match-arm dispatch; names on the
+        right-hand side stay unresolved until the whole-program pass."""
+        tok = self._current()
         self._eat(TokenType.IDENT)            # 'type'
         name = self._eat(TokenType.IDENT).value
         self._eat(TokenType.ARROW)
-        kind, pfields = self._parse_type_kind()   # resolves nested aliases
+        kind, pfields = self._parse_type_kind()
         if self._current().type == TokenType.PIPE:
             while self._match(TokenType.PIPE):
                 self._parse_type_kind()
             kind, pfields = "union", None
         self._eat(TokenType.SEMI)
-        self.type_aliases[name] = (kind, pfields)
+        return TypeDecl(name=name, rhs_kind=kind, rhs_pfields=pfields,
+                        line=tok.line, col=tok.col)
 
     def _parse_type_kind(self):
         """Parse a single (non-union) type for a match arm; return
@@ -785,8 +833,9 @@ class Parser:
             self._eat(TokenType.RBRACE)
             return "struct", fnames
         name = self._eat(TokenType.IDENT).value
-        if name in self.type_aliases:
-            return self.type_aliases[name]
+        if self._current().type == TokenType.DOT:
+            self._eat(TokenType.DOT)
+            name = name + "." + self._eat(TokenType.IDENT).value
         return name, None
 
     def _parse_arm_pattern(self):
@@ -1627,6 +1676,9 @@ class Interpreter:
                     self.env = outer
 
             case _:
+                if isinstance(node, TypeDecl):
+                    return None
+
                 raise RuntimeError_(f"Cannot evaluate node: {node}")
 
     def _eval_call(self, callee, args) -> Any:
@@ -1944,8 +1996,8 @@ class Interpreter:
 def _validate_module(stmts: list, path: str) -> list[str]:
     errors = []
     for s in stmts:
-        if not isinstance(s, (FnDecl, Assignment, ImportStmt)):
-            errors.append(f"{path}: module may only contain fn declarations, assignments, or imports (got {type(s).__name__})")
+        if not isinstance(s, (FnDecl, Assignment, ImportStmt, TypeDecl)):
+            errors.append(f"{path}: module may only contain fn declarations, assignments, type declarations, or imports (got {type(s).__name__})")
     return errors
 
 
@@ -2193,15 +2245,216 @@ def _dirname(path: str) -> str:
     return path[: i + 1] if i >= 0 else ""
 
 
-def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
-    """Iterative driver mirroring compiler.arrow's __main_logic loop.
-    Returns (resolved_stmts, errors)."""
+
+# ── whole-program type + import resolution ──
+_CONCRETE_KINDS = ("int", "float", "bool", "str", "array", "struct", "any")
+_RESERVED_KINDS = {"", "_", "none", "fn", "union", "union_none"} | set(_CONCRETE_KINDS)
+
+
+def _ast_children(node):
+    """Yield (owner, field, value) for every dataclass field of an AST node,
+    flattening lists; owner+field let a caller reassign in place."""
+    import dataclasses
+    if not dataclasses.is_dataclass(node):
+        return
+    for f in dataclasses.fields(node):
+        yield node, f.name, getattr(node, f.name)
+
+
+class _TypeView:
+    """Per-file resolver: own type decls + destructured type imports +
+    namespace-qualified lookups. Resolution is transitive with cycle
+    detection; results memoized."""
+
+    def __init__(self, label, own, imported, ns_tables, terrors, views, memo):
+        self.label = label            # file path for diagnostics; doubles as file id
+        self.own = own                # name -> TypeDecl
+        self.imported = imported      # bound name -> (owner_label, TypeDecl)
+        self.ns_tables = ns_tables    # namespace -> (owner_label, {name -> TypeDecl})
+        self.terrors = terrors
+        self.views = views            # shared: label -> _TypeView, filled as files bind
+        self.memo = memo              # shared: (label, name) -> (kind, pfields) or poison
+
+    def _decl_for(self, name):
+        """Return (owner_label, decl) — the file whose view governs the
+        declaration's own right-hand side."""
+        if "." in name:
+            ns, base = name.split(".", 1)
+            ent = self.ns_tables.get(ns)
+            if ent is None:
+                return None, None
+            owner, table = ent
+            d = table.get(base)
+            return (owner, d) if d is not None else (owner, None)
+        if name in self.own:
+            return self.label, self.own[name]
+        if name in self.imported:
+            return self.imported[name]
+        return None, None
+
+    def resolve_name(self, name, stack=None):
+        """name -> (kind, pfields) or None (unknown; caller reports)."""
+        key = (self.label, name)
+        if key in self.memo:
+            return self.memo[key]
+        if stack is None:
+            stack = []
+        if key in [e[0] for e in stack]:
+            _, flabel, fline, fcol, fname = stack[0]
+            self.terrors.append(f"{flabel}:{fline}:{fcol}: circular type alias '{fname}'")
+            self.memo[key] = ("", None)   # error recorded; don't cascade
+            return self.memo[key]
+        olabel, decl = self._decl_for(name)
+        if decl is None:
+            return None  # caller reports unknown at its own site
+        k, pf = decl.rhs_kind, decl.rhs_pfields
+        if k not in _RESERVED_KINDS:
+            owner = self.views.get(olabel, self)
+            sub = owner.resolve_name(
+                k, stack + [(key, olabel, decl.line, decl.col, name)])
+            if sub is None:
+                self.terrors.append(
+                    f"{olabel}:{decl.line}:{decl.col}: unknown type '{k}'")
+                self.memo[key] = ("", None)   # error recorded; don't cascade
+                return self.memo[key]
+            k, pf = sub
+        self.memo[key] = (k, pf)
+        return (k, pf)
+
+    def ann_kind(self, k):
+        """Annotation kind head: reserved values pass through; names resolve
+        then filter to the concrete set exactly as annotation parsing did."""
+        if k in _RESERVED_KINDS:
+            return k, True
+        r = self.resolve_name(k)
+        if r is None:
+            return "", False
+        rk = r[0]
+        return (rk if rk in _CONCRETE_KINDS else ""), True
+
+
+def _walk_types(node, view, seen):
+    """Resolve every stored annotation/arm kind under node, in place."""
+    if node is None or isinstance(node, (str, int, float, bool)):
+        return
+    if id(node) in seen:
+        return
+    seen.add(id(node))
+    if isinstance(node, list):
+        for x in node:
+            _walk_types(x, view, seen)
+        return
+    if isinstance(node, Assignment):
+        if node.type_kind not in _RESERVED_KINDS:
+            nk, ok = view.ann_kind(node.type_kind)
+            if not ok:
+                view.terrors.append(
+                    f"{view.label}:{node.line}:{node.col}: unknown type '{node.type_kind}'")
+            node.type_kind = nk
+    if isinstance(node, (FnDecl, ArrowFn)):
+        if node.param_kinds:
+            for i, pk in enumerate(node.param_kinds):
+                if pk not in _RESERVED_KINDS:
+                    nk, ok = view.ann_kind(pk)
+                    if not ok:
+                        view.terrors.append(f"{view.label}: unknown type '{pk}'")
+                    node.param_kinds[i] = nk
+        if node.ret_kind not in _RESERVED_KINDS:
+            nk, ok = view.ann_kind(node.ret_kind)
+            if not ok:
+                view.terrors.append(f"{view.label}: unknown type '{node.ret_kind}'")
+            node.ret_kind = nk
+    if isinstance(node, (MatchArm, MatchExprArm)):
+        if node.ptype_kind not in _RESERVED_KINDS                 and node.lit_kind is None:
+            r = view.resolve_name(node.ptype_kind)
+            if r is None:
+                view.terrors.append(
+                    f"{view.label}: unknown type '{node.ptype_kind}'")
+                node.ptype_kind = ""
+            else:
+                node.ptype_kind, node.pfields = r[0], r[1]
+    for _, _, v in _ast_children(node):
+        _walk_types(v, view, seen)
+
+
+def _binder_names(node):
+    """Names a node introduces into its own scope (for shadow tracking)."""
+    if isinstance(node, Assignment) and node.is_decl:
+        return [node.name]
+    if isinstance(node, (FnDecl, ArrowFn)):
+        return list(node.params or [])
+    if isinstance(node, (MatchArm, MatchExprArm)) and node.name:
+        return [node.name]
+    if isinstance(node, ForInStmt):
+        return [node.var_name]
+    return []
+
+
+def _bind_rewrite(node, bindmap, scope, errors, label):
+    """Rewrite bare Identifier reads of destructured imports to their
+    mangled targets, respecting local shadowing; reject writes."""
+    if node is None or isinstance(node, (str, int, float, bool)):
+        return
+    if isinstance(node, list):
+        for x in node:
+            _bind_rewrite(x, bindmap, scope, errors, label)
+        return
+    if isinstance(node, Assignment):
+        if node.name in bindmap and node.name not in scope and not node.is_decl:
+            errors.append(f"{label}:{node.line}:{node.col}: "
+                          f"import error: cannot assign to imported '{node.name}'")
+    if isinstance(node, DotExpr):
+        # Namespace heads stay; only recurse below them.
+        _bind_rewrite(node.obj, bindmap, scope, errors, label)
+        return
+    inner = scope | set(_binder_names(node))
+    for owner, fname, v in _ast_children(node):
+        if isinstance(v, Identifier) and v.name in bindmap and v.name not in inner:
+            setattr(owner, fname, Identifier(name=bindmap[v.name]))
+        elif isinstance(v, list):
+            sub = list(inner)
+            block = []
+            for i, x in enumerate(v):
+                if isinstance(x, Identifier) and x.name in bindmap                         and x.name not in set(sub):
+                    v[i] = Identifier(name=bindmap[x.name])
+                else:
+                    _bind_rewrite(x, bindmap, set(sub), errors, label)
+                for b in _binder_names(x):
+                    sub.append(b)
+                block.append(x)
+        else:
+            _bind_rewrite(v, bindmap, inner, errors, label)
+
+
+def _collect_ns_refs(node, acc, seen):
+    """Collect (namespace, field) for every DotExpr whose head is a bare
+    Identifier — validated against module export sets before mangling."""
+    if node is None or isinstance(node, (str, int, float, bool)):
+        return
+    if id(node) in seen:
+        return
+    seen.add(id(node))
+    if isinstance(node, list):
+        for x in node:
+            _collect_ns_refs(x, acc, seen)
+        return
+    if isinstance(node, DotExpr) and isinstance(node.obj, Identifier):
+        acc.append((node.obj.name, node.field))
+    for _, _, v in _ast_children(node):
+        _collect_ns_refs(v, acc, seen)
+
+def resolve_imports(stmts: list, main_path: str):
+    """Two phases: load every reachable module, then resolve types and
+    destructured imports, then emit dependencies-first (post-order of the
+    import graph, back-edges skipped). Returns (stmts, errors, type_errors)."""
     errors = []
+    terrors = []
     all_paths = []          # dedup
     path_canonical = {}     # path → first-seen namespace name
     canonical_for = {}      # alias → canonical (identity entry per name)
     mod_names = set()
-    work = []               # list of (relative_path, raw_path, name)
+    records = {}            # resolved path → module record
+    work = []               # list of (relative_path, raw_path, name, importer_edges)
 
     # Search-path fallback: lang.py's own directory contains the std/ tree,
     # so an import that doesn't resolve relative to the importing file can
@@ -2212,16 +2465,21 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
     # Seed from main file's imports.
     main_dir = _dirname(main_path)
     filtered_main = []
+    main_types = {}
+    main_edges = []   # (resolved-or-primary path, ns, items, line, col)
     for s in stmts:
         if isinstance(s, ImportStmt):
-            work.append((main_dir + s.path + ".arrow", s.path, s.name))
+            slot = [None, s.name, s.items or [], s.line, s.col]
+            main_edges.append(slot)
+            work.append((main_dir + s.path + ".arrow", s.path, s.name, slot))
             mod_names.add(s.name)
+        elif isinstance(s, TypeDecl):
+            main_types[s.name] = s
         else:
             filtered_main.append(s)
 
-    accumulated = []
     while work:
-        primary_path, raw_path, name = work.pop()
+        primary_path, raw_path, name, slot = work.pop()
         # Resolve: relative-to-importer first, then exe-dir fallback.
         resolved_path = primary_path
         sub_src = None
@@ -2237,6 +2495,7 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
         if sub_src is None:
             errors.append(f"import: file not found: {primary_path}")
             continue
+        slot[0] = resolved_path
         if resolved_path in all_paths:
             # Already loaded; possibly a different alias.
             canon = path_canonical[resolved_path]
@@ -2262,19 +2521,125 @@ def resolve_imports(stmts: list, main_path: str) -> tuple[list, list[str]]:
 
         sub_dir = _dirname(resolved_path)
         new_filtered = []
+        sub_types = {}
+        sub_edges = []
         for s in sub_stmts:
             if isinstance(s, ImportStmt):
-                work.append((sub_dir + s.path + ".arrow", s.path, s.name))
+                sslot = [None, s.name, s.items or [], s.line, s.col]
+                sub_edges.append(sslot)
+                work.append((sub_dir + s.path + ".arrow", s.path, s.name, sslot))
                 mod_names.add(s.name)
+            elif isinstance(s, TypeDecl):
+                sub_types[s.name] = s
             else:
                 new_filtered.append(s)
-        _rename_module(new_filtered, name)
-        accumulated.extend(new_filtered)
+        records[resolved_path] = {
+            "label": resolved_path, "canon": name, "stmts": new_filtered,
+            "types": sub_types, "edges": sub_edges,
+            "values": _collect_top_names(new_filtered),
+        }
 
+    # ── per-file resolution: type views, destructured bindings, checks ──
+    def file_pass(label, stmts_list, types, edges, own_values):
+        own_decls = set()
+        for s in stmts_list:
+            if isinstance(s, FnDecl):
+                own_decls.add(s.name)
+            elif isinstance(s, Assignment) and s.is_decl:
+                own_decls.add(s.name)
+        ns_tables = {}
+        imported_types = {}
+        bindmap = {}
+        bind_src = {}
+        for (rp, ns, items, iline, icol) in edges:
+            if rp is None:
+                continue
+            rec = records.get(rp)
+            if rec is None:
+                continue
+            canon = path_canonical.get(rp, ns)
+            ns_tables[ns] = (rec["label"], rec["types"])
+            for (orig, bound) in items:
+                is_val = orig in rec["values"]
+                is_typ = orig in rec["types"]
+                if not is_val and not is_typ:
+                    errors.append(f"{label}:{iline}:{icol}: import error: "
+                                  f"'{orig}' not found in module {rec['label']}")
+                    continue
+                key = (rp, orig)
+                if bound in bind_src and bind_src[bound] != key:
+                    errors.append(f"{label}:{iline}:{icol}: import error: "
+                                  f"'{bound}' already imported from {records[bind_src[bound][0]]['label']}")
+                    continue
+                if bound in own_decls or bound in types:
+                    errors.append(f"{label}:{iline}:{icol}: import error: "
+                                  f"'{bound}' collides with a declaration in this file")
+                    continue
+                bind_src[bound] = key
+                if is_typ:
+                    imported_types[bound] = (rec["label"], rec["types"][orig])
+                if is_val:
+                    bindmap[bound] = f"__mod_{canon}__{orig}"
+        view = _TypeView(label, types, imported_types, ns_tables, terrors,
+                         views_by_label, shared_memo)
+        views_by_label[label] = view
+        pending_walks.append((stmts_list, view))
+        if bindmap:
+            _bind_rewrite(stmts_list, bindmap, set(), errors, label)
+        # Namespace member validation (values or types both count as found).
+        refs = []
+        _collect_ns_refs(stmts_list, refs, set())
+        for (ns, field) in refs:
+            ent = ns_tables.get(ns)
+            if ent is None:
+                continue
+            rp = None
+            for (erp, ens, _i, _l, _c) in edges:
+                if ens == ns and erp is not None:
+                    rp = erp
+                    break
+            rec = records.get(rp)
+            if rec and field not in rec["values"] and field not in rec["types"]:
+                errors.append(f"{label}: import error: "
+                              f"'{field}' not found in module {rec['label']}")
+
+    views_by_label = {}
+    shared_memo = {}
+    pending_walks = []
+    for rp, rec in records.items():
+        file_pass(rec["label"], rec["stmts"], rec["types"], rec["edges"],
+                  rec["values"])
+    file_pass(main_path, filtered_main, main_types, main_edges,
+              _collect_top_names(filtered_main))
+    for _wstmts, _wview in pending_walks:
+        _walk_types(_wstmts, _wview, set())
+
+    # ── emission: dependencies first, each module once, back-edges skipped ──
+    for rp, rec in records.items():
+        _rename_module(rec["stmts"], rec["canon"])
+    accumulated = []
+    emitted = set()
+    visiting = set()
+
+    def emit(rp):
+        if rp in emitted or rp in visiting:
+            return
+        visiting.add(rp)
+        rec = records[rp]
+        for (dep, _ns, _i, _l, _c) in rec["edges"]:
+            if dep is not None and dep in records:
+                emit(dep)
+        visiting.discard(rp)
+        emitted.add(rp)
+        accumulated.extend(rec["stmts"])
+
+    for (dep, _ns, _i, _l, _c) in main_edges:
+        if dep is not None and dep in records:
+            emit(dep)
     combined = accumulated + filtered_main
     for i, s in enumerate(combined):
         combined[i] = _main_rewrite_stmt(s, mod_names, canonical_for)
-    return combined, errors
+    return combined, errors, terrors
 
 
 # ─────────────────────────────────────────────
@@ -2389,7 +2754,7 @@ def run_file(filepath: str) -> Interpreter:
         print("--")
         print(f"{len(parser.errors)} parse error(s). Compilation aborted.")
         sys.exit(1)
-    resolved, errs = resolve_imports(program.statements, filepath)
+    resolved, errs, resolve_terrs = resolve_imports(program.statements, filepath)
     # `errs` may contain parser errors from imported files; classify them.
     parse_errs = [e for e in errs if ": parse error: " in e]
     other_errs = [e for e in errs if ": parse error: " not in e]
@@ -2405,7 +2770,7 @@ def run_file(filepath: str) -> Interpreter:
         print("--")
         print(f"{len(other_errs)} import error(s). Compilation aborted.")
         sys.exit(1)
-    type_errs = _check_totality(resolved)
+    type_errs = resolve_terrs + _check_totality(resolved)
     if type_errs:
         for e in type_errs:
             print(e)

@@ -1,0 +1,12 @@
+// EXPECT: ok
+//OUT: 12
+//OUT: 9
+
+// Namespace-qualified type names in annotations, including an alias
+// that resolves through the module's own private alias.
+import "modules/geom" as g;
+import "modules/wrapper" as w;
+var p: g.Pair <- g.mk(3);
+print(g.area(p));
+var q: w.Pack <- w.wrap(9);
+print(q.v);

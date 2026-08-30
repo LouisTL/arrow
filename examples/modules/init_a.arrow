@@ -1,0 +1,2 @@
+fn announce_a(): int { print("A init"); return 10; }
+var a_token <- announce_a();

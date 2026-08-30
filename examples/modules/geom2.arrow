@@ -1,0 +1,2 @@
+// Second fixture exporting a name that collides with geom's `mk`.
+fn mk(x: int): int { return x * 10; }

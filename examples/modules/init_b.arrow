@@ -1,0 +1,3 @@
+import "init_a" as A;
+fn announce_b(): int { print("B init"); return A.a_token + 1; }
+var b_token <- announce_b();
