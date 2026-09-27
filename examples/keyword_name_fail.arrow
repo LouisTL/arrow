@@ -1,0 +1,28 @@
+// EXPECT: check_fail
+//ERR: 'fn' is a keyword and cannot be used as a function name
+//ERR: 'while' is a keyword and cannot be used as a variable name
+//ERR: 'if' is a keyword and cannot be used as a parameter name
+//ERR: 'var' is a keyword and cannot be used as a parameter name
+//ERR: 'for' is a keyword and cannot be used as a loop variable name
+//ERR: 'return' is a keyword and cannot be used as a field name
+//ERR: 'import' is a keyword and cannot be used as a field name
+//ERR: 'match' is a keyword and cannot be used as a type name
+//ERR: 'else' is a keyword and cannot be used as a type name
+//ERR: 'true' is a keyword and cannot be used as a variable name
+//ERR: 'print' is a keyword and cannot be used as a value
+//ERR: 11 parse error(s)
+
+// A keyword in a name slot (or in value position) is reported by name,
+// once per statement, with the statement parsed to its end so nothing
+// cascades — identically on both hosts.
+fn fn() { return 1; }
+var while <- 3;
+fn g(if) { return 1; }
+var h <- (var) => 1;
+for (for in [1, 2]) { print(1); }
+var p <- {return: 1};
+print(q.import);
+type match <- {a: int};
+var r: else <- 1;
+var true <- 2;
+print(print);

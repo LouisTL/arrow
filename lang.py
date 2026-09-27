@@ -94,6 +94,17 @@ KEYWORDS = {
     "import": TokenType.IMPORT,
     "var": TokenType.VAR,
 }
+_KEYWORD_TYPES = frozenset(KEYWORDS.values())
+
+
+def _keyword_word(tok) -> str | None:
+    """The source spelling of a keyword token (true/false included), or
+    None for any other token."""
+    if tok.type == TokenType.BOOL:
+        return "true" if tok.value else "false"
+    if tok.type in _KEYWORD_TYPES:
+        return tok.value
+    return None
 
 
 class LexerError(Exception):
@@ -439,6 +450,7 @@ class Parser:
     _SYNC_STARTERS = frozenset({
         TokenType.FN, TokenType.IF, TokenType.WHILE, TokenType.FOR,
         TokenType.RETURN, TokenType.PRINT, TokenType.IMPORT,
+        TokenType.VAR, TokenType.MATCH,
     })
 
     def __init__(self, tokens: list[Token], src_file: str = "<unknown>"):
@@ -479,6 +491,36 @@ class Parser:
         self.pos += 1
         return tok
 
+    def _eat_name(self, role: str) -> Token:
+        """An identifier in a binding position (declaration names,
+        parameters, fields, type names). A keyword there gets a dedicated
+        message — byte-identical to compiler.arrow's — and is consumed as
+        the name, so the statement parses to its end and records exactly
+        one error; any other token raises the generic expectation."""
+        tok = self._current()
+        if tok.type == TokenType.IDENT:
+            self.pos += 1
+            return tok
+        word = _keyword_word(tok)
+        if word is None:
+            raise ParseError(
+                f"expected IDENT, got {tok.type.name} ({tok.value!r}) "
+                f"at line {tok.line}, col {tok.col}")
+        self._record_error(
+            f"'{word}' is a keyword and cannot be used as a {role} name",
+            tok.line, tok.col)
+        self.pos += 1
+        return Token(TokenType.IDENT, word, tok.line, tok.col)
+
+    def _peek_is_name(self, offset: int) -> bool:
+        """Lookahead: an identifier, or a keyword about to be reported as
+        one, at the given offset."""
+        i = self.pos + offset
+        if i >= len(self.tokens):
+            return False
+        t = self.tokens[i].type
+        return t == TokenType.IDENT or t in _KEYWORD_TYPES
+
     def _match(self, *types: TokenType) -> Token | None:
         if self._current().type in types:
             tok = self._current()
@@ -507,7 +549,7 @@ class Parser:
             try:
                 cur = self._current()
                 if (cur.type == TokenType.IDENT and cur.value == "type"
-                        and self._peek_type(1) == TokenType.IDENT
+                        and self._peek_is_name(1)
                         and self._peek_type(2) == TokenType.ARROW):
                     stmts.append(self._type_decl())
                 else:
@@ -575,8 +617,9 @@ class Parser:
         # { } is an empty struct
         if self._peek_type(1) == TokenType.RBRACE:
             return True
-        # { IDENT : ... } is a struct
-        if (self._peek_type(1) == TokenType.IDENT and
+        # { IDENT : ... } is a struct (a keyword in the key slot too — it
+        # is reported as one by the key parser)
+        if (self._peek_is_name(1) and
                 self._peek_type(2) == TokenType.COLON):
             return True
         # { STRING : ... } is also a struct
@@ -621,20 +664,20 @@ class Parser:
             # Struct type: {name: type, name: type, ...}
             self._eat(TokenType.LBRACE)
             if self._current().type != TokenType.RBRACE:
-                self._eat(TokenType.IDENT)        # field name
+                self._eat_name("field")           # field name
                 self._eat(TokenType.COLON)
                 self._skip_type_ann()             # field type
                 while self._match(TokenType.COMMA):
                     if self._current().type == TokenType.RBRACE:
                         break  # trailing comma
-                    self._eat(TokenType.IDENT)
+                    self._eat_name("field")
                     self._eat(TokenType.COLON)
                     self._skip_type_ann()
             self._eat(TokenType.RBRACE)
         else:
-            self._eat(TokenType.IDENT)
+            self._eat_name("type")
             if self._match(TokenType.DOT):
-                self._eat(TokenType.IDENT)
+                self._eat_name("type")
         while self._match(TokenType.PIPE):
             self._skip_type_ann()
 
@@ -658,7 +701,7 @@ class Parser:
         return kind
 
     def _assignment(self, typed: bool = False) -> Assignment:
-        ident_tok = self._eat(TokenType.IDENT)
+        ident_tok = self._eat_name("variable")
         name = ident_tok.value
         tkind = ""
         if typed:
@@ -673,7 +716,7 @@ class Parser:
 
     def _var_decl(self) -> Assignment:
         var_tok = self._eat(TokenType.VAR)
-        ident_tok = self._eat(TokenType.IDENT)
+        ident_tok = self._eat_name("variable")
         name = ident_tok.value
         # Optional type annotation: var x: int <- expr; the kind head is
         # retained for the runtime kind check at this declaration edge.
@@ -761,7 +804,7 @@ class Parser:
 
     def _fn_decl(self) -> FnDecl:
         self._eat(TokenType.FN)
-        name = self._eat(TokenType.IDENT).value
+        name = self._eat_name("function").value
         params, pkinds = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
         rkind = ""
@@ -777,7 +820,7 @@ class Parser:
         params = []
         kinds = []
         if self._current().type != TokenType.RPAREN:
-            params.append(self._eat(TokenType.IDENT).value)
+            params.append(self._eat_name("parameter").value)
             # Optional per-param type annotation: fn f(x: type, y: type) —
             # the kind head is retained for the param-bind checks.
             if self._current().type == TokenType.COLON:
@@ -786,7 +829,7 @@ class Parser:
             else:
                 kinds.append("")
             while self._match(TokenType.COMMA):
-                params.append(self._eat(TokenType.IDENT).value)
+                params.append(self._eat_name("parameter").value)
                 if self._current().type == TokenType.COLON:
                     self._eat(TokenType.COLON)
                     kinds.append(self._type_ann_kind())
@@ -801,7 +844,7 @@ class Parser:
         right-hand side stay unresolved until the whole-program pass."""
         tok = self._current()
         self._eat(TokenType.IDENT)            # 'type'
-        name = self._eat(TokenType.IDENT).value
+        name = self._eat_name("type").value
         self._eat(TokenType.ARROW)
         kind, pfields = self._parse_type_kind()
         if self._current().type == TokenType.PIPE:
@@ -826,16 +869,16 @@ class Parser:
             self._eat(TokenType.LBRACE)
             fnames = []
             if self._current().type != TokenType.RBRACE:
-                fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
+                fnames.append(self._eat_name("field").value); self._eat(TokenType.COLON); self._skip_type_ann()
                 while self._match(TokenType.COMMA):
                     if self._current().type == TokenType.RBRACE: break
-                    fnames.append(self._eat(TokenType.IDENT).value); self._eat(TokenType.COLON); self._skip_type_ann()
+                    fnames.append(self._eat_name("field").value); self._eat(TokenType.COLON); self._skip_type_ann()
             self._eat(TokenType.RBRACE)
             return "struct", fnames
-        name = self._eat(TokenType.IDENT).value
+        name = self._eat_name("type").value
         if self._current().type == TokenType.DOT:
             self._eat(TokenType.DOT)
-            name = name + "." + self._eat(TokenType.IDENT).value
+            name = name + "." + self._eat_name("type").value
         return name, None
 
     def _parse_arm_pattern(self):
@@ -930,7 +973,7 @@ class Parser:
         """Parse: for (x in expr) { body }"""
         self._eat(TokenType.FOR)
         self._eat(TokenType.LPAREN)
-        var_name = self._eat(TokenType.IDENT).value
+        var_name = self._eat_name("loop variable").value
         self._eat(TokenType.IN)
         iterable = self._expression()
         self._eat(TokenType.RPAREN)
@@ -1050,7 +1093,7 @@ class Parser:
                 expr = IndexExpr(expr, index)
             elif self._current().type == TokenType.DOT:
                 self._eat(TokenType.DOT)
-                field = self._eat(TokenType.IDENT).value
+                field = self._eat_name("field").value
                 expr = DotExpr(expr, field)
             else:
                 break
@@ -1094,6 +1137,16 @@ class Parser:
             self._eat(TokenType.RPAREN)
             return expr
 
+        word = _keyword_word(tok)
+        if word is not None:
+            # A keyword in value position: report it by name and continue
+            # with a placeholder, so the enclosing statement parses to its
+            # end and records exactly one error (compiler.arrow parity).
+            self._record_error(
+                f"'{word}' is a keyword and cannot be used as a value",
+                tok.line, tok.col)
+            self.pos += 1
+            return NumberLit(0)
         raise ParseError(
             f"Unexpected token {tok.type.name} ({tok.value!r}) "
             f"at line {tok.line}, col {tok.col}")
@@ -1117,7 +1170,7 @@ class Parser:
             if self._current().type == TokenType.STRING:
                 key = self._eat(TokenType.STRING).value
             else:
-                key = self._eat(TokenType.IDENT).value
+                key = self._eat_name("field").value
             self._eat(TokenType.COLON)
             val = self._expression()
             fields.append((key, val))
@@ -1127,7 +1180,7 @@ class Parser:
                 if self._current().type == TokenType.STRING:
                     key = self._eat(TokenType.STRING).value
                 else:
-                    key = self._eat(TokenType.IDENT).value
+                    key = self._eat_name("field").value
                 self._eat(TokenType.COLON)
                 val = self._expression()
                 fields.append((key, val))

@@ -47,15 +47,33 @@ fn parse_error(line: int, col: int, msg: str) {
 
 fn ci(e: str): int{return toks[pos[0]].type=e;}
 fn pi(o: int,e: str): int{var x<-pos[0]+o;if(x<len(toks)){return toks[x].type=e;}return false;}
-fn adv(){pos[0]<-pos[0]+1;}
+fn adv(){if(!ci("EOF")){pos[0]<-pos[0]+1;}}
 fn cv(): str{return toks[pos[0]].value;}
 fn eat(e: str){
     var t<-toks[pos[0]];
     if(t.type!=e){parse_error(t.line, t.col, "expected " + e + ", got " + t.type);}
-    pos[0]<-pos[0]+1;
+    if(t.type!="EOF"){pos[0]<-pos[0]+1;}
     return t;
 }
-fn ev(e: str): str{var t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
+fn ev(e: str): str{var t<-toks[pos[0]];if(t.type!="EOF"){pos[0]<-pos[0]+1;}return t.value;}
+// Keyword tokens carry their word as the token type; true/false are BOOL.
+fn is_kw_tok(t): int{return lex.is_kw(t.type)||t.type="BOOL";}
+// Lookahead: is the token at offset o something that can stand in a
+// name slot (an identifier, or a keyword about to be reported as one)?
+fn pik(o: int): int{var x<-pos[0]+o;if(x<len(toks)){return toks[x].type="IDENT"||is_kw_tok(toks[x]);}return false;}
+// An identifier in a binding position (declaration names, parameters,
+// fields, type names). A keyword there gets a dedicated message and is
+// consumed as the name, so the statement parses to its end and records
+// exactly one error; any other token gets the generic expectation.
+fn pname(role: str): str{
+    var t<-toks[pos[0]];
+    if(t.type!="IDENT"){
+        if(is_kw_tok(t)){parse_error(t.line, t.col, "'" + t.value + "' is a keyword and cannot be used as a " + role + " name");}
+        else{parse_error(t.line, t.col, "expected IDENT, got " + t.type);}
+    }
+    if(t.type!="EOF"){pos[0]<-pos[0]+1;}
+    return t.value;
+}
 
 // Skip tokens until we reach a likely statement boundary. Used to recover
 // from a parse error: discard the rest of the broken statement, then resume
@@ -69,39 +87,52 @@ fn ev(e: str): str{var t<-toks[pos[0]];pos[0]<-pos[0]+1;return t.value;}
 fn sync_to_stmt_boundary() {
     while (!ci("EOF") && !ci("SEMI") && !ci("RBRACE")
             && !ci("fn") && !ci("if") && !ci("while") && !ci("for")
-            && !ci("return") && !ci("print") && !ci("import")) {
+            && !ci("return") && !ci("print") && !ci("import")
+            && !ci("var") && !ci("match")) {
         adv();
     }
     if (ci("SEMI")) { adv(); }
 }
 
+// After a statement that recorded errors: resync only when its parse
+// stopped short of a boundary. A statement carried to its `;` or `}` by
+// a record-and-continue diagnostic is already at the next statement;
+// skipping from there would swallow it.
+fn resync_after_error(start_pos: int) {
+    if (pos[0] = start_pos) { adv(); sync_to_stmt_boundary(); return false; }
+    var prev <- toks[pos[0] - 1].type;
+    if (prev = "SEMI" || prev = "RBRACE") { return false; }
+    sync_to_stmt_boundary();
+    return false;
+}
+
 fn pp(){
     var ss<-[];
     while(!ci("EOF")){
+        // A stray close-brace at top level is recovery residue from an
+        // abandoned block; skip it rather than report it.
+        if (ci("RBRACE")) { adv(); }
+        else {
         var start_pos <- pos[0];
         var start_errs <- len(parse_errors);
         panic_mode[0] <- false;  // fresh statement → fresh error budget
-        if (ci("IDENT") && cv() = "type" && pi(1, "IDENT") && pi(2, "ARROW")) {
+        if (ci("IDENT") && cv() = "type" && pik(1) && pi(2, "ARROW")) {
             // type Name <- Type;  the declaration node carries the (still
             // unresolved) right-hand type for the whole-program pass.
             push(ss, ptype_decl());
-            if (len(parse_errors) > start_errs) {
-                if (pos[0] = start_pos) { adv(); }
-                sync_to_stmt_boundary();
-            }
+            if (len(parse_errors) > start_errs) { resync_after_error(start_pos); }
         } else {
             var s <- ps();
             if (len(parse_errors) > start_errs) {
-                // This statement registered new parse errors. Skip whatever the
-                // sub-parsers consumed and resync to the next statement so we
-                // can report independent errors instead of a cascade. Force one
-                // advance if the parser didn't move at all (defensive against
-                // an infinite loop on a corrupt token stream).
-                if (pos[0] = start_pos) { adv(); }
-                sync_to_stmt_boundary();
+                // This statement registered new parse errors: drop it and
+                // resync so independent errors are reported instead of a
+                // cascade (a forced advance guards a parser that did not
+                // move at all).
+                resync_after_error(start_pos);
             } else {
                 push(ss, s);
             }
+        }
         }
     }
     return ss;
@@ -172,45 +203,35 @@ fn pimitem(){
     if(ci("IDENT")&&cv()="as"){adv();if(!ci("IDENT")){var t2<-toks[pos[0]];parse_error(t2.line,t2.col,"`as` expects an identifier, got "+t2.type);}else{bound<-cv();adv();}}
     return{orig:orig,bound:bound};
 }
-fn isl(): int{if(pi(1,"RBRACE")){return true;}if(pi(1,"IDENT")&&pi(2,"COLON")){return true;}return false;}
-fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")){push(ss,ps());}eat("RBRACE");return ss;}
+fn isl(): int{if(pi(1,"RBRACE")){return true;}if((pik(1)||pi(1,"STRING"))&&pi(2,"COLON")){return true;}return false;}
+fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")&&!ci("EOF")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-ev("IDENT");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-ev("IDENT");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-ev("IDENT");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+ev("IDENT");}return{kind:"unresolved",name:n,line:toks[pos[0]-1].line,col:toks[pos[0]-1].col};}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-pname("field");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-pname("field");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-pname("type");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+pname("type");}return{kind:"unresolved",name:n,line:toks[pos[0]-1].line,col:toks[pos[0]-1].col};}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
 fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:""};}
 // type Name <- Type;  structural alias (3d). Registers the alias and is
 // elided from the AST (handled in pp), so no later pass sees a new node.
-fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-ev("IDENT");eat("ARROW");var ty<-pty();eat("SEMI");return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
-fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:""},is_decl:false,line:ln,col:cl};}
-fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-ev("IDENT");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
+fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-pname("type");eat("ARROW");var ty<-pty();eat("SEMI");return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
+fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-pname("variable");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:""},is_decl:false,line:ln,col:cl};}
+fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-pname("variable");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
 // scope checker can enforce same-scope no-redeclaration and reject bare
 // reassignments to names that were never declared (strict mode).
 fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");
-    // Check IDENT explicitly so we can bail out early on `var <- 5;`-style
-    // malformed input. Without this, eat() records the error but keeps
-    // advancing, and the rest of pvd can race past EOF into a crash
-    // before parse_errors gets a chance to be reported.
-    if (!ci("IDENT")) {
-        parse_error(toks[pos[0]].line, toks[pos[0]].col, "expected IDENT, got " + toks[pos[0]].type);
-        // Return a stub Assignment so pp()'s resync sees a recorded error
-        // and skips to the next statement boundary.
-        return {node:"Assignment",name:"<error>",expr:{node:"NumberLit",value:0},type_ann:{kind:""},is_decl:true,line:ln,col:cl};
-    }
-    var nt<-eat("IDENT");var n<-nt.value;var ta<-{kind:""};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};
+    var n<-pname("variable");var ta<-{kind:""};if(ci("COLON")){eat("COLON");ta<-pty();}eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:true,line:ln,col:cl};
 }
 fn ppa(){var e<-pe();if(ci("ARROW")){eat("ARROW");var v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");var e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}var e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
-fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-ev("IDENT");eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){var pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");pn<-ev("IDENT");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
-fn ppl(){eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");push(p,ev("IDENT"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
+fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-pname("function");eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){var pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
+fn ppl(){eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
-fn pfi(){eat("for");eat("LPAREN");var v<-ev("IDENT");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pfi(){eat("for");eat("LPAREN");var v<-pname("loop variable");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
 fn match_destructure_body(bindName: str, ptype, body, ln: int, cl: int){var out<-[];var i<-0;while(i<len(ptype.fields)){var fname<-ptype.fields[i].name;push(out,{node:"Assignment",name:fname,expr:{node:"DotExpr",obj:{node:"Identifier",name:bindName,line:ln,col:cl},field:fname},type_ann:{kind:""},is_decl:true,line:ln,col:cl});i<-i+1;}var j<-0;while(j<len(body)){push(out,body[j]);j<-j+1;}return out;}
-fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();if(pat.ptype.kind="struct_lit"&&!pat.wild){var bn<-pat.name;if(bn=""&&sc.node="Identifier"){bn<-sc.name;}if(bn!=""){body<-match_destructure_body(bn,pat.ptype,body,ln,cl);}}push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")&&!ci("EOF")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();if(pat.ptype.kind="struct_lit"&&!pat.wild){var bn<-pat.name;if(bn=""&&sc.node="Identifier"){bn<-sc.name;}if(bn!=""){body<-match_destructure_body(bn,pat.ptype,body,ln,cl);}}push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:""};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
-fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
+fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")&&!ci("EOF")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
 fn paf(){var pl<-ppl();var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
@@ -223,8 +244,9 @@ fn pmu(){var l<-pun();while(ci("STAR")||ci("SLASH")||ci("PERCENT")){var o<-cv();
 fn pun(){if(ci("MINUS")){adv();return{node:"UnaryOp",op:"-",operand:pun()};}if(ci("NOT")){adv();return{node:"UnaryOp",op:"!",operand:pun()};}return ppf();}
 fn ppf(){var e<-ppm();var dn<-false;while(!dn){if(ci("LPAREN")){var cln<-toks[pos[0]].line;var ccl<-toks[pos[0]].col;eat("LPAREN");var a<-[];if(!ci("RPAREN")){push(a,pe());while(ci("COMMA")){eat("COMMA");push(a,pe());}}eat("RPAREN");e<-{node:"CallExpr",callee:e,args:a,line:cln,col:ccl};}
     else if(ci("LBRACKET")){eat("LBRACKET");var x<-pe();eat("RBRACKET");e<-{node:"IndexExpr",obj:e,index:x};}
-    else if(ci("DOT")){eat("DOT");var f<-ev("IDENT");e<-{node:"DotExpr",obj:e,field:f};}
+    else if(ci("DOT")){eat("DOT");var f<-pname("field");e<-{node:"DotExpr",obj:e,field:f};}
     else{dn<-true;}}return e;}
+fn pkey(): str{if(ci("STRING")){var k<-cv();adv();return k;}return pname("field");}
 fn ppm(){
     if(ci("match")){return pmatch_expr();}
     if(ci("NUMBER")){var v<-cv();adv();return{node:"NumberLit",value:v};}
@@ -233,9 +255,12 @@ fn ppm(){
     if(ci("BOOL")){var v<-cv();adv();return{node:"BoolLit",value:v};}
     if(ci("IDENT")){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var v<-cv();adv();if(v="none"){return{node:"NoneLit",line:ln,col:cl};}return{node:"Identifier",name:v,line:ln,col:cl};}
     if(ci("LBRACKET")){eat("LBRACKET");var el<-[];if(!ci("RBRACKET")){push(el,pe());while(ci("COMMA")){eat("COMMA");push(el,pe());}}eat("RBRACKET");return{node:"ArrayLit",elements:el};}
-    if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var k<-ev("IDENT");eat("COLON");var vv<-pe();push(fs,{key:k,val:vv});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-ev("IDENT");eat("COLON");vv<-pe();push(fs,{key:k,val:vv});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
+    if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var k<-pkey();eat("COLON");var vv<-pe();push(fs,{key:k,val:vv});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return{node:"StructLit",fields:fs};}k<-pkey();eat("COLON");vv<-pe();push(fs,{key:k,val:vv});}}eat("RBRACE");return{node:"StructLit",fields:fs};}
     if(ci("LPAREN")){eat("LPAREN");var e<-pe();eat("RPAREN");return e;}
-    parse_error(toks[pos[0]].line, toks[pos[0]].col, "unexpected " + toks[pos[0]].type);adv();return{node:"NumberLit",value:"0"};
+    var ut<-toks[pos[0]];
+    if(is_kw_tok(ut)){parse_error(ut.line, ut.col, "'" + ut.value + "' is a keyword and cannot be used as a value");}
+    else{parse_error(ut.line, ut.col, "unexpected " + ut.type);}
+    adv();return{node:"NumberLit",value:"0"};
 }
 
 
