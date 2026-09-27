@@ -1,0 +1,18 @@
+// EXPECT: ok
+//OUT: before
+//OUT: 2
+//OUT: from fn
+
+// exit(0) terminates the process with status 0: nothing after it runs,
+// on either host. From inside a function it ends the whole program,
+// not just the call; the any-held argument goes through the int edge.
+fn finish(c) {
+    print("from fn");
+    exit(c);
+    print("never");
+}
+print("before");
+var n <- 1;
+print(n + 1);
+finish(0);
+print("after");

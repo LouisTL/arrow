@@ -499,6 +499,11 @@ fn ir_render_inst(inst): str {
         s <- s + "  " + inst.dst + " = sext i32 " + inst.dst + ".r32 to i64";
         return s;
     }
+    if (op = "exit") {
+        var s <- inst.dst + ".c = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i32\n";
+        s <- s + "  call void @exit(i32 " + inst.dst + ".c)";
+        return s;
+    }
     if (op = "input") {
         // No-prompt form: just call the helper. With-prompt: emit a printf
         // first using the operand as the format string.

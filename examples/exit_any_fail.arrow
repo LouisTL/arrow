@@ -1,0 +1,11 @@
+// EXPECT: runtime_fail
+//OUT: go
+//ERR: Error: expected int in any, got str
+
+// exit's status is a typed int parameter: an any-held str traps at the
+// call edge instead of exiting.
+fn quit(c) {
+    exit(c);
+}
+print("go");
+quit("x");

@@ -1,0 +1,13 @@
+// EXPECT: runtime_fail
+//OUT: 0
+//OUT: 1
+//OUT: 2
+
+// exit(1) inside a loop: output up to the call, status 1, byte-identical
+// hosts. The runner pins status 1 through the runtime_fail category.
+var i <- 0;
+while (i < 10) {
+    print(i);
+    if (i = 2) { exit(1); }
+    i <- i + 1;
+}

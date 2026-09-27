@@ -1257,6 +1257,7 @@ _BUILTIN_RET_KINDS = {
     "input": "str", "exec_cmd": "int", "args": "any",
     "char_code": "int", "from_char_code": "str", "substring": "str",
     "char_at": "str", "str_len": "int", "file_exists": "bool",
+    "exit": "none",
 }
 
 
@@ -1450,7 +1451,7 @@ class Struct:
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
-            "exec_cmd", "args", "file_exists"}
+            "exec_cmd", "args", "file_exists", "exit"}
 
 
 class Interpreter:
@@ -1949,6 +1950,16 @@ class Interpreter:
         elif name == "str_len":
             arity(1, 1)
             return len(arg(0, "str"))
+
+        elif name == "exit":
+            # Terminates the process with the given status, like the
+            # native @exit call. Flush first so output ordering matches
+            # the native binary when stdout is a pipe.
+            arity(1, 1)
+            code = arg(0, "int")
+            import sys as _sys
+            _sys.stdout.flush()
+            _sys.exit(int(code) & 0xFF)
 
         raise RuntimeError_(f"Unknown builtin: {name}")
 

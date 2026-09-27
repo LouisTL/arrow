@@ -2446,6 +2446,7 @@ fn typeof_expr(nd): any {
             if (nm = "write_file") { return T.mk_int(); }
             if (nm = "append_file") { return T.mk_int(); }
             if (nm = "exec_cmd") { return T.mk_int(); }
+            if (nm = "exit") { return {kind: "none"}; }
             if (nm = "push") { return T.mk_int(); }
             if (nm = "pop") {
                 // Element type if known; an any-held target pops a
@@ -2975,7 +2976,7 @@ fn is_builtin_name(n: str): int {
         || n = "read_file" || n = "file_exists" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
-        || n = "exec_cmd" || n = "args"
+        || n = "exec_cmd" || n = "args" || n = "exit"
         || n = "true" || n = "false";
 }
 
@@ -3703,6 +3704,7 @@ fn builtin_sig(nm: str) {
     if (nm = "exec_cmd") { return {sig: "s", lo: 1, hi: 1}; }
     if (nm = "input") { return {sig: "s", lo: 0, hi: 1}; }
     if (nm = "args") { return {sig: "i", lo: 0, hi: 1}; }
+    if (nm = "exit") { return {sig: "i", lo: 1, hi: 1}; }
     if (nm = "len") { return {sig: "x", lo: 1, hi: 1}; }
     if (nm = "push") { return {sig: "a?", lo: 2, hi: 2}; }
     if (nm = "pop") { return {sig: "a", lo: 1, hi: 1}; }
@@ -6927,6 +6929,15 @@ fn ir_emit_expr(b, nd) {
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
+        if (nm = "exit") {
+            // Terminates the process with the given status. Emitted as a
+            // plain instruction: the block keeps its structure and any
+            // code after the call is unreachable, which LLVM accepts.
+            var xarg <- ir_emit_arg_want(b, nd.args[0], 0);
+            var xtmp <- ir_fresh_tmp(b, "exit");
+            ir_push_inst(b.cur_block, ir_inst("exit", xtmp, T.mk_int(), [xarg], false));
+            return ir_const_int(0);
+        }
         if (nm = "input") {
             var tmp <- ir_fresh_tmp(b, "in");
             if (len(nd.args) >= 1) {
@@ -9431,6 +9442,7 @@ fn compile_via_ir(stmts, backend) {
 if (args() < 1) {
     print("Usage: arrow <file.arrow> [-o output] [--keep-ll]");
     print("  Compiles Arrow Lang source to a native executable.");
+    exit(2);
 }
 
 if (args() > 0) {
@@ -9792,6 +9804,7 @@ if (args() > 0) {
         }
         print("--");
         print(len(parse_errors) + " parse error(s). Compilation aborted.");
+        exit(1);
     } else if (len(import_errors) > 0) {
         var jj <- 0;
         while (jj < len(import_errors)) {
@@ -9800,6 +9813,7 @@ if (args() > 0) {
         }
         print("--");
         print(len(import_errors) + " import error(s). Compilation aborted.");
+        exit(1);
     } else if (len(scope_errors) > 0) {
         var jj <- 0;
         while (jj < len(scope_errors)) {
@@ -9809,12 +9823,15 @@ if (args() > 0) {
         }
         print("--");
         print(len(scope_errors) + " scope error(s). Compilation aborted.");
+        exit(1);
     } else if (len(type_errors) > 0) {
         print_type_errors();
+        exit(1);
     } else {
         compile_via_ir(combined, backend);
         if (len(type_errors) > 0) {
             print_type_errors();
+            exit(1);
         } else {
             write_ir_lines(ir_file);
 
@@ -9833,6 +9850,7 @@ if (args() > 0) {
             } else {
                 print(backend.name + " toolchain failed with exit code " + rc);
                 print("IR written to " + ir_file);
+                exit(1);
             }
         }
     }

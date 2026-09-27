@@ -1,0 +1,11 @@
+// EXPECT: type_fail
+//ERR: call to 'exit': argument 1 expected int but got str
+//ERR: call to 'exit': expected 1 argument but got 0
+//ERR: none cannot be used with '+'
+//ERR: 3 type error(s)
+
+// exit(int) is checked like every builtin; its result is none, so it
+// cannot take part in arithmetic.
+exit("1");
+exit();
+print(1 + exit(1));
