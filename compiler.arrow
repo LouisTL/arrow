@@ -56,15 +56,10 @@ fn eat(e: str){
     return t;
 }
 fn ev(e: str): str{var t<-toks[pos[0]];if(t.type!="EOF"){pos[0]<-pos[0]+1;}return t.value;}
-// Keyword tokens carry their word as the token type; true/false are BOOL.
 fn is_kw_tok(t): int{return lex.is_kw(t.type)||t.type="BOOL";}
-// Lookahead: is the token at offset o something that can stand in a
-// name slot (an identifier, or a keyword about to be reported as one)?
 fn pik(o: int): int{var x<-pos[0]+o;if(x<len(toks)){return toks[x].type="IDENT"||is_kw_tok(toks[x]);}return false;}
-// An identifier in a binding position (declaration names, parameters,
-// fields, type names). A keyword there gets a dedicated message and is
-// consumed as the name, so the statement parses to its end and records
-// exactly one error; any other token gets the generic expectation.
+// A keyword in a name slot is consumed as the name so the statement
+// parses to its end and records one error.
 fn pname(role: str): str{
     var t<-toks[pos[0]];
     if(t.type!="IDENT"){
@@ -94,10 +89,8 @@ fn sync_to_stmt_boundary() {
     if (ci("SEMI")) { adv(); }
 }
 
-// After a statement that recorded errors: resync only when its parse
-// stopped short of a boundary. A statement carried to its `;` or `}` by
-// a record-and-continue diagnostic is already at the next statement;
-// skipping from there would swallow it.
+// Resync only when the failed statement stopped short of its `;` or `}`;
+// skipping from a boundary would swallow the next statement.
 fn resync_after_error(start_pos: int) {
     if (pos[0] = start_pos) { adv(); sync_to_stmt_boundary(); return false; }
     var prev <- toks[pos[0] - 1].type;
@@ -109,8 +102,6 @@ fn resync_after_error(start_pos: int) {
 fn pp(){
     var ss<-[];
     while(!ci("EOF")){
-        // A stray close-brace at top level is recovery residue from an
-        // abandoned block; skip it rather than report it.
         if (ci("RBRACE")) { adv(); }
         else {
         var start_pos <- pos[0];
@@ -3684,13 +3675,8 @@ fn check_no_union(e, what: str) {
         report_error(expr_pos_line(e), expr_pos_col(e), "cannot use union value of type " + T.type_str(t) + " " + what + "; narrow it to a single type first");
     }
 }
-// Builtin call signatures. A builtin parameter is checked like an
-// annotated user-fn parameter: a concrete mismatch is a type error at
-// the call site, an any-typed argument is unwrap-checked at runtime.
-// The container builtins (len/push/pop/keys) fix only the shape of
-// their container argument here; element types wait on generics.
-// Signature letters: s str, i int, x str-or-array, a array, t struct,
-// ? unchecked. Returns {sig, lo, hi} or false for an unknown name.
+// Builtin parameter kinds, one letter each: s str, i int, x str or array,
+// a array, t struct, ? unchecked; lo..hi is the accepted argument count.
 fn builtin_sig(nm: str) {
     if (nm = "str_len") { return {sig: "s", lo: 1, hi: 1}; }
     if (nm = "char_code") { return {sig: "s", lo: 1, hi: 1}; }
@@ -3712,9 +3698,6 @@ fn builtin_sig(nm: str) {
     return false;
 }
 
-// One signature letter against an argument's static type. Unknown and
-// any statics pass (checked at runtime); a union is rejected by the
-// caller's union sweep, not here.
 fn builtin_arg_ok(p: str, actual): int {
     if (actual.kind = "" || actual.kind = "any" || actual.kind = "union" || p = "?") { return true; }
     if (p = "s") { return T.types_compat(T.mk_str(), actual); }
@@ -6930,9 +6913,6 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "exit") {
-            // Terminates the process with the given status. Emitted as a
-            // plain instruction: the block keeps its structure and any
-            // code after the call is unreachable, which LLVM accepts.
             var xarg <- ir_emit_arg_want(b, nd.args[0], 0);
             var xtmp <- ir_fresh_tmp(b, "exit");
             ir_push_inst(b.cur_block, ir_inst("exit", xtmp, T.mk_int(), [xarg], false));
@@ -8150,9 +8130,6 @@ fn ir_emit_arg(b, e) {
     return ir_unwrap_any(b, ir_emit_expr(b, e), typeof_expr(e));
 }
 
-// A call argument bound for a typed builtin parameter: a statically-any
-// argument is unwrap-checked against the parameter's kind (want tag),
-// so a mismatch traps like every other any-to-concrete edge.
 fn ir_emit_arg_want(b, e, want: int) {
     return ir_unwrap_any_checked(b, ir_emit_expr(b, e), typeof_expr(e), want);
 }

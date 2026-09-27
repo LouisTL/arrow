@@ -98,8 +98,6 @@ _KEYWORD_TYPES = frozenset(KEYWORDS.values())
 
 
 def _keyword_word(tok) -> str | None:
-    """The source spelling of a keyword token (true/false included), or
-    None for any other token."""
     if tok.type == TokenType.BOOL:
         return "true" if tok.value else "false"
     if tok.type in _KEYWORD_TYPES:
@@ -492,11 +490,8 @@ class Parser:
         return tok
 
     def _eat_name(self, role: str) -> Token:
-        """An identifier in a binding position (declaration names,
-        parameters, fields, type names). A keyword there gets a dedicated
-        message — byte-identical to compiler.arrow's — and is consumed as
-        the name, so the statement parses to its end and records exactly
-        one error; any other token raises the generic expectation."""
+        """A keyword in a name slot is consumed as the name so the statement
+        parses to its end and records one error."""
         tok = self._current()
         if tok.type == TokenType.IDENT:
             self.pos += 1
@@ -513,8 +508,6 @@ class Parser:
         return Token(TokenType.IDENT, word, tok.line, tok.col)
 
     def _peek_is_name(self, offset: int) -> bool:
-        """Lookahead: an identifier, or a keyword about to be reported as
-        one, at the given offset."""
         i = self.pos + offset
         if i >= len(self.tokens):
             return False
@@ -1139,9 +1132,6 @@ class Parser:
 
         word = _keyword_word(tok)
         if word is not None:
-            # A keyword in value position: report it by name and continue
-            # with a placeholder, so the enclosing statement parses to its
-            # end and records exactly one error (compiler.arrow parity).
             self._record_error(
                 f"'{word}' is a keyword and cannot be used as a value",
                 tok.line, tok.col)
@@ -1234,11 +1224,7 @@ def _any_check(val, want: str):
 
 
 def _builtin_check(val, want: str):
-    """Kind check at a typed builtin parameter. Same trap wording as
-    _any_check; opaque passes. An int parameter takes int or bool (a
-    float would have to be re-encoded, which the native raw-bits edge
-    does not do either). 'indexable' means str or array and traps
-    under the array name, matching the native want-8 edge."""
+    """'indexable' accepts str or array and reports 'array' on mismatch."""
     got = _value_kind(val)
     if got == "opaque" or got == want:
         return
@@ -1805,11 +1791,7 @@ class Interpreter:
         return result
 
     def _eval_builtin(self, name: str, args: list) -> Any:
-        # Arguments are evaluated and kind-checked left-to-right, so a
-        # trap on argument i fires before argument i+1 evaluates — the
-        # same order as user-fn calls and the native checked edges.
-        # Arity errors are check-time on the native host; the checks
-        # here keep interpreter-only runs honest.
+        # Evaluated and checked left-to-right, like user-fn arguments.
         def arg(i, want):
             v = self._eval(args[i])
             _builtin_check(v, want)
@@ -1952,12 +1934,9 @@ class Interpreter:
             return len(arg(0, "str"))
 
         elif name == "exit":
-            # Terminates the process with the given status, like the
-            # native @exit call. Flush first so output ordering matches
-            # the native binary when stdout is a pipe.
             arity(1, 1)
             code = arg(0, "int")
-            import sys as _sys
+            import sys as _sys    # the args branch shadows `sys` locally
             _sys.stdout.flush()
             _sys.exit(int(code) & 0xFF)
 
