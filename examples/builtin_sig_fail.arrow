@@ -1,0 +1,61 @@
+// EXPECT: type_fail
+//ERR: call to 'substring': argument 1 expected str but got int
+//ERR: call to 'substring': expected 3 arguments but got 2
+//ERR: call to 'str_len': argument 1 expected str but got [int]
+//ERR: call to 'char_at': argument 2 expected int but got str
+//ERR: call to 'char_code': argument 1 expected str but got int
+//ERR: call to 'from_char_code': argument 1 expected int but got str
+//ERR: call to 'read_file': argument 1 expected str but got int
+//ERR: call to 'file_exists': argument 1 expected str but got bool
+//ERR: call to 'write_file': argument 2 expected str but got int
+//ERR: call to 'append_file': argument 1 expected str but got {p: str}
+//ERR: call to 'exec_cmd': argument 1 expected str but got int
+//ERR: call to 'args': argument 1 expected int but got str
+//ERR: call to 'args': expected 0 or 1 arguments but got 2
+//ERR: call to 'len': argument 1 expected str or array but got int
+//ERR: call to 'pop': argument 1 expected array but got str
+//ERR: call to 'push': argument 1 expected array but got int
+//ERR: call to 'keys': argument 1 expected struct but got [str]
+//ERR: call to 'two': expected 2 arguments but got 1
+//ERR: call to 'one': expected 1 argument but got 2
+//ERR: 19 type error(s)
+
+// Builtin parameters are typed like annotated user-fn parameters: a
+// concrete mismatch is a type error at the call site, and the arity
+// is fixed. The checker batches all nineteen. Bare call statements
+// (write_file, append_file, exec_cmd, push) take the same route as
+// expression calls.
+
+// string builtins
+var n: int <- 123;
+print(substring(n, 0, 2));
+print(substring("abc", 0));
+print(str_len([1, 2]));
+print(char_at("abc", "0"));
+print(char_code(5));
+print(from_char_code("a"));
+
+// file and process builtins
+print(read_file(5));
+print(file_exists(true));
+write_file("never_written.txt", 5);
+append_file({p: "x"}, "content");
+exec_cmd(5);
+print(args("x"));
+print(args(1, 2));
+
+// container builtins: the container argument's shape is fixed
+print(len(5));
+print(pop("abc"));
+push(5, 1);
+print(keys(["a"]));
+
+// user-fn arity
+fn two(a: int, b: int): int {
+    return a + b;
+}
+fn one(a: int): int {
+    return a;
+}
+print(two(1));
+print(one(1, 2));

@@ -1180,6 +1180,24 @@ def _any_check(val, want: str):
     raise RuntimeError_(f"expected {want} in any, got {got}")
 
 
+def _builtin_check(val, want: str):
+    """Kind check at a typed builtin parameter. Same trap wording as
+    _any_check; opaque passes. An int parameter takes int or bool (a
+    float would have to be re-encoded, which the native raw-bits edge
+    does not do either). 'indexable' means str or array and traps
+    under the array name, matching the native want-8 edge."""
+    got = _value_kind(val)
+    if got == "opaque" or got == want:
+        return
+    if want == "int" and got == "bool":
+        return
+    if want == "indexable":
+        if got in ("str", "array"):
+            return
+        want = "array"
+    raise RuntimeError_(f"expected {want} in any, got {got}")
+
+
 _BUILTIN_RET_KINDS = {
     "len": "int", "push": "int", "pop": "any", "keys": "array",
     "read_file": "str", "write_file": "int", "append_file": "int",
@@ -1733,40 +1751,49 @@ class Interpreter:
         return result
 
     def _eval_builtin(self, name: str, args: list) -> Any:
+        # Arguments are evaluated and kind-checked left-to-right, so a
+        # trap on argument i fires before argument i+1 evaluates — the
+        # same order as user-fn calls and the native checked edges.
+        # Arity errors are check-time on the native host; the checks
+        # here keep interpreter-only runs honest.
+        def arg(i, want):
+            v = self._eval(args[i])
+            _builtin_check(v, want)
+            return v
+
+        def arity(lo, hi):
+            n = len(args)
+            if n < lo or n > hi:
+                if lo == hi:
+                    raise RuntimeError_(
+                        f"{name}() takes exactly {lo} argument{'s' if lo != 1 else ''}")
+                raise RuntimeError_(f"{name}() takes {lo} or {hi} arguments")
+
         if name == "len":
-            val = self._eval(args[0])
-            if isinstance(val, (list, str)):
-                return len(val)
-            raise RuntimeError_("len() requires an array or string")
+            arity(1, 1)
+            return len(arg(0, "indexable"))
 
         elif name == "push":
-            arr = self._eval(args[0])
+            arity(2, 2)
+            arr = arg(0, "array")
             val = self._eval(args[1])
-            if not isinstance(arr, list):
-                raise RuntimeError_("push() requires an array")
             arr.append(val)
             return len(arr)
 
         elif name == "pop":
-            arr = self._eval(args[0])
-            if not isinstance(arr, list):
-                raise RuntimeError_("pop() requires an array")
+            arity(1, 1)
+            arr = arg(0, "array")
             if len(arr) == 0:
                 raise RuntimeError_("Cannot pop from empty array")
             return arr.pop()
 
         elif name == "keys":
-            val = self._eval(args[0])
-            if not isinstance(val, Struct):
-                raise RuntimeError_("keys() requires a struct")
-            return list(val.fields().keys())
+            arity(1, 1)
+            return list(arg(0, "struct").fields().keys())
 
         elif name == "read_file":
-            if len(args) != 1:
-                raise RuntimeError_("read_file() takes exactly 1 argument")
-            path = self._eval(args[0])
-            if not isinstance(path, str):
-                raise RuntimeError_("read_file() requires a string path")
+            arity(1, 1)
+            path = arg(0, "str")
             # A missing (or unopenable) file is a runtime error — same
             # family as division by zero and out-of-bounds indexing, and
             # byte-identical to the native @arrow_read_file trap:
@@ -1782,22 +1809,13 @@ class Interpreter:
                 raise RuntimeError_(f"cannot read file: {path}")
 
         elif name == "file_exists":
-            if len(args) != 1:
-                raise RuntimeError_("file_exists() takes exactly 1 argument")
-            path = self._eval(args[0])
-            if not isinstance(path, str):
-                raise RuntimeError_("file_exists() requires a string path")
-            return os.path.isfile(path)
+            arity(1, 1)
+            return os.path.isfile(arg(0, "str"))
 
         elif name == "write_file":
-            if len(args) != 2:
-                raise RuntimeError_("write_file() takes exactly 2 arguments")
-            path = self._eval(args[0])
-            content = self._eval(args[1])
-            if not isinstance(path, str):
-                raise RuntimeError_("write_file() requires a string path")
-            if not isinstance(content, str):
-                content = self._format(content)
+            arity(2, 2)
+            path = arg(0, "str")
+            content = arg(1, "str")
             try:
                 # newline="": \n stays \n on Windows — matches the
                 # native fopen("wb") helper byte-for-byte.
@@ -1807,14 +1825,9 @@ class Interpreter:
                 raise RuntimeError_(f"Error writing file: {e}")
 
         elif name == "append_file":
-            if len(args) != 2:
-                raise RuntimeError_("append_file() takes exactly 2 arguments")
-            path = self._eval(args[0])
-            content = self._eval(args[1])
-            if not isinstance(path, str):
-                raise RuntimeError_("append_file() requires a string path")
-            if not isinstance(content, str):
-                content = self._format(content)
+            arity(2, 2)
+            path = arg(0, "str")
+            content = arg(1, "str")
             try:
                 # newline="": \n stays \n on Windows — matches the
                 # native fopen("ab") helper byte-for-byte.
@@ -1824,19 +1837,14 @@ class Interpreter:
                 raise RuntimeError_(f"Error appending to file: {e}")
 
         elif name == "input":
-            if len(args) > 1:
-                raise RuntimeError_("input() takes 0 or 1 arguments")
+            arity(0, 1)
             if len(args) == 1:
-                prompt = self._eval(args[0])
-                return input(self._format(prompt))
+                return input(arg(0, "str"))
             return input()
 
         elif name == "exec_cmd":
-            if len(args) != 1:
-                raise RuntimeError_("exec_cmd() takes exactly 1 argument")
-            cmd = self._eval(args[0])
-            if not isinstance(cmd, str):
-                raise RuntimeError_("exec_cmd() requires a string command")
+            arity(1, 1)
+            cmd = arg(0, "str")
             import subprocess
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             if result.stdout:
@@ -1846,14 +1854,13 @@ class Interpreter:
             return result.returncode
 
         elif name == "args":
+            arity(0, 1)
             import sys
             if len(args) == 0:
                 # Return number of script arguments (excluding interpreter and script file)
                 # sys.argv = ['lang.py', 'compiler.arrow', arg1, arg2, ...]
                 return len(sys.argv) - 2
-            idx = self._eval(args[0])
-            if not isinstance(idx, int):
-                raise RuntimeError_("args() index must be an integer")
+            idx = arg(0, "int")
             # args(0) = first argument after the script file
             actual_idx = idx + 2  # skip 'lang.py' and the script filename
             if actual_idx < 0 or actual_idx >= len(sys.argv):
@@ -1861,53 +1868,34 @@ class Interpreter:
             return sys.argv[actual_idx]
 
         elif name == "char_code":
-            if len(args) != 1:
-                raise RuntimeError_("char_code() takes exactly 1 argument")
-            val = self._eval(args[0])
-            if not isinstance(val, str) or len(val) == 0:
+            arity(1, 1)
+            val = arg(0, "str")
+            if len(val) == 0:
                 raise RuntimeError_("char_code() requires a non-empty string")
             return ord(val[0])
 
         elif name == "from_char_code":
-            if len(args) != 1:
-                raise RuntimeError_("from_char_code() takes exactly 1 argument")
-            val = self._eval(args[0])
-            if not isinstance(val, int):
-                raise RuntimeError_("from_char_code() requires an integer")
-            return chr(val)
+            arity(1, 1)
+            return chr(arg(0, "int"))
 
         elif name == "substring":
-            if len(args) != 3:
-                raise RuntimeError_("substring() takes exactly 3 arguments")
-            s = self._eval(args[0])
-            start = self._eval(args[1])
-            end = self._eval(args[2])
-            if not isinstance(s, str):
-                raise RuntimeError_("substring() requires a string as first argument")
-            if not isinstance(start, int) or not isinstance(end, int):
-                raise RuntimeError_("substring() indices must be integers")
+            arity(3, 3)
+            s = arg(0, "str")
+            start = arg(1, "int")
+            end = arg(2, "int")
             return s[start:end]
 
         elif name == "char_at":
-            if len(args) != 2:
-                raise RuntimeError_("char_at() takes exactly 2 arguments")
-            s = self._eval(args[0])
-            idx = self._eval(args[1])
-            if not isinstance(s, str):
-                raise RuntimeError_("char_at() requires a string as first argument")
-            if not isinstance(idx, int):
-                raise RuntimeError_("char_at() index must be an integer")
+            arity(2, 2)
+            s = arg(0, "str")
+            idx = arg(1, "int")
             if idx < 0 or idx >= len(s):
                 raise RuntimeError_(f"Index {idx} out of bounds (length {len(s)})")
             return s[idx]
 
         elif name == "str_len":
-            if len(args) != 1:
-                raise RuntimeError_("str_len() takes exactly 1 argument")
-            val = self._eval(args[0])
-            if not isinstance(val, str):
-                raise RuntimeError_("str_len() requires a string")
-            return len(val)
+            arity(1, 1)
+            return len(arg(0, "str"))
 
         raise RuntimeError_(f"Unknown builtin: {name}")
 

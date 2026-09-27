@@ -1,0 +1,12 @@
+// EXPECT: runtime_fail
+//OUT: he
+//ERR: Error: expected str in any, got int
+
+// A typed builtin parameter is an any-to-concrete edge: an any-held
+// int reaching substring's str parameter traps at the call, on both
+// hosts, before the call runs.
+fn head(s) {
+    return substring(s, 0, 2);
+}
+print(head("hello"));
+print(head(123));

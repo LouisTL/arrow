@@ -1,0 +1,14 @@
+// EXPECT: runtime_fail
+//OUT: 3
+//OUT: 4
+//ERR: Error: expected array in any, got int
+
+// The container builtins check their container argument's shape at
+// the call edge: an any-held int reaching len traps under the array
+// name (the indexable edge), on both hosts.
+fn count(c) {
+    return len(c);
+}
+print(count([1, 2, 3]));
+print(count("abcd"));
+print(count(5));

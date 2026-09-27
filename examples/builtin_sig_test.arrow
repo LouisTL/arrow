@@ -1,0 +1,44 @@
+// EXPECT: ok
+// Typed builtins accept any-held arguments of the right kind: the call
+// edge unwrap-checks and passes the payload through. bool rides the
+// int lane at a builtin edge like at any other any-to-int edge.
+
+// string builtins through any-typed parameters
+fn f_len(x) { return str_len(x); }
+fn f_at(s, i) { return char_at(s, i); }
+fn f_code(s) { return char_code(s); }
+fn f_chr(i) { return from_char_code(i); }
+fn f_sub(s, a, b) { return substring(s, a, b); }
+print(f_len("hello"));
+print(f_at("hello", 1));
+print(f_code("A"));
+print(f_chr(66));
+print(f_sub("hello", 1, 3));
+//OUT: 5
+//OUT: e
+//OUT: 65
+//OUT: B
+//OUT: el
+
+// bool in the int lane
+print(char_at("xy", true));
+//OUT: y
+
+// container builtins through any-held containers
+fn f_count(c) { return len(c); }
+fn f_keys(s) { return keys(s); }
+fn f_pop(a) { return pop(a); }
+fn f_push(a, v) { push(a, v); }
+var xs <- [1, 2, 3];
+var p <- {a: 1, b: 2};
+print(f_count(xs));
+print(f_count("abcd"));
+print(f_keys(p));
+print(f_pop(xs));
+f_push(xs, 9);
+print(xs);
+//OUT: 3
+//OUT: 4
+//OUT: ["a", "b"]
+//OUT: 3
+//OUT: [1, 2, 9]

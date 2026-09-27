@@ -3245,7 +3245,7 @@ fn scope_check_stmt(s, fn_scopes, captured, globals_set: [str], fn_names: [str])
 }
 
 // Check a single function declaration with its own fresh fn_scopes.
-fn scope_check_fn(fn_decl, outer_captured: int, globals_set: [str], fn_names: [str], outer_fn_scopes: int) {
+fn scope_check_fn(fn_decl, outer_captured, globals_set: [str], fn_names: [str], outer_fn_scopes) {
     var new_captured <- [];
     if (outer_captured != false) {
         ci <- 0;
@@ -3658,6 +3658,63 @@ fn check_no_union(e, what: str) {
         report_error(expr_pos_line(e), expr_pos_col(e), "cannot use union value of type " + T.type_str(t) + " " + what + "; narrow it to a single type first");
     }
 }
+// Builtin call signatures. A builtin parameter is checked like an
+// annotated user-fn parameter: a concrete mismatch is a type error at
+// the call site, an any-typed argument is unwrap-checked at runtime.
+// The container builtins (len/push/pop/keys) fix only the shape of
+// their container argument here; element types wait on generics.
+// Signature letters: s str, i int, x str-or-array, a array, t struct,
+// ? unchecked. Returns {sig, lo, hi} or false for an unknown name.
+fn builtin_sig(nm: str) {
+    if (nm = "str_len") { return {sig: "s", lo: 1, hi: 1}; }
+    if (nm = "char_code") { return {sig: "s", lo: 1, hi: 1}; }
+    if (nm = "char_at") { return {sig: "si", lo: 2, hi: 2}; }
+    if (nm = "from_char_code") { return {sig: "i", lo: 1, hi: 1}; }
+    if (nm = "substring") { return {sig: "sii", lo: 3, hi: 3}; }
+    if (nm = "read_file") { return {sig: "s", lo: 1, hi: 1}; }
+    if (nm = "file_exists") { return {sig: "s", lo: 1, hi: 1}; }
+    if (nm = "write_file") { return {sig: "ss", lo: 2, hi: 2}; }
+    if (nm = "append_file") { return {sig: "ss", lo: 2, hi: 2}; }
+    if (nm = "exec_cmd") { return {sig: "s", lo: 1, hi: 1}; }
+    if (nm = "input") { return {sig: "s", lo: 0, hi: 1}; }
+    if (nm = "args") { return {sig: "i", lo: 0, hi: 1}; }
+    if (nm = "len") { return {sig: "x", lo: 1, hi: 1}; }
+    if (nm = "push") { return {sig: "a?", lo: 2, hi: 2}; }
+    if (nm = "pop") { return {sig: "a", lo: 1, hi: 1}; }
+    if (nm = "keys") { return {sig: "t", lo: 1, hi: 1}; }
+    return false;
+}
+
+// One signature letter against an argument's static type. Unknown and
+// any statics pass (checked at runtime); a union is rejected by the
+// caller's union sweep, not here.
+fn builtin_arg_ok(p: str, actual): int {
+    if (actual.kind = "" || actual.kind = "any" || actual.kind = "union" || p = "?") { return true; }
+    if (p = "s") { return T.types_compat(T.mk_str(), actual); }
+    if (p = "i") { return T.types_compat(T.mk_int(), actual); }
+    if (p = "x") { return actual.kind = "str" || actual.kind = "array"; }
+    if (p = "a") { return actual.kind = "array"; }
+    if (p = "t") { return actual.kind = "struct" || actual.kind = "struct_lit"; }
+    return true;
+}
+
+fn builtin_param_str(p: str): str {
+    if (p = "s") { return "str"; }
+    if (p = "i") { return "int"; }
+    if (p = "x") { return "str or array"; }
+    if (p = "a") { return "array"; }
+    if (p = "t") { return "struct"; }
+    return "any";
+}
+
+fn arity_str(lo: int, hi: int): str {
+    if (lo = hi) {
+        if (lo = 1) { return "1 argument"; }
+        return "" + lo + " arguments";
+    }
+    return "" + lo + " or " + hi + " arguments";
+}
+
 fn check_expr(e) {
     if (e.node = "MatchExpr") {
         check_expr(e.scrutinee);
@@ -3750,6 +3807,10 @@ fn check_expr(e) {
                 if (afn_name != "") { fi <- find_fn(afn_name); }
             }
             if (fi != false) {
+                var fpc: int <- fi.param_count;
+                if (len(e.args) != fpc) {
+                    report_error(e.line, e.col, "call to '" + e.callee.name + "': expected " + arity_str(fpc, fpc) + " but got " + len(e.args));
+                }
                 var j <- 0;
                 while (j < len(e.args)) {
                     if (j < fi.param_count) {
@@ -3774,6 +3835,25 @@ fn check_expr(e) {
             } else {
                 // No resolved user/arrow fn: this is a builtin call. No builtin
                 // accepts a union argument — reject before it reaches codegen.
+                var bs <- builtin_sig(e.callee.name);
+                if (bs != false) {
+                    var blo: int <- bs.lo;
+                    var bhi: int <- bs.hi;
+                    var bsig: str <- bs.sig;
+                    var bn <- len(e.args);
+                    if (bn < blo || bn > bhi) {
+                        report_error(e.line, e.col, "call to '" + e.callee.name + "': expected " + arity_str(blo, bhi) + " but got " + bn);
+                    }
+                    var bj <- 0;
+                    while (bj < bn && bj < str_len(bsig)) {
+                        var bp <- char_at(bsig, bj);
+                        var bact <- typeof_expr(e.args[bj]);
+                        if (!builtin_arg_ok(bp, bact)) {
+                            report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (bj + 1) + " expected " + builtin_param_str(bp) + " but got " + T.type_str(bact));
+                        }
+                        bj <- bj + 1;
+                    }
+                }
                 var jb <- 0;
                 while (jb < len(e.args)) {
                     check_no_union(e.args[jb], "as an argument to '" + e.callee.name + "'");
@@ -6632,6 +6712,7 @@ fn ir_emit_expr(b, nd) {
                 // The operand is a cell — dispatch by tag at
                 // runtime (str -> strlen, else array word 0).
                 var lcell <- ir_emit_expr(b, nd.args[0]);
+                ir_unwrap_any_checked(b, lcell, argt, 8);
                 var lds <- ir_dyn_side(b, lcell, argt);
                 ir_push_inst(b.cur_block, ii_call(tmp, T.mk_int(), "arrow_dyn_len", [lds.t, lds.p]));
                 return ir_reg(tmp, T.mk_int());
@@ -6663,6 +6744,7 @@ fn ir_emit_expr(b, nd) {
                 // DotExpr targets had nothing (the realloc-loss
                 // item, hit at self-scale by m.str_table).
                 var pdc <- ir_emit_expr(b, nd.args[0]);
+                ir_unwrap_any_checked(b, pdc, parrt, 11);
                 var pvs <- ir_dyn_side(b, ir_emit_expr(b, nd.args[1]), typeof_expr(nd.args[1]));
                 var pd <- ir_fresh_tmp(b, "pushd");
                 ir_push_inst(b.cur_block, ii_call(pd, T.mk_int(), "arrow_push_dyn", [pdc, pvs.t, pvs.p]));
@@ -6736,6 +6818,7 @@ fn ir_emit_expr(b, nd) {
             if (popt.kind = "any") {
                 // Branch on the runtime element tier.
                 var pdc2 <- ir_emit_expr(b, nd.args[0]);
+                ir_unwrap_any_checked(b, pdc2, popt, 11);
                 var pds2 <- ir_dyn_side(b, pdc2, popt);
                 var pdt <- ir_fresh_tmp(b, "popd");
                 ir_push_inst(b.cur_block, ii_call(pdt, T.mk_int(), "arrow_pop_dyn", [pds2.t, pds2.p]));
@@ -6747,7 +6830,7 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "keys") {
-            var s <- ir_emit_arg(b, nd.args[0]);
+            var s <- ir_emit_arg_want(b, nd.args[0], 5);
             var tmp <- ir_fresh_tmp(b, "keys");
             ir_push_inst(b.cur_block, ii_struct_keys(tmp, s));
             return ir_reg(tmp, T.mk_array(T.mk_str()));
@@ -6755,66 +6838,66 @@ fn ir_emit_expr(b, nd) {
 
         // Cluster-3 string + IO builtins.
         if (nm = "str_len") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 3);
             var tmp <- ir_fresh_tmp(b, "sl");
             ir_push_inst(b.cur_block, ii_strlen(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_code") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 3);
             var tmp <- ir_fresh_tmp(b, "cc");
             ir_push_inst(b.cur_block, ii_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "char_at") {
-            var sarg <- ir_emit_arg(b, nd.args[0]);
-            var iarg <- ir_emit_arg(b, nd.args[1]);
+            var sarg <- ir_emit_arg_want(b, nd.args[0], 3);
+            var iarg <- ir_emit_arg_want(b, nd.args[1], 0);
             var tmp <- ir_fresh_tmp(b, "ca");
             ir_push_inst(b.cur_block, ii_char_at(tmp, sarg, iarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "from_char_code") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 0);
             var tmp <- ir_fresh_tmp(b, "fcc");
             ir_push_inst(b.cur_block, ii_from_char_code(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "substring") {
-            var sarg <- ir_emit_arg(b, nd.args[0]);
-            var stargv <- ir_emit_arg(b, nd.args[1]);
-            var edarg <- ir_emit_arg(b, nd.args[2]);
+            var sarg <- ir_emit_arg_want(b, nd.args[0], 3);
+            var stargv <- ir_emit_arg_want(b, nd.args[1], 0);
+            var edarg <- ir_emit_arg_want(b, nd.args[2], 0);
             var tmp <- ir_fresh_tmp(b, "sub");
             ir_push_inst(b.cur_block, ii_substring(tmp, sarg, stargv, edarg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "read_file") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 3);
             var tmp <- ir_fresh_tmp(b, "rf");
             ir_push_inst(b.cur_block, ii_read_file(tmp, arg));
             return ir_reg(tmp, T.mk_str());
         }
         if (nm = "file_exists") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 3);
             var tmp <- ir_fresh_tmp(b, "fe");
             ir_push_inst(b.cur_block, ii_file_exists(tmp, arg));
             return ir_reg(tmp, T.mk_bool());
         }
         if (nm = "write_file") {
-            var parg <- ir_emit_arg(b, nd.args[0]);
-            var carg <- ir_emit_arg(b, nd.args[1]);
+            var parg <- ir_emit_arg_want(b, nd.args[0], 3);
+            var carg <- ir_emit_arg_want(b, nd.args[1], 3);
             var tmp <- ir_fresh_tmp(b, "wf");
             ir_push_inst(b.cur_block, ii_write_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "append_file") {
-            var parg <- ir_emit_arg(b, nd.args[0]);
-            var carg <- ir_emit_arg(b, nd.args[1]);
+            var parg <- ir_emit_arg_want(b, nd.args[0], 3);
+            var carg <- ir_emit_arg_want(b, nd.args[1], 3);
             var tmp <- ir_fresh_tmp(b, "af");
             ir_push_inst(b.cur_block, ii_append_file(tmp, parg, carg));
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "exec_cmd") {
-            var arg <- ir_emit_arg(b, nd.args[0]);
+            var arg <- ir_emit_arg_want(b, nd.args[0], 3);
             var tmp <- ir_fresh_tmp(b, "ec");
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
@@ -6822,7 +6905,7 @@ fn ir_emit_expr(b, nd) {
         if (nm = "input") {
             var tmp <- ir_fresh_tmp(b, "in");
             if (len(nd.args) >= 1) {
-                var parg <- ir_emit_arg(b, nd.args[0]);
+                var parg <- ir_emit_arg_want(b, nd.args[0], 3);
                 ir_push_inst(b.cur_block, ii_input_with_prompt(tmp, parg));
             } else {
                 ir_push_inst(b.cur_block, ii_input(tmp));
@@ -6838,7 +6921,7 @@ fn ir_emit_expr(b, nd) {
                 ir_push_inst(b.cur_block, ir_inst("args_count", tmp, T.mk_int(), [], false));
                 return ir_reg(tmp, T.mk_int());
             }
-            var iarg <- ir_emit_arg(b, nd.args[0]);
+            var iarg <- ir_emit_arg_want(b, nd.args[0], 0);
             ir_push_inst(b.cur_block, ir_inst("args_get", tmp, T.mk_str(), [iarg], false));
             return ir_reg(tmp, T.mk_str());
         }
@@ -8029,6 +8112,13 @@ fn contains_dyn(t): int {
 // ir_coerce_slot_value instead and never reach this for tagged targets.
 fn ir_emit_arg(b, e) {
     return ir_unwrap_any(b, ir_emit_expr(b, e), typeof_expr(e));
+}
+
+// A call argument bound for a typed builtin parameter: a statically-any
+// argument is unwrap-checked against the parameter's kind (want tag),
+// so a mismatch traps like every other any-to-concrete edge.
+fn ir_emit_arg_want(b, e, want: int) {
+    return ir_unwrap_any_checked(b, ir_emit_expr(b, e), typeof_expr(e), want);
 }
 
 fn ir_union_none_ret(b, ut): Val {
