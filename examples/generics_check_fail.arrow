@@ -1,0 +1,16 @@
+// EXPECT: check_fail
+//ERR: type 'Ok' expects 1 type argument but got 2
+//ERR: type 'Err' is not generic
+//ERR: type 'Ok' expects 1 type argument but got 0
+//ERR: type parameter 'T' shadows a type
+//ERR: 5 type error(s)
+
+// Type-argument arity, non-generic aliases and shadowing type parameters
+// (on aliases and on functions) are rejected by both hosts.
+type Ok<T> <- {ok: T};
+type Err <- {err: str};
+type T <- int;
+var a: Ok<int, str> <- {ok: 1};
+var b: Err<int> <- {err: "x"};
+var c: Ok <- {ok: 1};
+fn f<T>(x: T): T { return x; }

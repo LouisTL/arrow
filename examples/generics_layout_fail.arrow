@@ -1,0 +1,9 @@
+// EXPECT: type_fail
+//ERR: call to 'first': argument 1 expected [T] but got [int] (a generic array parameter takes a [any]-layout array; convert with cells())
+//ERR: 1 type error(s)
+
+// A generic [T] parameter is a [any]-layout array; a raw [int] must be
+// converted with cells() first.
+fn first<T>(xs: [T]): T { return xs[0]; }
+var raw: [int] <- [10, 20];
+print(first(raw));

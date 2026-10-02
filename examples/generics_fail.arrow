@@ -1,0 +1,13 @@
+// EXPECT: type_fail
+//ERR: 'n' annotated as int but assigned str
+//ERR: call to 'pair': type parameter 'T' bound to int and str
+//ERR: 'o' annotated as Ok<int> but assigned {ok: str}
+//ERR: 4 type error(s)
+
+// The checker knows the instantiated types at each use.
+fn ident<T>(x: T): T { return x; }
+fn pair<T>(a: T, b: T): T { return a; }
+type Ok<T> <- {ok: T};
+var n: int <- ident("s");
+print(pair(1, "x"));
+var o: Ok<int> <- {ok: "no"};

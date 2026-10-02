@@ -162,7 +162,97 @@ fn union_in_container(t): int {
 // a structurally identical type written out longhand stays longhand, and
 // derived/inferred types are unnamed by construction. Primitives never
 // carry names.
+// Bind type parameters by matching a generic signature type against an
+// actual type: binds is [{name, type}], extended in place. A parameter
+// already bound to a different type is a conflict, returned as its name;
+// a raw-layout array where the signature has [T] is returned as "[]".
+fn tp_bind(pat, actual, binds): str {
+    if (pat.kind = "array" && actual.kind = "array" && contains_tparam(pat.elem)
+            && actual.elem.kind != "any" && actual.elem.kind != "") { return "[]"; }
+    if (pat.kind = "tparam") {
+        var i <- 0;
+        while (i < len(binds)) {
+            if (binds[i].name = pat.name) {
+                if (actual.kind = "" || actual.kind = "any") { return ""; }
+                var prev <- binds[i].type;
+                if (prev.kind = "" || prev.kind = "any") { binds[i] <- {name: pat.name, type: actual}; return ""; }
+                if (type_eq(prev, actual)) { return ""; }
+                return pat.name;
+            }
+            i <- i + 1;
+        }
+        push(binds, {name: pat.name, type: actual});
+        return "";
+    }
+    if (pat.kind = "array" && actual.kind = "array") { return tp_bind(pat.elem, actual.elem, binds); }
+    if (pat.kind = "struct_lit" && actual.kind = "struct_lit") {
+        var j <- 0;
+        while (j < len(pat.fields)) {
+            if (struct_has_field(actual.fields, pat.fields[j].name)) {
+                var c <- tp_bind(pat.fields[j].type, struct_field_type(actual.fields, pat.fields[j].name), binds);
+                if (c != "") { return c; }
+            }
+            j <- j + 1;
+        }
+        return "";
+    }
+    if (pat.kind = "union" && actual.kind = "union" && len(pat.members) = len(actual.members)) {
+        var k <- 0;
+        while (k < len(pat.members)) {
+            var c2 <- tp_bind(pat.members[k], actual.members[k], binds);
+            if (c2 != "") { return c2; }
+            k <- k + 1;
+        }
+    }
+    return "";
+}
+
+fn contains_tparam(t): int {
+    if (t.kind = "tparam") { return true; }
+    if (t.kind = "array") { return contains_tparam(t.elem); }
+    if (t.kind = "struct_lit") {
+        var i <- 0;
+        while (i < len(t.fields)) { if (contains_tparam(t.fields[i].type)) { return true; } i <- i + 1; }
+    }
+    if (t.kind = "union") {
+        var j <- 0;
+        while (j < len(t.members)) { if (contains_tparam(t.members[j])) { return true; } j <- j + 1; }
+    }
+    return false;
+}
+
+// Replace every type parameter in t by its binding; unbound ones become any.
+fn tp_subst(t, binds): any {
+    if (t.kind = "tparam") {
+        var i <- 0;
+        while (i < len(binds)) {
+            if (binds[i].name = t.name) { return binds[i].type; }
+            i <- i + 1;
+        }
+        return mk_any();
+    }
+    if (t.kind = "array") { var ra <- mk_array(tp_subst(t.elem, binds)); return ra; }
+    if (t.kind = "struct_lit") {
+        var nf <- [];
+        var j <- 0;
+        while (j < len(t.fields)) { push(nf, {name: t.fields[j].name, type: tp_subst(t.fields[j].type, binds)}); j <- j + 1; }
+        var rs <- mk_struct_lit(nf);
+        if (t.tname != "") { rs <- mk_named(rs, t.tname); }
+        return rs;
+    }
+    if (t.kind = "union") {
+        var nm <- [];
+        var k <- 0;
+        while (k < len(t.members)) { push(nm, tp_subst(t.members[k], binds)); k <- k + 1; }
+        var ru <- mk_union(nm);
+        if (t.tname != "") { ru <- mk_named(ru, t.tname); }
+        return ru;
+    }
+    return t;
+}
+
 fn type_str(t): str {
+    if (t.kind = "tparam") { return t.name; }
     if (t.kind = "array" || t.kind = "struct_lit" || t.kind = "union") {
         if (t.tname != "") { return t.tname; }
     }

@@ -1,0 +1,52 @@
+// EXPECT: ok
+// Generic aliases and functions; type parameters erase to any at runtime,
+// the checker instantiates them per use.
+type Ok<T> <- {ok: T};
+type Err <- {err: str};
+type Result<T> <- Ok<T> | Err;
+type Pair<A, B> <- {first: A, second: B};
+
+fn first<T>(xs: [T]): T { return xs[0]; }
+fn wrap<T>(v: T): Ok<T> { return {ok: v}; }
+fn swap<A, B>(p: Pair<A, B>): Pair<B, A> { return {first: p.second, second: p.first}; }
+fn parse_pos(n: int): Result<int> {
+    if (n < 0) { return {err: "negative"}; }
+    return {ok: n};
+}
+
+var ys <- [];
+push(ys, "a");
+push(ys, "b");
+print(first(ys));
+//OUT: a
+
+var w <- wrap(41);
+print(w.ok + 1);
+//OUT: 42
+
+var p: Pair<int, str> <- {first: 1, second: "one"};
+var q <- swap(p);
+print(q.first);
+print(q.second);
+//OUT: one
+//OUT: 1
+
+var r: Result<int> <- parse_pos(5);
+match (r) {
+    Ok<int> => { print(ok + 1); }
+    Err => { print(err); }
+}
+//OUT: 6
+var r2 <- parse_pos(-1);
+match (r2) {
+    Ok<int> => { print(ok); }
+    Err => { print("error: " + err); }
+}
+//OUT: error: negative
+
+// T in a generic body behaves like any: compare, print, store, return
+fn same<T>(a: T, b: T): bool { return a = b; }
+print(same(1, 1));
+print(same("x", "y"));
+//OUT: true
+//OUT: false

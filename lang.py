@@ -385,6 +385,7 @@ class Block:
 @dataclass
 class Program:
     statements: list
+    type_uses: list = None
 
 @dataclass
 class FnDecl:
@@ -393,6 +394,7 @@ class FnDecl:
     body: list
     param_kinds: list = None   # per-param annotation kind heads
     ret_kind: str = ""     # return annotation kind head
+    tparams: list = None
 
 @dataclass
 class ArrowFn:
@@ -432,6 +434,17 @@ class TypeDecl:
     rhs_pfields: Any
     line: int = 0
     col: int = 0
+    tparams: list = None
+    type_uses: list = None     # TypeUse records inside the right-hand side
+
+
+@dataclass
+class TypeUse:
+    """A type name with arguments, as written: Ok<int>."""
+    name: str
+    args: list          # nested TypeUse or bare names (str)
+    line: int
+    col: int
 
 
 # ─────────────────────────────────────────────
@@ -461,6 +474,8 @@ class Parser:
         # See compiler.arrow's panic_mode: once one error fires in a
         # statement we suppress follow-on errors until the recovery resyncs.
         self._panic = False
+        self.type_uses: list = []      # every Name<...> written in this file
+        self._tparams: list = []       # type parameters in scope
 
     def _record_error(self, msg: str, line: int, col: int):
         if self._panic:
@@ -543,7 +558,7 @@ class Parser:
                 cur = self._current()
                 if (cur.type == TokenType.IDENT and cur.value == "type"
                         and self._peek_is_name(1)
-                        and self._peek_type(2) == TokenType.ARROW):
+                        and self._peek_type(2) in (TokenType.ARROW, TokenType.LT)):
                     stmts.append(self._type_decl())
                 else:
                     stmts.append(self._statement())
@@ -556,7 +571,7 @@ class Parser:
                 if self.pos == start_pos:
                     self.pos += 1
                 self._sync()
-        return Program(stmts)
+        return Program(stmts, type_uses=self.type_uses)
 
     def _statement(self):
         tok = self._current()
@@ -668,9 +683,11 @@ class Parser:
                     self._skip_type_ann()
             self._eat(TokenType.RBRACE)
         else:
-            self._eat_name("type")
+            ntok = self._current()
+            name = self._eat_name("type").value
             if self._match(TokenType.DOT):
-                self._eat_name("type")
+                name = name + "." + self._eat_name("type").value
+            self._type_args(name, ntok.line, ntok.col)
         while self._match(TokenType.PIPE):
             self._skip_type_ann()
 
@@ -796,8 +813,13 @@ class Parser:
         return ReturnStmt(expr)
 
     def _fn_decl(self) -> FnDecl:
+        ftok = self._current()
         self._eat(TokenType.FN)
         name = self._eat_name("function").value
+        tparams = self._type_params()
+        self._tparams = tparams + self._tparams
+        for tp in tparams:
+            self.type_uses.append(TypeUse("<param>" + tp, [], ftok.line, ftok.col))
         params, pkinds = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
         rkind = ""
@@ -805,8 +827,9 @@ class Parser:
             self._eat(TokenType.COLON)
             rkind = self._type_ann_kind()
         body = self._block()
+        self._tparams = self._tparams[len(tparams):]
         return FnDecl(name, params, body.statements,
-                      param_kinds=pkinds, ret_kind=rkind)
+                      param_kinds=pkinds, ret_kind=rkind, tparams=tparams)
 
     def _param_list(self) -> tuple[list[str], list[str]]:
         self._eat(TokenType.LPAREN)
@@ -838,15 +861,53 @@ class Parser:
         tok = self._current()
         self._eat(TokenType.IDENT)            # 'type'
         name = self._eat_name("type").value
+        tparams = self._type_params()
         self._eat(TokenType.ARROW)
+        outer_uses, self.type_uses = self.type_uses, []
+        self._tparams = tparams + self._tparams
         kind, pfields = self._parse_type_kind()
         if self._current().type == TokenType.PIPE:
             while self._match(TokenType.PIPE):
                 self._parse_type_kind()
             kind, pfields = "union", None
         self._eat(TokenType.SEMI)
+        self._tparams = self._tparams[len(tparams):]
+        uses, self.type_uses = self.type_uses, outer_uses
         return TypeDecl(name=name, rhs_kind=kind, rhs_pfields=pfields,
-                        line=tok.line, col=tok.col)
+                        line=tok.line, col=tok.col, tparams=tparams,
+                        type_uses=uses)
+
+    def _type_params(self) -> list:
+        """`<A, B>` after a declared name; [] when absent."""
+        params = []
+        if self._current().type == TokenType.LT:
+            self._eat(TokenType.LT)
+            params.append(self._eat_name("type parameter").value)
+            while self._match(TokenType.COMMA):
+                params.append(self._eat_name("type parameter").value)
+            self._eat(TokenType.GT)
+        return params
+
+    def _type_args(self, name: str, line: int, col: int):
+        """`<T1, T2>` after a type name in a type position; records the use."""
+        args = []
+        if self._current().type == TokenType.LT:
+            self._eat(TokenType.LT)
+            args.append(self._type_arg())
+            while self._match(TokenType.COMMA):
+                args.append(self._type_arg())
+            self._eat(TokenType.GT)
+        if args or name not in _RESERVED_KINDS:
+            self.type_uses.append(TypeUse(name, args, line, col))
+
+    def _type_arg(self):
+        """One type argument: a name (with its own arguments) or a
+        composite; composites are consumed and contribute no name."""
+        tok = self._current()
+        kind, _ = self._parse_type_kind()
+        while self._match(TokenType.PIPE):
+            self._parse_type_kind()
+        return kind
 
     def _parse_type_kind(self):
         """Parse a single (non-union) type for a match arm; return
@@ -868,10 +929,14 @@ class Parser:
                     fnames.append(self._eat_name("field").value); self._eat(TokenType.COLON); self._skip_type_ann()
             self._eat(TokenType.RBRACE)
             return "struct", fnames
+        ntok = self._current()
         name = self._eat_name("type").value
         if self._current().type == TokenType.DOT:
             self._eat(TokenType.DOT)
             name = name + "." + self._eat_name("type").value
+        self._type_args(name, ntok.line, ntok.col)
+        if name in self._tparams:
+            return "any", None
         return name, None
 
     def _parse_arm_pattern(self):
@@ -1243,7 +1308,7 @@ _BUILTIN_RET_KINDS = {
     "input": "str", "exec_cmd": "int", "args": "any",
     "char_code": "int", "from_char_code": "str", "substring": "str",
     "char_at": "str", "str_len": "int", "file_exists": "bool",
-    "exit": "none",
+    "exit": "none", "cells": "array",
 }
 
 
@@ -1437,7 +1502,7 @@ class Struct:
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
-            "exec_cmd", "args", "file_exists", "exit"}
+            "exec_cmd", "args", "file_exists", "exit", "cells"}
 
 
 class Interpreter:
@@ -1933,6 +1998,10 @@ class Interpreter:
             arity(1, 1)
             return len(arg(0, "str"))
 
+        elif name == "cells":
+            arity(1, 1)
+            return list(arg(0, "array"))
+
         elif name == "exit":
             arity(1, 1)
             code = arg(0, "int")
@@ -2364,6 +2433,54 @@ class _TypeView:
         return (rk if rk in _CONCRETE_KINDS else ""), True
 
 
+def _check_type_uses(uses, own_types, view):
+    """Arity / not-generic / shadowing for every Name<...> written in a
+    file, and unknown names among type arguments. A generic alias's own
+    right-hand side is checked with its parameters in scope."""
+    def check(use, params_in_scope):
+        if use.name.startswith("<param>"):
+            tp = use.name[len("<param>"):]
+            if view._decl_for(tp)[1] is not None:
+                view.terrors.append(
+                    f"{view.label}:{use.line}:{use.col}: type parameter '{tp}' shadows a type")
+            return
+        for a in use.args:
+            if isinstance(a, str):
+                if (a not in _RESERVED_KINDS and a not in params_in_scope
+                        and view._decl_for(a)[1] is None):
+                    view.terrors.append(
+                        f"{view.label}:{use.line}:{use.col}: unknown type '{a}'")
+        if use.name in params_in_scope:
+            if use.args:
+                view.terrors.append(
+                    f"{view.label}:{use.line}:{use.col}: type '{use.name}' is not generic")
+            return
+        if use.name in _RESERVED_KINDS:
+            return
+        _, decl = view._decl_for(use.name)
+        if decl is None:
+            return          # the annotation walk reports unknown names
+        want = len(decl.tparams or [])
+        got = len(use.args)
+        if want == 0 and got > 0:
+            view.terrors.append(
+                f"{view.label}:{use.line}:{use.col}: type '{use.name}' is not generic")
+        elif want != got:
+            noun = "type argument" if want == 1 else "type arguments"
+            view.terrors.append(
+                f"{view.label}:{use.line}:{use.col}: type '{use.name}' expects {want} {noun} but got {got}")
+
+    for use in uses:
+        check(use, ())
+    for decl in own_types.values():
+        for use in (decl.type_uses or []):
+            check(use, tuple(decl.tparams or []))
+        for tp in (decl.tparams or []):
+            if view._decl_for(tp)[1] is not None:
+                view.terrors.append(
+                    f"{view.label}:{decl.line}:{decl.col}: type parameter '{tp}' shadows a type")
+
+
 def _walk_types(node, view, seen):
     """Resolve every stored annotation/arm kind under node, in place."""
     if node is None or isinstance(node, (str, int, float, bool)):
@@ -2474,7 +2591,7 @@ def _collect_ns_refs(node, acc, seen):
     for _, _, v in _ast_children(node):
         _collect_ns_refs(v, acc, seen)
 
-def resolve_imports(stmts: list, main_path: str):
+def resolve_imports(stmts: list, main_path: str, main_uses: list = None):
     """Two phases: load every reachable module, then resolve types and
     destructured imports, then emit dependencies-first (post-order of the
     import graph, back-edges skipped). Returns (stmts, errors, type_errors)."""
@@ -2567,6 +2684,7 @@ def resolve_imports(stmts: list, main_path: str):
         records[resolved_path] = {
             "label": resolved_path, "canon": name, "stmts": new_filtered,
             "types": sub_types, "edges": sub_edges,
+            "uses": sub_program.type_uses or [],
             "values": _collect_top_names(new_filtered),
         }
 
@@ -2644,6 +2762,9 @@ def resolve_imports(stmts: list, main_path: str):
               _collect_top_names(filtered_main))
     for _wstmts, _wview in pending_walks:
         _walk_types(_wstmts, _wview, set())
+    for rp, rec in records.items():
+        _check_type_uses(rec["uses"], rec["types"], views_by_label[rec["label"]])
+    _check_type_uses(main_uses or [], main_types, views_by_label[main_path])
 
     # ── emission: dependencies first, each module once, back-edges skipped ──
     for rp, rec in records.items():
@@ -2785,7 +2906,8 @@ def run_file(filepath: str) -> Interpreter:
         print("--")
         print(f"{len(parser.errors)} parse error(s). Compilation aborted.")
         sys.exit(1)
-    resolved, errs, resolve_terrs = resolve_imports(program.statements, filepath)
+    resolved, errs, resolve_terrs = resolve_imports(program.statements, filepath,
+                                                     program.type_uses)
     # `errs` may contain parser errors from imported files; classify them.
     parse_errs = [e for e in errs if ": parse error: " in e]
     other_errs = [e for e in errs if ": parse error: " not in e]

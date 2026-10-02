@@ -107,7 +107,7 @@ fn pp(){
         var start_pos <- pos[0];
         var start_errs <- len(parse_errors);
         panic_mode[0] <- false;  // fresh statement → fresh error budget
-        if (ci("IDENT") && cv() = "type" && pik(1) && pi(2, "ARROW")) {
+        if (ci("IDENT") && cv() = "type" && pik(1) && (pi(2, "ARROW") || pi(2, "LT"))) {
             // type Name <- Type;  the declaration node carries the (still
             // unresolved) right-hand type for the whole-program pass.
             push(ss, ptype_decl());
@@ -197,12 +197,14 @@ fn pimitem(){
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if((pik(1)||pi(1,"STRING"))&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")&&!ci("EOF")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-pname("field");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-pname("field");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-pname("type");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+pname("type");}return{kind:"unresolved",name:n,line:toks[pos[0]-1].line,col:toks[pos[0]-1].col};}
+fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-pname("field");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-pname("field");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-pname("type");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+pname("type");}var uln<-toks[pos[0]-1].line;var ucl<-toks[pos[0]-1].col;var targs<-[];if(ci("LT")){eat("LT");push(targs,pty());while(ci("COMMA")){eat("COMMA");push(targs,pty());}eat("GT");}return{kind:"unresolved",name:n,targs:targs,line:uln,col:ucl};}
+// `<A, B>` after a declared name; [] when absent.
+fn ptparams(): [str]{var ps:[str]<-[];if(ci("LT")){eat("LT");push(ps,pname("type parameter"));while(ci("COMMA")){eat("COMMA");push(ps,pname("type parameter"));}eat("GT");}return ps;}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
 fn get_type_alias(name: str){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){return a[i].atype;}i<-i+1;}return{kind:""};}
 // type Name <- Type;  structural alias (3d). Registers the alias and is
 // elided from the AST (handled in pp), so no later pass sees a new node.
-fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-pname("type");eat("ARROW");var ty<-pty();eat("SEMI");return{node:"TypeDecl",name:name,atype:ty,line:ln,col:cl};}
+fn ptype_decl(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var kw<-ev("IDENT");var name<-pname("type");var tps<-ptparams();eat("ARROW");var ty<-pty();eat("SEMI");return{node:"TypeDecl",name:name,tparams:tps,atype:ty,line:ln,col:cl};}
 fn pas(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-pname("variable");eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:{kind:""},is_decl:false,line:ln,col:cl};}
 fn ptd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var n<-pname("variable");eat("COLON");var ta<-pty();eat("ARROW");var e<-pe();eat("SEMI");return{node:"Assignment",name:n,expr:e,type_ann:ta,is_decl:false,line:ln,col:cl};}
 // var x [: type] <- expr;  — declaration; carries is_decl:true so the
@@ -214,7 +216,7 @@ fn pvd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("var");
 fn ppa(){var e<-pe();if(ci("ARROW")){eat("ARROW");var v<-pe();eat("SEMI");if(e.node="IndexExpr"){return{node:"IndexAssign",obj:e.obj,index:e.index,value:v};}if(e.node="DotExpr"){return{node:"DotAssign",obj:e.obj,field:e.field,value:v};}}eat("SEMI");return e;}
 fn ppr(){eat("print");eat("LPAREN");var e<-pe();eat("RPAREN");eat("SEMI");return{node:"PrintStmt",expr:e};}
 fn prt(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("return");if(ci("SEMI")){eat("SEMI");return{node:"ReturnStmt",expr:false,line:ln,col:cl};}var e<-pe();eat("SEMI");return{node:"ReturnStmt",expr:e,line:ln,col:cl};}
-fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-pname("function");eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){var pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
+fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-pname("function");var tps<-ptparams();eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){var pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");pn<-pname("parameter");push(p,pn);if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}var b<-pb();return{node:"FnDecl",name:n,tparams:tps,gsig:false,params:p,param_types_ann:pt,ret_type_ann:rt,body:b,line:ln,col:cl};}
 fn ppl(){eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
@@ -555,19 +557,19 @@ fn type_decl_of(name: str, fid: int, rec_paths: [str], rec_types, rec_edges, rec
                     var ti <- tlist_find(rec_types[ridx], base);
                     if (ti >= 0) {
                         var d <- rec_types[ridx][ti];
-                        return {ok: true, fid: ridx, atype: d.atype, line: d.line, col: d.col};
+                        return {ok: true, fid: ridx, tparams: d.tparams, atype: d.atype, line: d.line, col: d.col};
                     }
                 }
             }
             i <- i + 1;
         }
-        return {ok: false, fid: 0 - 1, atype: {kind: ""}, line: 0, col: 0};
+        return {ok: false, fid: 0 - 1, tparams: [], atype: {kind: ""}, line: 0, col: 0};
     }
     var own <- view_types(fid, rec_types, main_types);
     var oi <- tlist_find(own, name);
     if (oi >= 0) {
         var od <- own[oi];
-        return {ok: true, fid: fid, atype: od.atype, line: od.line, col: od.col};
+        return {ok: true, fid: fid, tparams: od.tparams, atype: od.atype, line: od.line, col: od.col};
     }
     var tb <- view_tbinds(fid, rec_tbinds, main_tbinds);
     var bi <- 0;
@@ -577,12 +579,34 @@ fn type_decl_of(name: str, fid: int, rec_paths: [str], rec_types, rec_edges, rec
             var ti2 <- tlist_find(rec_types[ridx2], tb[bi].orig);
             if (ti2 >= 0) {
                 var d2 <- rec_types[ridx2][ti2];
-                return {ok: true, fid: ridx2, atype: d2.atype, line: d2.line, col: d2.col};
+                return {ok: true, fid: ridx2, tparams: d2.tparams, atype: d2.atype, line: d2.line, col: d2.col};
             }
         }
         bi <- bi + 1;
     }
-    return {ok: false, fid: 0 - 1, atype: {kind: ""}, line: 0, col: 0};
+    return {ok: false, fid: 0 - 1, tparams: [], atype: {kind: ""}, line: 0, col: 0};
+}
+
+// Type parameters in scope while a generic declaration's types resolve:
+// [{name, type}], innermost last.
+var tp_binds <- [];
+fn tp_find(name: str) {
+    var i <- len(tp_binds) - 1;
+    while (i >= 0) {
+        if (tp_binds[i].name = name) { return tp_binds[i].type; }
+        i <- i - 1;
+    }
+    return false;
+}
+fn targs_key(targs): str {
+    var k <- "";
+    var i <- 0;
+    while (i < len(targs)) {
+        if (i > 0) { k <- k + ","; }
+        k <- k + T.type_str(targs[i]);
+        i <- i + 1;
+    }
+    return k;
 }
 
 fn memo_find(memo, key: str): int {
@@ -591,8 +615,16 @@ fn memo_find(memo, key: str): int {
     return 0 - 1;
 }
 
-fn resolve_tname(name: str, use_ln: int, use_cl: int, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str) {
-    var key <- "" + fid + "|" + name;
+fn resolve_tname(name: str, targs, use_ln: int, use_cl: int, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str) {
+    var rargs <- [];
+    var ai <- 0;
+    while (ai < len(targs)) {
+        push(rargs, resolve_type(targs[ai], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label));
+        ai <- ai + 1;
+    }
+    var shown <- name;
+    if (len(rargs) > 0) { shown <- name + "<" + targs_key(rargs) + ">"; }
+    var key <- "" + fid + "|" + shown;
     var mi <- memo_find(memo, key);
     if (mi >= 0) { return memo[mi].rtype; }
     if (name_in(skeys, key)) {
@@ -606,17 +638,39 @@ fn resolve_tname(name: str, use_ln: int, use_cl: int, fid: int, skeys: [str], sl
         push(memo, {key: key, rtype: {kind: "any"}});
         return {kind: "any"};
     }
+    var want_n <- len(d.tparams);
+    if (want_n = 0 && len(rargs) > 0) {
+        report_error(use_ln, use_cl, "type '" + name + "' is not generic");
+        push(memo, {key: key, rtype: {kind: "any"}});
+        return {kind: "any"};
+    }
+    if (want_n != len(rargs)) {
+        var plural <- " type arguments but got ";
+        if (want_n = 1) { plural <- " type argument but got "; }
+        report_error(use_ln, use_cl, "type '" + name + "' expects " + want_n + plural + len(rargs));
+        push(memo, {key: key, rtype: {kind: "any"}});
+        return {kind: "any"};
+    }
     push(skeys, key); push(slines, d.line); push(scols, d.col); push(snames, name);
+    var bi <- 0;
+    while (bi < want_n) { push(tp_binds, {name: d.tparams[bi], type: rargs[bi]}); bi <- bi + 1; }
     var r <- resolve_type(d.atype, d.fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+    bi <- 0;
+    while (bi < want_n) { pop(tp_binds); bi <- bi + 1; }
     pop(skeys); pop(slines); pop(scols); pop(snames);
-    var wrapped <- T.mk_named(r, name);
+    var wrapped <- T.mk_named(r, shown);
     push(memo, {key: key, rtype: wrapped});
     return wrapped;
 }
 
 fn resolve_type(t, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str], memo, rec_paths: [str], rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label: str) {
     if (t.kind = "unresolved") {
-        return resolve_tname(t.name, t.line, t.col, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var bound <- tp_find(t.name);
+        if (bound != false) {
+            if (len(t.targs) > 0) { report_error(t.line, t.col, "type '" + t.name + "' is not generic"); }
+            return bound;
+        }
+        return resolve_tname(t.name, t.targs, t.line, t.col, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
     }
     if (t.kind = "array") {
         var re <- resolve_type(t.elem, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
@@ -669,6 +723,32 @@ fn rt_stmt(s, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str]
         return 0;
     }
     if (s.node = "FnDecl") {
+        // A generic fn's signature is resolved twice: once with each type
+        // parameter as a marker (kept in s.gsig for call-site binding) and
+        // once with it as any (the annotations the rest of the compiler sees).
+        var tpi <- 0;
+        while (tpi < len(s.tparams)) {
+            if (type_decl_of(s.tparams[tpi], fid, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds).ok) {
+                report_error(s.line, s.col, "type parameter '" + s.tparams[tpi] + "' shadows a type");
+            }
+            tpi <- tpi + 1;
+        }
+        if (len(s.tparams) > 0) {
+            tpi <- 0;
+            while (tpi < len(s.tparams)) { push(tp_binds, {name: s.tparams[tpi], type: {kind: "tparam", name: s.tparams[tpi]}}); tpi <- tpi + 1; }
+            var gps <- [];
+            var gpi <- 0;
+            while (gpi < len(s.param_types_ann)) {
+                push(gps, resolve_type(s.param_types_ann[gpi], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label));
+                gpi <- gpi + 1;
+            }
+            var gret <- resolve_type(s.ret_type_ann, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+            s.gsig <- {tparams: s.tparams, params: gps, ret: gret};
+            tpi <- 0;
+            while (tpi < len(s.tparams)) { pop(tp_binds); tpi <- tpi + 1; }
+            tpi <- 0;
+            while (tpi < len(s.tparams)) { push(tp_binds, {name: s.tparams[tpi], type: {kind: "any"}}); tpi <- tpi + 1; }
+        }
         var pi2 <- 0;
         while (pi2 < len(s.param_types_ann)) {
             s.param_types_ann[pi2] <- resolve_type(s.param_types_ann[pi2], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
@@ -676,6 +756,8 @@ fn rt_stmt(s, fid: int, skeys: [str], slines: [int], scols: [int], snames: [str]
         }
         s.ret_type_ann <- resolve_type(s.ret_type_ann, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
         rt_stmts(s.body, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        tpi <- 0;
+        while (tpi < len(s.tparams)) { pop(tp_binds); tpi <- tpi + 1; }
         return 0;
     }
     if (s.node = "ReturnStmt") {
@@ -1607,7 +1689,7 @@ fn set_fn_ret_type(name: str, rtype, rfields: int) {
             if (declared_fns[i].ret_type_ann.kind != "") {
                 return false;
             }
-            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann, is_arrow_var: declared_fns[i].is_arrow_var};
+            declared_fns[i] <- {name: name, param_count: declared_fns[i].param_count, ret_type: rtype, ret_fields: rfields, param_types: declared_fns[i].param_types, param_types_ann: declared_fns[i].param_types_ann, ret_type_ann: declared_fns[i].ret_type_ann, is_arrow_var: declared_fns[i].is_arrow_var, gsig: declared_fns[i].gsig};
             return false;
         }
         i <- i + 1;
@@ -1824,7 +1906,7 @@ fn scan_fns(stmts) {
             if (stmts[i].ret_type_ann.kind != "") {
                 rt <- stmts[i].ret_type_ann;
             }
-            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false});
+            push(declared_fns, {name: stmts[i].name, param_count: len(stmts[i].params), ret_type: rt, ret_fields: false, param_types: pt, param_types_ann: stmts[i].param_types_ann, ret_type_ann: stmts[i].ret_type_ann, is_arrow_var: false, gsig: stmts[i].gsig});
             var pj <- 0;
             while (pj < len(stmts[i].param_types_ann)) {
                 var pct <- stmts[i].param_types_ann[pj];
@@ -1856,7 +1938,7 @@ fn scan_fns(stmts) {
                 }
                 var art <- T.mk_any();
                 if (afn.ret_type_ann.kind != "") { art <- afn.ret_type_ann; }
-                push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true});
+                push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true, gsig: false});
             }
         }
         i <- i + 1;
@@ -2438,6 +2520,7 @@ fn typeof_expr(nd): any {
             if (nm = "append_file") { return T.mk_int(); }
             if (nm = "exec_cmd") { return T.mk_int(); }
             if (nm = "exit") { return {kind: "none"}; }
+            if (nm = "cells") { return T.mk_array(T.mk_any()); }
             if (nm = "push") { return T.mk_int(); }
             if (nm = "pop") {
                 // Element type if known; an any-held target pops a
@@ -2456,6 +2539,9 @@ fn typeof_expr(nd): any {
                 return T.mk_str();
             }
             var fi <- find_fn(nm);
+            if (fi != false && fi.gsig != false) {
+                if (fi.gsig.ret.kind != "") { return T.tp_subst(fi.gsig.ret, generic_call_binds_quiet(nd, fi)); }
+            }
             if (fi != false) {
                 // The annotation is the caller-visible truth: the return
                 // site emits by it (wrapping for `any`, raw otherwise), so
@@ -2967,7 +3053,7 @@ fn is_builtin_name(n: str): int {
         || n = "read_file" || n = "file_exists" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
-        || n = "exec_cmd" || n = "args" || n = "exit"
+        || n = "exec_cmd" || n = "args" || n = "exit" || n = "cells"
         || n = "true" || n = "false";
 }
 
@@ -3691,6 +3777,7 @@ fn builtin_sig(nm: str) {
     if (nm = "input") { return {sig: "s", lo: 0, hi: 1}; }
     if (nm = "args") { return {sig: "i", lo: 0, hi: 1}; }
     if (nm = "exit") { return {sig: "i", lo: 1, hi: 1}; }
+    if (nm = "cells") { return {sig: "a", lo: 1, hi: 1}; }
     if (nm = "len") { return {sig: "x", lo: 1, hi: 1}; }
     if (nm = "push") { return {sig: "a?", lo: 2, hi: 2}; }
     if (nm = "pop") { return {sig: "a", lo: 1, hi: 1}; }
@@ -3723,6 +3810,34 @@ fn arity_str(lo: int, hi: int): str {
         return "" + lo + " arguments";
     }
     return "" + lo + " or " + hi + " arguments";
+}
+
+// Type-parameter bindings for a call to a generic fn, from the argument
+// types; a parameter bound two ways is reported once.
+fn generic_call_binds(e, fi) {
+    var binds <- [];
+    var i <- 0;
+    while (i < len(e.args) && i < len(fi.gsig.params)) {
+        var conflict <- T.tp_bind(fi.gsig.params[i], typeof_expr(e.args[i]), binds);
+        if (conflict = "[]") {
+            report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (i + 1) + " expected " + T.type_str(fi.gsig.params[i]) + " but got " + T.type_str(typeof_expr(e.args[i])) + " (a generic array parameter takes a [any]-layout array; convert with cells())");
+        } else if (conflict != "") {
+            var prev <- T.tp_subst({kind: "tparam", name: conflict}, binds);
+            report_error(e.line, e.col, "call to '" + e.callee.name + "': type parameter '" + conflict + "' bound to " + T.type_str(prev) + " and " + T.type_str(typeof_expr(e.args[i])));
+        }
+        i <- i + 1;
+    }
+    return binds;
+}
+
+fn generic_call_binds_quiet(e, fi) {
+    var binds <- [];
+    var i <- 0;
+    while (i < len(e.args) && i < len(fi.gsig.params)) {
+        T.tp_bind(fi.gsig.params[i], typeof_expr(e.args[i]), binds);
+        i <- i + 1;
+    }
+    return binds;
 }
 
 fn check_expr(e) {
@@ -3821,10 +3936,23 @@ fn check_expr(e) {
                 if (len(e.args) != fpc) {
                     report_error(e.line, e.col, "call to '" + e.callee.name + "': expected " + arity_str(fpc, fpc) + " but got " + len(e.args));
                 }
+                var gann <- fi.param_types_ann;
+                if (fi.gsig != false) {
+                    var gb <- generic_call_binds(e, fi);
+                    var gsp <- [];
+                    var gi <- 0;
+                    while (gi < len(fi.gsig.params)) {
+                        var gpt <- T.tp_subst(fi.gsig.params[gi], gb);
+                        if (gi < len(e.args) && T.tp_bind(fi.gsig.params[gi], typeof_expr(e.args[gi]), []) = "[]") { gpt <- T.mk_unann(); }
+                        push(gsp, gpt);
+                        gi <- gi + 1;
+                    }
+                    gann <- gsp;
+                }
                 var j <- 0;
                 while (j < len(e.args)) {
                     if (j < fi.param_count) {
-                        var ann <- fi.param_types_ann[j];
+                        var ann <- gann[j];
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "") {
                             var actual <- typeof_expr(e.args[j]);
@@ -4348,6 +4476,49 @@ fn emit_push_helper() {
     emit("  %nlen3 = add i64 %len, 1");
     emit("  store i64 %nlen3, ptr %lenp");
     emit("  ret i64 %arr.i");
+    emit("}");
+    emit("");
+}
+
+// arrow_cells(arr, tag): a new array whose elements are cells [tag, e]
+// around the elements of a raw-layout array. Elements already stored as
+// cells (tag 10 source) are copied as they are.
+fn emit_cells_helper() {
+    emit("define i64 @arrow_cells(i64 %src.i, i64 %tag) {");
+    emit("entry:");
+    emit("  %src = inttoptr i64 %src.i to ptr");
+    emit("  %len = load i64, ptr %src");
+    emit("  %hdr = call ptr @malloc(i64 32784)");
+    emit("  store i64 0, ptr %hdr");
+    emit("  %capp = getelementptr i64, ptr %hdr, i64 1");
+    emit("  store i64 4096, ptr %capp");
+    emit("  %hdr.i = ptrtoint ptr %hdr to i64");
+    emit("  br label %loop");
+    emit("loop:");
+    emit("  %i = phi i64 [ 0, %entry ], [ %i.next, %keep ]");
+    emit("  %dst.i = phi i64 [ %hdr.i, %entry ], [ %dst.next, %keep ]");
+    emit("  %done = icmp sge i64 %i, %len");
+    emit("  br i1 %done, label %exit, label %body");
+    emit("body:");
+    emit("  %off = add i64 %i, 2");
+    emit("  %ep = getelementptr i64, ptr %src, i64 %off");
+    emit("  %e = load i64, ptr %ep");
+    emit("  %israw = icmp ne i64 %tag, 10");
+    emit("  br i1 %israw, label %wrap, label %keep");
+    emit("wrap:");
+    emit("  %c = call ptr @arena_alloc(i64 16)");
+    emit("  store i64 %tag, ptr %c");
+    emit("  %cp = getelementptr i64, ptr %c, i64 1");
+    emit("  store i64 %e, ptr %cp");
+    emit("  %c.i = ptrtoint ptr %c to i64");
+    emit("  br label %keep");
+    emit("keep:");
+    emit("  %v = phi i64 [ %c.i, %wrap ], [ %e, %body ]");
+    emit("  %dst.next = call i64 @arrow_push(i64 %dst.i, i64 %v)");
+    emit("  %i.next = add i64 %i, 1");
+    emit("  br label %loop");
+    emit("exit:");
+    emit("  ret i64 %dst.i");
     emit("}");
     emit("");
 }
@@ -6912,6 +7083,15 @@ fn ir_emit_expr(b, nd) {
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
         }
+        if (nm = "cells") {
+            var cat <- typeof_expr(nd.args[0]);
+            var ctag <- 7;
+            if (cat.kind = "array") { ctag <- any_want_of(cat.elem); }
+            var carg <- ir_emit_arg_want(b, nd.args[0], 11);
+            var ctmp <- ir_fresh_tmp(b, "cells");
+            ir_push_inst(b.cur_block, ii_call(ctmp, T.mk_int(), "arrow_cells", [carg, ir_const_int(ctag)]));
+            return ir_reg(ctmp, T.mk_array(T.mk_any()));
+        }
         if (nm = "exit") {
             var xarg <- ir_emit_arg_want(b, nd.args[0], 0);
             var xtmp <- ir_fresh_tmp(b, "exit");
@@ -7238,7 +7418,8 @@ fn ir_emit_expr(b, nd) {
                     param_types: [],
                     param_types_ann: nd.param_types_ann,
                     ret_type_ann: nd.ret_type_ann,
-                    is_arrow_var: false
+                    is_arrow_var: false,
+                    gsig: false
                 });
             }
         }
@@ -7517,7 +7698,8 @@ fn ir_emit_expr(b, nd) {
                 param_types: [],
                 param_types_ann: nd.param_types_ann,
                 ret_type_ann: T.mk_unann(),
-                is_arrow_var: false
+                is_arrow_var: false,
+                gsig: false
             });
         } else {
             set_fn_ret_type(afn_name, ret_type_inferred, false);
@@ -9198,6 +9380,7 @@ fn llvm_emit_runtime() {
     emit_arena_helper();
     emit_safe_strcmp_helper();
     emit_push_helper();
+    emit_cells_helper();
     emit_array_concat_helper();
     emit_pop_helper();
     emit_trap_helpers();
@@ -9388,6 +9571,8 @@ fn compile_via_ir(stmts, backend) {
     var main_logic_fn <- {
         node: "FnDecl",
         name: "__main_logic",
+        tparams: [],
+        gsig: false,
         params: [],
         param_types_ann: [],
         ret_type: T.mk_int(),
@@ -9402,7 +9587,8 @@ fn compile_via_ir(stmts, backend) {
         param_types: [],
         param_types_ann: [],
         ret_type_ann: T.mk_unann(),
-        is_arrow_var: false
+        is_arrow_var: false,
+        gsig: false
     });
     ir_mod_add_function(m, emit_function_via_ir(main_logic_fn, m));
 
@@ -9496,7 +9682,7 @@ if (args() > 0) {
     var mtsp <- 0;
     while (mtsp < len(main_ast_all)) {
         var mts <- main_ast_all[mtsp];
-        if (mts.node = "TypeDecl") { push(main_types, {name: mts.name, atype: mts.atype, line: mts.line, col: mts.col}); }
+        if (mts.node = "TypeDecl") { push(main_types, {name: mts.name, tparams: mts.tparams, atype: mts.atype, line: mts.line, col: mts.col}); }
         else { push(main_ast, mts); }
         mtsp <- mtsp + 1;
     }
@@ -9588,7 +9774,7 @@ if (args() > 0) {
                 var tsp <- 0;
                 while (tsp < len(sub_stmts_all)) {
                     var tss <- sub_stmts_all[tsp];
-                    if (tss.node = "TypeDecl") { push(sub_types, {name: tss.name, atype: tss.atype, line: tss.line, col: tss.col}); }
+                    if (tss.node = "TypeDecl") { push(sub_types, {name: tss.name, tparams: tss.tparams, atype: tss.atype, line: tss.line, col: tss.col}); }
                     else { push(sub_stmts, tss); }
                     tsp <- tsp + 1;
                 }
@@ -9701,6 +9887,18 @@ if (args() > 0) {
         var r_stmts <- main_ast;
         if (rfid >= 0) { r_stmts <- rec_stmts[rfid]; }
         rt_stmts(r_stmts, rfid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, input_file);
+        var r_types <- view_types(rfid, rec_types, main_types);
+        var rti <- 0;
+        while (rti < len(r_types)) {
+            var rtp <- 0;
+            while (rtp < len(r_types[rti].tparams)) {
+                if (type_decl_of(r_types[rti].tparams[rtp], rfid, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds).ok) {
+                    report_error(r_types[rti].line, r_types[rti].col, "type parameter '" + r_types[rti].tparams[rtp] + "' shadows a type");
+                }
+                rtp <- rtp + 1;
+            }
+            rti <- rti + 1;
+        }
         var r_vbn <- main_vbn;
         var r_vbm <- main_vbm;
         if (rfid >= 0) { r_vbn <- rec_vbn[rfid]; r_vbm <- rec_vbm[rfid]; }
