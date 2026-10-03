@@ -1308,7 +1308,7 @@ _BUILTIN_RET_KINDS = {
     "input": "str", "exec_cmd": "int", "args": "any",
     "char_code": "int", "from_char_code": "str", "substring": "str",
     "char_at": "str", "str_len": "int", "file_exists": "bool",
-    "exit": "none", "cells": "array",
+    "exit": "none",
 }
 
 
@@ -1502,7 +1502,7 @@ class Struct:
 
 BUILTINS = {"len", "push", "pop", "keys", "read_file", "write_file", "append_file", "input",
             "char_code", "from_char_code", "substring", "char_at", "str_len",
-            "exec_cmd", "args", "file_exists", "exit", "cells"}
+            "exec_cmd", "args", "file_exists", "exit"}
 
 
 class Interpreter:
@@ -1997,10 +1997,6 @@ class Interpreter:
         elif name == "str_len":
             arity(1, 1)
             return len(arg(0, "str"))
-
-        elif name == "cells":
-            arity(1, 1)
-            return list(arg(0, "array"))
 
         elif name == "exit":
             arity(1, 1)

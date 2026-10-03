@@ -1,0 +1,43 @@
+// EXPECT: ok
+// Every array slot holds a tagged cell, so an array read through any
+// keeps its element kinds, and a concrete read checks the cell's tag.
+fn first_any(xs) { return xs[0]; }
+var fs: [float] <- [1.5, 2.5];
+print(first_any(fs));
+print(first_any(fs) + 1.0);
+//OUT: 1.5
+//OUT: 2.5
+var bs: [bool] <- [true, false];
+print(first_any(bs));
+//OUT: true
+var big: [int] <- [140000000000000];
+print(first_any(big) + 1);
+//OUT: 140000000000001
+var a: any <- fs;
+print(a[1]);
+print(a);
+//OUT: 2.5
+//OUT: [1.5, 2.5]
+var nested: [[int]] <- [[1, 2], [3]];
+var n: any <- nested;
+print(n[1][0]);
+print(n);
+//OUT: 3
+//OUT: [[1, 2], [3]]
+var names: [str] <- ["ann", "bob"];
+for (nm in names) { print(nm + "!"); }
+//OUT: ann!
+//OUT: bob!
+var ints: [int] <- [];
+push(ints, true);
+print(ints);
+print(ints[0] + 1);
+//OUT: [true]
+//OUT: 2
+print(keys({x: 1, y: 2}));
+//OUT: ["x", "y"]
+var popped <- pop(fs);
+print(popped * 2.0);
+print(fs);
+//OUT: 5.0
+//OUT: [1.5]

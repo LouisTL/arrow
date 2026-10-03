@@ -1,0 +1,40 @@
+// EXPECT: ok
+// A generic [T] parameter takes any array directly, T binds from the
+// element type, and a T return is read as the type T was bound to.
+fn first<T>(xs: [T]): T { return xs[0]; }
+fn count<T>(xs: [T]): int { return len(xs); }
+fn add<T>(xs: [T], v: T) { push(xs, v); }
+fn ident<T>(x: T): T { return x; }
+fn pair_of<T>(x: T): [T] { var out <- []; push(out, x); push(out, x); return out; }
+var raw: [int] <- [10, 20, 30];
+print(first(raw) + 1);
+print(count(raw));
+//OUT: 11
+//OUT: 3
+var words: [str] <- ["x", "y"];
+var w: str <- first(words);
+print(w + "!");
+//OUT: x!
+add(raw, 40);
+print(raw);
+print(len(raw));
+//OUT: [10, 20, 30, 40]
+//OUT: 4
+var mixed <- [];
+push(mixed, 1.5);
+print(first(mixed));
+//OUT: 1.5
+var n: int <- ident(5);
+print(n + 1);
+print(ident("s") + "!");
+var f <- ident(2.5);
+print(f * 2.0);
+//OUT: 6
+//OUT: s!
+//OUT: 5.0
+var ps <- pair_of(7);
+print(ps);
+var q: [int] <- pair_of(3);
+print(q[1] + 1);
+//OUT: [7, 7]
+//OUT: 4

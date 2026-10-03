@@ -2520,11 +2520,8 @@ fn typeof_expr(nd): any {
             if (nm = "append_file") { return T.mk_int(); }
             if (nm = "exec_cmd") { return T.mk_int(); }
             if (nm = "exit") { return {kind: "none"}; }
-            if (nm = "cells") { return T.mk_array(T.mk_any()); }
             if (nm = "push") { return T.mk_int(); }
             if (nm = "pop") {
-                // Element type if known; an any-held target pops a
-                // cell either way (arrow_pop_dyn) - typed any.
                 if (len(nd.args) > 0) {
                     var at <- typeof_expr(nd.args[0]);
                     if (at.kind = "array") { return at.elem; }
@@ -2578,9 +2575,8 @@ fn typeof_expr(nd): any {
         return T.mk_any();
     }
     if (nd.node = "ArrayLit") {
-        // The empty literal is [any]
-        // - cell elements (tag 10), never narrowed. At annotated edges it
-        // adopts the expected array type instead (empty_arr_lit guards).
+        // The empty literal is [any]; at an annotated use it adopts the
+        // expected array type instead (empty_arr_lit).
         if (len(nd.elements) = 0) { return T.mk_array(T.mk_any()); }
         // Unify element types across the literal: matching kinds collapse to
         // that kind, mismatched primitives collapse to `any`, mismatched
@@ -2593,9 +2589,6 @@ fn typeof_expr(nd): any {
             et <- T.types_join(et, typeof_expr(nd.elements[i]));
             i <- i + 1;
         }
-        // A join landing on `any` STAYS [any] -
-        // the emitter wraps each element by its own static type (tag-10
-        // cell array), so the static and dynamic tiers agree.
         return T.mk_array(et);
     }
     if (nd.node = "IndexExpr") {
@@ -3053,7 +3046,7 @@ fn is_builtin_name(n: str): int {
         || n = "read_file" || n = "file_exists" || n = "write_file" || n = "append_file" || n = "input"
         || n = "char_at" || n = "char_code" || n = "from_char_code"
         || n = "substring" || n = "str_len"
-        || n = "exec_cmd" || n = "args" || n = "exit" || n = "cells"
+        || n = "exec_cmd" || n = "args" || n = "exit"
         || n = "true" || n = "false";
 }
 
@@ -3777,7 +3770,6 @@ fn builtin_sig(nm: str) {
     if (nm = "input") { return {sig: "s", lo: 0, hi: 1}; }
     if (nm = "args") { return {sig: "i", lo: 0, hi: 1}; }
     if (nm = "exit") { return {sig: "i", lo: 1, hi: 1}; }
-    if (nm = "cells") { return {sig: "a", lo: 1, hi: 1}; }
     if (nm = "len") { return {sig: "x", lo: 1, hi: 1}; }
     if (nm = "push") { return {sig: "a?", lo: 2, hi: 2}; }
     if (nm = "pop") { return {sig: "a", lo: 1, hi: 1}; }
@@ -3819,9 +3811,7 @@ fn generic_call_binds(e, fi) {
     var i <- 0;
     while (i < len(e.args) && i < len(fi.gsig.params)) {
         var conflict <- T.tp_bind(fi.gsig.params[i], typeof_expr(e.args[i]), binds);
-        if (conflict = "[]") {
-            report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (i + 1) + " expected " + T.type_str(fi.gsig.params[i]) + " but got " + T.type_str(typeof_expr(e.args[i])) + " (a generic array parameter takes a [any]-layout array; convert with cells())");
-        } else if (conflict != "") {
+        if (conflict != "") {
             var prev <- T.tp_subst({kind: "tparam", name: conflict}, binds);
             report_error(e.line, e.col, "call to '" + e.callee.name + "': type parameter '" + conflict + "' bound to " + T.type_str(prev) + " and " + T.type_str(typeof_expr(e.args[i])));
         }
@@ -3942,9 +3932,7 @@ fn check_expr(e) {
                     var gsp <- [];
                     var gi <- 0;
                     while (gi < len(fi.gsig.params)) {
-                        var gpt <- T.tp_subst(fi.gsig.params[gi], gb);
-                        if (gi < len(e.args) && T.tp_bind(fi.gsig.params[gi], typeof_expr(e.args[gi]), []) = "[]") { gpt <- T.mk_unann(); }
-                        push(gsp, gpt);
+                        push(gsp, T.tp_subst(fi.gsig.params[gi], gb));
                         gi <- gi + 1;
                     }
                     gann <- gsp;
@@ -4480,49 +4468,6 @@ fn emit_push_helper() {
     emit("");
 }
 
-// arrow_cells(arr, tag): a new array whose elements are cells [tag, e]
-// around the elements of a raw-layout array. Elements already stored as
-// cells (tag 10 source) are copied as they are.
-fn emit_cells_helper() {
-    emit("define i64 @arrow_cells(i64 %src.i, i64 %tag) {");
-    emit("entry:");
-    emit("  %src = inttoptr i64 %src.i to ptr");
-    emit("  %len = load i64, ptr %src");
-    emit("  %hdr = call ptr @malloc(i64 32784)");
-    emit("  store i64 0, ptr %hdr");
-    emit("  %capp = getelementptr i64, ptr %hdr, i64 1");
-    emit("  store i64 4096, ptr %capp");
-    emit("  %hdr.i = ptrtoint ptr %hdr to i64");
-    emit("  br label %loop");
-    emit("loop:");
-    emit("  %i = phi i64 [ 0, %entry ], [ %i.next, %keep ]");
-    emit("  %dst.i = phi i64 [ %hdr.i, %entry ], [ %dst.next, %keep ]");
-    emit("  %done = icmp sge i64 %i, %len");
-    emit("  br i1 %done, label %exit, label %body");
-    emit("body:");
-    emit("  %off = add i64 %i, 2");
-    emit("  %ep = getelementptr i64, ptr %src, i64 %off");
-    emit("  %e = load i64, ptr %ep");
-    emit("  %israw = icmp ne i64 %tag, 10");
-    emit("  br i1 %israw, label %wrap, label %keep");
-    emit("wrap:");
-    emit("  %c = call ptr @arena_alloc(i64 16)");
-    emit("  store i64 %tag, ptr %c");
-    emit("  %cp = getelementptr i64, ptr %c, i64 1");
-    emit("  store i64 %e, ptr %cp");
-    emit("  %c.i = ptrtoint ptr %c to i64");
-    emit("  br label %keep");
-    emit("keep:");
-    emit("  %v = phi i64 [ %c.i, %wrap ], [ %e, %body ]");
-    emit("  %dst.next = call i64 @arrow_push(i64 %dst.i, i64 %v)");
-    emit("  %i.next = add i64 %i, 1");
-    emit("  br label %loop");
-    emit("exit:");
-    emit("  ret i64 %dst.i");
-    emit("}");
-    emit("");
-}
-
 // ── Emit array concat helper ────────────
 // arrow_array_concat(a, b) allocates a fresh array containing the elements
 // of `a` followed by `b`. Layout matches `arrow_push`: [len, cap, elems...]
@@ -4733,8 +4678,7 @@ fn emit_trap_helpers() {
     emit("@.rt.kfn = private constant [3 x i8] c\"fn\\00\"");
     emit("@.rt.kopq = private constant [7 x i8] c\"opaque\\00\"");
     emit("@.rt.knone = private constant [5 x i8] c\"none\\00\"");
-    emit("@.rt.kcellarr = private constant [6 x i8] c\"[any]\\00\"");
-    emit("@.rt.knames = private constant [12 x ptr] [ptr @.rt.kint, ptr @.rt.kfloat, ptr @.rt.kbool, ptr @.rt.kstr, ptr @.rt.karr, ptr @.rt.kstruct, ptr @.rt.kfn, ptr @.rt.kopq, ptr @.rt.kopq, ptr @.rt.knone, ptr @.rt.kcellarr, ptr @.rt.karr]");
+    emit("@.rt.knames = private constant [10 x ptr] [ptr @.rt.kint, ptr @.rt.kfloat, ptr @.rt.kbool, ptr @.rt.kstr, ptr @.rt.karr, ptr @.rt.kstruct, ptr @.rt.kfn, ptr @.rt.kopq, ptr @.rt.kopq, ptr @.rt.knone]");
     emit("define i64 @arrow_any_unwrap(i64 %cell.i, i64 %want) {");
     emit("entry:");
     emit("  %p = inttoptr i64 %cell.i to ptr");
@@ -4748,22 +4692,12 @@ fn emit_trap_helpers() {
     emit("  br i1 %is7, label %ok, label %ck8");
     emit("ck8:");
     emit("  %w8 = icmp eq i64 %want, 8");
-    emit("  br i1 %w8, label %idx, label %ck11");
+    emit("  br i1 %w8, label %idx, label %cknum");
     emit("idx:");
     emit("  %t3 = icmp eq i64 %tag, 3");
-    emit("  %t4a = icmp eq i64 %tag, 4");
-    emit("  %t4b = icmp eq i64 %tag, 10");
-    emit("  %t4 = or i1 %t4a, %t4b");
+    emit("  %t4 = icmp eq i64 %tag, 4");
     emit("  %tidx = or i1 %t3, %t4");
     emit("  br i1 %tidx, label %ok, label %trap");
-    emit("ck11:");
-    emit("  %w11 = icmp eq i64 %want, 11");
-    emit("  br i1 %w11, label %arr2, label %cknum");
-    emit("arr2:");
-    emit("  %a4 = icmp eq i64 %tag, 4");
-    emit("  %a10 = icmp eq i64 %tag, 10");
-    emit("  %aok = or i1 %a4, %a10");
-    emit("  br i1 %aok, label %ok, label %trap");
     emit("cknum:");
     emit("  %wn = icmp sle i64 %want, 2");
     emit("  %tn = icmp sle i64 %tag, 2");
@@ -4822,8 +4756,7 @@ fn emit_dyn_helpers() {
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
     emit("    i64 6, label %tn");
-    emit("    i64 9, label %tnone");
-    emit("    i64 10, label %tca ]");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  call i32 (ptr, ...) @printf(ptr @fmt_int, i64 %pay)");
     emit("  call i32 @fflush(ptr null)");
@@ -4857,10 +4790,6 @@ fn emit_dyn_helpers() {
     emit("  call i32 @puts(ptr @.dyn.none)");
     emit("  call i32 @fflush(ptr null)");
     emit("  ret void");
-    emit("tca:");
-    emit("  call void @arrow_format_arr_cells(i64 %pay)");
-    emit("  call void @arrow_print_newline()");
-    emit("  ret void");
     emit("opq:");
     emit("  call void @arrow_print_any(i64 %pay)");
     emit("  ret void");
@@ -4879,8 +4808,7 @@ fn emit_dyn_helpers() {
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
     emit("    i64 6, label %tn");
-    emit("    i64 9, label %tnone");
-    emit("    i64 10, label %tca ]");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  call void @arrow_format_int(i64 %pay)");
     emit("  ret void");
@@ -4904,9 +4832,6 @@ fn emit_dyn_helpers() {
     emit("  ret void");
     emit("tnone:");
     emit("  call i32 (ptr, ...) @printf(ptr @.dyn.none)");
-    emit("  ret void");
-    emit("tca:");
-    emit("  call void @arrow_format_arr_cells(i64 %pay)");
     emit("  ret void");
     emit("opq:");
     emit("  call void @arrow_format_any(i64 %pay)");
@@ -4949,7 +4874,7 @@ fn emit_dyn_helpers() {
     emit("  ret void");
     emit("}");
     emit("");
-    emit("define void @arrow_format_arr_cells(i64 %pay) {");
+    emit("define void @arrow_format_arr(i64 %pay) {");
     emit("entry:");
     emit("  call i32 (ptr, ...) @printf(ptr @.pa_lb)");
     emit("  %ap = inttoptr i64 %pay to ptr");
@@ -4980,12 +4905,8 @@ fn emit_dyn_helpers() {
     emit("define i64 @arrow_push_dyn(i64 %ac.i, i64 %vt, i64 %vp) {");
     emit("entry:");
     emit("  %acp = inttoptr i64 %ac.i to ptr");
-    emit("  %at = load i64, ptr %acp");
     emit("  %app = getelementptr i64, ptr %acp, i64 1");
     emit("  %ap = load i64, ptr %app");
-    emit("  %is10 = icmp eq i64 %at, 10");
-    emit("  br i1 %is10, label %cell, label %raw");
-    emit("cell:");
     emit("  %c = call ptr @arena_alloc(i64 16)");
     emit("  store i64 %vt, ptr %c");
     emit("  %cp = getelementptr i64, ptr %c, i64 1");
@@ -4994,17 +4915,10 @@ fn emit_dyn_helpers() {
     emit("  %rc = call i64 @arrow_push(i64 %ap, i64 %ci)");
     emit("  store i64 %rc, ptr %app");
     emit("  ret i64 0");
-    emit("raw:");
-    emit("  %rr = call i64 @arrow_push(i64 %ap, i64 %vp)");
-    emit("  store i64 %rr, ptr %app");
-    emit("  ret i64 0");
     emit("}");
     emit("");
-    emit("define i64 @arrow_iset_dyn(i64 %at, i64 %ap, i64 %i, i64 %vt, i64 %vp) {");
+    emit("define i64 @arrow_iset_dyn(i64 %ap, i64 %i, i64 %vt, i64 %vp) {");
     emit("entry:");
-    emit("  %is10 = icmp eq i64 %at, 10");
-    emit("  br i1 %is10, label %cell, label %raw");
-    emit("cell:");
     emit("  %c = call ptr @arena_alloc(i64 16)");
     emit("  store i64 %vt, ptr %c");
     emit("  %cp = getelementptr i64, ptr %c, i64 1");
@@ -5012,25 +4926,6 @@ fn emit_dyn_helpers() {
     emit("  %ci = ptrtoint ptr %c to i64");
     emit("  call void @arrow_index_set(i64 %ap, i64 %i, i64 %ci)");
     emit("  ret i64 0");
-    emit("raw:");
-    emit("  call void @arrow_index_set(i64 %ap, i64 %i, i64 %vp)");
-    emit("  ret i64 0");
-    emit("}");
-    emit("");
-    emit("define i64 @arrow_pop_dyn(i64 %at, i64 %ap) {");
-    emit("entry:");
-    emit("  %e = call i64 @arrow_pop(i64 %ap)");
-    emit("  %is10 = icmp eq i64 %at, 10");
-    emit("  br i1 %is10, label %asis, label %wrapo");
-    emit("asis:");
-    emit("  ret i64 %e");
-    emit("wrapo:");
-    emit("  %c = call ptr @arena_alloc(i64 16)");
-    emit("  store i64 7, ptr %c");
-    emit("  %cp = getelementptr i64, ptr %c, i64 1");
-    emit("  store i64 %e, ptr %cp");
-    emit("  %ci = ptrtoint ptr %c to i64");
-    emit("  ret i64 %ci");
     emit("}");
     emit("");
     emit("define i32 @arrow_dyn_cmp(i64 %t1, i64 %p1, i64 %t2, i64 %p2) {");
@@ -5082,44 +4977,10 @@ fn emit_dyn_helpers() {
     emit("@.pa_cm = private constant [3 x i8] c\", \\00\"");
     emit("@.pa_rb = private constant [2 x i8] c\"]\\00\"");
     emit("@.pa_nl = private constant [2 x i8] c\"\\0A\\00\"");
-    emit("define void @arrow_format_arr(i64 %pay) {");
-    emit("entry:");
-    emit("  call i32 (ptr, ...) @printf(ptr @.pa_lb)");
-    emit("  %ap = inttoptr i64 %pay to ptr");
-    emit("  %n = load i64, ptr %ap");
-    emit("  br label %loop");
-    emit("loop:");
-    emit("  %i = phi i64 [ 0, %entry ], [ %ni, %next ]");
-    emit("  %more = icmp slt i64 %i, %n");
-    emit("  br i1 %more, label %elem, label %done");
-    emit("elem:");
-    emit("  %first = icmp eq i64 %i, 0");
-    emit("  br i1 %first, label %noc, label %comma");
-    emit("comma:");
-    emit("  call i32 (ptr, ...) @printf(ptr @.pa_cm)");
-    emit("  br label %noc");
-    emit("noc:");
-    emit("  %e = call i64 @arrow_index_get(i64 %pay, i64 %i)");
-    emit("  call void @arrow_format_any(i64 %e)");
-    emit("  br label %next");
-    emit("next:");
-    emit("  %ni = add i64 %i, 1");
-    emit("  br label %loop");
-    emit("done:");
-    emit("  call i32 (ptr, ...) @printf(ptr @.pa_rb)");
-    emit("  ret void");
-    emit("}");
-    emit("");
     emit("define i64 @arrow_dyn_index(i64 %tag, i64 %pay, i64 %i) {");
     emit("entry:");
     emit("  %is_str = icmp eq i64 %tag, 3");
-    emit("  br i1 %is_str, label %sidx, label %ckc");
-    emit("ckc:");
-    emit("  %is_cellarr = icmp eq i64 %tag, 10");
-    emit("  br i1 %is_cellarr, label %cidx, label %aidx");
-    emit("cidx:");
-    emit("  %ce = call i64 @arrow_index_get(i64 %pay, i64 %i)");
-    emit("  ret i64 %ce");
+    emit("  br i1 %is_str, label %sidx, label %aidx");
     emit("sidx:");
     emit("  %sp = inttoptr i64 %pay to ptr");
     emit("  %cp = getelementptr i8, ptr %sp, i64 %i");
@@ -5137,12 +4998,7 @@ fn emit_dyn_helpers() {
     emit("  ret i64 %sci");
     emit("aidx:");
     emit("  %e = call i64 @arrow_index_get(i64 %pay, i64 %i)");
-    emit("  %ac = call ptr @arena_alloc(i64 16)");
-    emit("  store i64 7, ptr %ac");
-    emit("  %acp = getelementptr i64, ptr %ac, i64 1");
-    emit("  store i64 %e, ptr %acp");
-    emit("  %aci = ptrtoint ptr %ac to i64");
-    emit("  ret i64 %aci");
+    emit("  ret i64 %e");
     emit("}");
     emit("");
     emit("define i64 @arrow_dyn_len(i64 %tag, i64 %pay) {");
@@ -5168,8 +5024,7 @@ fn emit_dyn_helpers() {
     emit("    i64 4, label %ta");
     emit("    i64 5, label %tt");
     emit("    i64 6, label %tn");
-    emit("    i64 9, label %tnone");
-    emit("    i64 10, label %tca ]");
+    emit("    i64 9, label %tnone ]");
     emit("ti:");
     emit("  %is = call ptr @arrow_itoa(i64 %pay)");
     emit("  %ii = ptrtoint ptr %is to i64");
@@ -5199,9 +5054,6 @@ fn emit_dyn_helpers() {
     emit("tnone:");
     emit("  %nni = ptrtoint ptr @.dyn.none to i64");
     emit("  ret i64 %nni");
-    emit("tca:");
-    emit("  %cai = ptrtoint ptr @.dyn.arr to i64");
-    emit("  ret i64 %cai");
     emit("opq:");
     emit("  %op = call ptr @arrow_to_str(i64 %pay)");
     emit("  %oi = ptrtoint ptr %op to i64");
@@ -5247,9 +5099,14 @@ fn emit_keys_helper() {
     emit("  %src_off1 = add i64 %src_off, 1");
     emit("  %src_p = getelementptr i64, ptr %s, i64 %src_off1");
     emit("  %name = load i64, ptr %src_p");
+    emit("  %c = call ptr @arena_alloc(i64 16)");
+    emit("  store i64 3, ptr %c");
+    emit("  %cp = getelementptr i64, ptr %c, i64 1");
+    emit("  store i64 %name, ptr %cp");
+    emit("  %ci = ptrtoint ptr %c to i64");
     emit("  %dst_off = add i64 %i, 2");
     emit("  %dst_p = getelementptr i64, ptr %arr, i64 %dst_off");
-    emit("  store i64 %name, ptr %dst_p");
+    emit("  store i64 %ci, ptr %dst_p");
     emit("  %i_next = add i64 %i, 1");
     emit("  br label %loop_cond");
     emit("exit:");
@@ -5655,9 +5512,7 @@ fn emit_print_helpers() {
     emit("  %t3 = icmp eq i64 %tag, 3");
     emit("  br i1 %t3, label %pa_str, label %c4");
     emit("c4:");
-    emit("  %t4a = icmp eq i64 %tag, 4");
-    emit("  %t4b = icmp eq i64 %tag, 10");
-    emit("  %t4 = or i1 %t4a, %t4b");
+    emit("  %t4 = icmp eq i64 %tag, 4");
     emit("  br i1 %t4, label %pa_arr, label %as_str");
     emit("pa_arr:");
     emit("  call void @arrow_format_arr(i64 %pay)");
@@ -5713,9 +5568,7 @@ fn emit_print_helpers() {
     emit("  %t3 = icmp eq i64 %tag, 3");
     emit("  br i1 %t3, label %fa_str, label %c4");
     emit("c4:");
-    emit("  %t4a = icmp eq i64 %tag, 4");
-    emit("  %t4b = icmp eq i64 %tag, 10");
-    emit("  %t4 = or i1 %t4a, %t4b");
+    emit("  %t4 = icmp eq i64 %tag, 4");
     emit("  br i1 %t4, label %fa_arr, label %as_str");
     emit("fa_arr:");
     emit("  call void @arrow_format_arr(i64 %pay)");
@@ -6911,36 +6764,20 @@ fn ir_emit_expr(b, nd) {
         if (nm = "push") {
             var parrt <- typeof_expr(nd.args[0]);
             if (parrt.kind = "any") {
-                // The element tier of an any-held array
-                // is only knowable at runtime (tag 4 raw vs tag 10
-                // cells) - branch in arrow_push_dyn, value via
-                // dyn_side so cells re-cell content-identically.
-                // Pass the CELL itself; push_dyn loads
-                // tag+payload from it and stores the possibly
-                // realloc'd buffer pointer back into the cell
-                // payload in place. Every alias heals at once,
-                // both tiers, Identifier and field targets
-                // alike. The old Identifier-only re-wrap minted
-                // a fresh cell and left the shared one stale;
-                // DotExpr targets had nothing (the realloc-loss
-                // item, hit at self-scale by m.str_table).
+                // arrow_push_dyn takes the cell itself so it can store the
+                // possibly reallocated buffer pointer back into it, which
+                // heals every alias of the array at once.
                 var pdc <- ir_emit_expr(b, nd.args[0]);
-                ir_unwrap_any_checked(b, pdc, parrt, 11);
+                ir_unwrap_any_checked(b, pdc, parrt, any_tag_of("array"));
                 var pvs <- ir_dyn_side(b, ir_emit_expr(b, nd.args[1]), typeof_expr(nd.args[1]));
                 var pd <- ir_fresh_tmp(b, "pushd");
                 ir_push_inst(b.cur_block, ii_call(pd, T.mk_int(), "arrow_push_dyn", [pdc, pvs.t, pvs.p]));
                 return ir_reg(pd, T.mk_int());
             }
             var arr <- ir_emit_arg(b, nd.args[0]);
-            // Coerce the pushed value into the array element type so a
-            // struct-with-union-field (and a union element's own tag) is
-            // stored as a real cell, not a raw value (3c).
-            // Element slot unknown (none-typed array param, etc.): raw
-            // tier — wrapping here would poison raw-tier readers of the
-            // same array in other scopes.
             var pelem <- T.mk_unann();
             if (parrt.kind = "array") { pelem <- parrt.elem; }
-            var val <- ir_coerce_slot_value(b, nd.args[1], pelem);
+            var val <- ir_array_slot_cell(b, nd.args[1], pelem);
             var tmp <- ir_fresh_tmp(b, "push");
             ir_push_inst(b.cur_block, ii_array_push(tmp, arr, val));
             // push mutates and returns the (possibly relocated) array pointer;
@@ -6949,12 +6786,9 @@ fn ir_emit_expr(b, nd) {
             // realloc — which silently shrinks the array next time it's read.
             if (nd.args[0].node = "Identifier") {
                 // An any-declared slot holds a cell — re-wrap
-                // the (possibly reallocated) raw array before storing.
+                // the (possibly reallocated) array before storing.
                 var wbv: any <- ir_reg(tmp, T.mk_int());
                 if (get_decl_type(nd.args[0].name).kind = "any") {
-                    // The element tier rides in the
-                    // tag now — key it on the variable's static array
-                    // type (raw-elem 4 unless genuinely [any]).
                     var wbt <- get_var_type(nd.args[0].name);
                     if (wbt.kind != "array") { wbt <- T.mk_array(T.mk_unann()); }
                     wbv <- ir_wrap_any(b, ir_reg(tmp, T.mk_int()), wbt);
@@ -6977,38 +6811,35 @@ fn ir_emit_expr(b, nd) {
                 var obj_v <- ir_emit_arg(b, nd.args[0].obj);
                 var fid <- ir_mod_add_str(b.mod, nd.args[0].field);
                 // Field slots hold cells — wrap the
-                // (possibly reallocated) raw array before the set.
-                // The write-back keeps the FIELD's element tier
-                // (parrt is the dot's static type) — ir_wrap_any picks
-                // 4 vs 10 from the elem; non-array statics stay raw-4.
+                // (possibly reallocated) array before the set.
                 var pwbt <- parrt;
                 if (pwbt.kind != "array") { pwbt <- T.mk_array(T.mk_unann()); }
                 var pwb <- ir_wrap_any(b, ir_reg(tmp, T.mk_int()), pwbt);
                 var prefix <- ir_fresh_tmp(b, "pset");
                 ir_push_inst(b.cur_block, ii_struct_set(prefix, obj_v, fid, pwb));
             } else if (nd.args[0].node = "IndexExpr") {
+                // The enclosing array's slot holds a cell — wrap the
+                // (possibly reallocated) array before the set.
                 var obj_v <- ir_emit_arg(b, nd.args[0].obj);
                 var idx_v <- ir_emit_arg(b, nd.args[0].index);
+                var iwb <- ir_wrap_any(b, ir_reg(tmp, T.mk_int()), T.mk_array(T.mk_unann()));
                 var prefix <- ir_fresh_tmp(b, "paset");
-                ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, ir_reg(tmp, T.mk_int())));
+                ir_push_inst(b.cur_block, ii_array_set(prefix, obj_v, idx_v, iwb));
             }
             return ir_reg(tmp, T.mk_int());
         }
         if (nm = "pop") {
             var popt <- typeof_expr(nd.args[0]);
             if (popt.kind = "any") {
-                // Branch on the runtime element tier.
-                var pdc2 <- ir_emit_expr(b, nd.args[0]);
-                ir_unwrap_any_checked(b, pdc2, popt, 11);
-                var pds2 <- ir_dyn_side(b, pdc2, popt);
+                var pdp <- ir_unwrap_any_checked(b, ir_emit_expr(b, nd.args[0]), popt, any_tag_of("array"));
                 var pdt <- ir_fresh_tmp(b, "popd");
-                ir_push_inst(b.cur_block, ii_call(pdt, T.mk_int(), "arrow_pop_dyn", [pds2.t, pds2.p]));
+                ir_push_inst(b.cur_block, ii_array_pop(pdt, T.mk_int(), pdp));
                 return ir_reg(pdt, T.mk_any());
             }
             var arr <- ir_emit_arg(b, nd.args[0]);
             var tmp <- ir_fresh_tmp(b, "pop");
             ir_push_inst(b.cur_block, ii_array_pop(tmp, T.mk_int(), arr));
-            return ir_reg(tmp, T.mk_int());
+            return ir_cell_read(b, tmp, typeof_expr(nd));
         }
         if (nm = "keys") {
             var s <- ir_emit_arg_want(b, nd.args[0], 5);
@@ -7082,15 +6913,6 @@ fn ir_emit_expr(b, nd) {
             var tmp <- ir_fresh_tmp(b, "ec");
             ir_push_inst(b.cur_block, ii_exec_cmd(tmp, arg));
             return ir_reg(tmp, T.mk_int());
-        }
-        if (nm = "cells") {
-            var cat <- typeof_expr(nd.args[0]);
-            var ctag <- 7;
-            if (cat.kind = "array") { ctag <- any_want_of(cat.elem); }
-            var carg <- ir_emit_arg_want(b, nd.args[0], 11);
-            var ctmp <- ir_fresh_tmp(b, "cells");
-            ir_push_inst(b.cur_block, ii_call(ctmp, T.mk_int(), "arrow_cells", [carg, ir_const_int(ctag)]));
-            return ir_reg(ctmp, T.mk_array(T.mk_any()));
         }
         if (nm = "exit") {
             var xarg <- ir_emit_arg_want(b, nd.args[0], 0);
@@ -7278,24 +7100,25 @@ fn ir_emit_expr(b, nd) {
         }
         var tmp <- ir_fresh_tmp(b, "call");
         ir_push_inst(b.cur_block, ii_call(tmp, T.mk_int(), nm, args));
+        // A generic callee returns a cell where its signature says T; the
+        // call site reads it as the type T was bound to.
+        if (cfi != false) {
+            if (cfi.gsig != false) {
+                if (cfi.gsig.ret.kind = "tparam") {
+                    return ir_cell_read(b, tmp, T.tp_subst(cfi.gsig.ret, generic_call_binds_quiet(nd, cfi)));
+                }
+            }
+        }
         return ir_reg(tmp, T.mk_int());
     }
     if (nd.node = "ArrayLit") {
-        // A mixed literal types as [any]; its elements are tagged cells,
-        // each wrapped by its own static type.
         var alit <- typeof_expr(nd);
-        var mixed <- false;
-        if (alit.kind = "array") { if (alit.elem.kind = "any") { mixed <- true; } }
+        var aelem <- T.mk_unann();
+        if (alit.kind = "array") { aelem <- alit.elem; }
         var elems <- [];
         var i <- 0;
         while (i < len(nd.elements)) {
-            var ev2 <- ir_emit_expr(b, nd.elements[i]);
-            var et2 <- typeof_expr(nd.elements[i]);
-            if (mixed) { ev2 <- ir_wrap_any(b, ev2, et2); }
-            // A tagged value entering a raw/concrete-elem literal is
-            // unwrapped: the literal's type declares its elements' tier.
-            if (!mixed) { ev2 <- ir_unwrap_any(b, ev2, et2); }
-            push(elems, ev2);
+            push(elems, ir_array_slot_cell(b, nd.elements[i], aelem));
             i <- i + 1;
         }
         var tmp <- ir_fresh_tmp(b, "arr");
@@ -7337,7 +7160,7 @@ fn ir_emit_expr(b, nd) {
         }
         var tmp <- ir_fresh_tmp(b, "idx");
         ir_push_inst(b.cur_block, ii_array_get(tmp, T.mk_int(), obj, gidx));
-        return ir_reg(tmp, T.mk_int());
+        return ir_cell_read(b, tmp, typeof_expr(nd));
     }
     if (nd.node = "DotExpr") {
         // A statically-any object must hold a struct (tag 5).
@@ -7918,10 +7741,13 @@ fn ir_emit_binop(b, nd) {
             ir_push_inst(b.cur_block, ii_strcat(tmp, lhs_s, rhs_s));
             return ir_reg(tmp, T.mk_str());
         }
-        // Tagged-any operands in numeric `+` are unwrapped to their payload
-        // word — raw-tier semantics: operand positions are not checked edges.
-        lhs <- ir_unwrap_any(b, lhs, lt);
-        rhs <- ir_unwrap_any(b, rhs, rt);
+        var pf <- (lt.kind = "float" || rt.kind = "float");
+        var la <- ir_arith_any(b, lhs, lt, pf);
+        lhs <- la.v;
+        lt <- la.t;
+        var ra <- ir_arith_any(b, rhs, rt, pf);
+        rhs <- ra.v;
+        rt <- ra.t;
         // Array concatenation — both sides are arrays, lower to a runtime
         // helper that allocates a fresh array and copies elements. The result
         // carries the joined element type from typeof_expr so prints format
@@ -7943,9 +7769,12 @@ fn ir_emit_binop(b, nd) {
     var lt <- typeof_expr(nd.left);
     var rt <- typeof_expr(nd.right);
     var use_float <- (lt.kind = "float" || rt.kind = "float");
-    // Tagged-any operands unwrap to their payload word (raw-tier semantics).
-    lhs <- ir_unwrap_any(b, lhs, lt);
-    rhs <- ir_unwrap_any(b, rhs, rt);
+    var la2 <- ir_arith_any(b, lhs, lt, use_float);
+    lhs <- la2.v;
+    lt <- la2.t;
+    var ra2 <- ir_arith_any(b, rhs, rt, use_float);
+    rhs <- ra2.v;
+    rt <- ra2.t;
 
     if (op = "-") {
         if (use_float) { return ir_emit_fbinop(b, "fsub", lhs, lt, rhs, rt); }
@@ -7968,6 +7797,19 @@ fn ir_emit_binop(b, nd) {
 
     print("ir_emit_binop: unsupported op " + op);
     return ir_const_int(0);
+}
+
+// An any operand of an arithmetic operation is checked as the operation's
+// numeric kind: float when either side is float (an int payload is
+// promoted), int otherwise. The operand reads as that kind afterwards.
+fn ir_arith_any(b, v, t, as_float: int) {
+    if (t.kind != "any") { return {v: v, t: t}; }
+    if (as_float) {
+        var f <- ir_unwrap_any_checked(b, v, t, 1);
+        return {v: ir_reg(f.name, T.mk_float()), t: T.mk_float()};
+    }
+    var i <- ir_unwrap_any_checked(b, v, t, 0);
+    return {v: ir_reg(i.name, T.mk_int()), t: T.mk_int()};
 }
 
 // Helper for arithmetic when at least one side is float. Promotes both sides
@@ -8145,7 +7987,14 @@ fn ir_emit_format_array(b, arr_val: Val, elem_type): int {
     ir_push_inst(b.cur_block, ii_load(i_e, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
     var elem_reg <- ir_fresh_tmp(b, "felem");
     ir_push_inst(b.cur_block, ii_array_get(elem_reg, T.mk_int(), arr_val, ir_reg(i_e, T.mk_int())));
-    ir_emit_format_value(b, ir_reg(elem_reg, T.mk_int()), elem_type, false);
+    // A union anywhere in the element type formats by the static type
+    // (a union's cell is its own, not an any cell); everything else
+    // formats by its cell's tag.
+    if (elem_type.kind = "union" || T.union_in_container(elem_type)) {
+        ir_emit_format_value(b, ir_cell_read(b, elem_reg, elem_type), elem_type, false);
+    } else {
+        ir_push_inst(b.cur_block, ii_format_dyn(ir_reg(elem_reg, T.mk_any())));
+    }
     // increment counter
     var i_n <- ir_fresh_tmp(b, "fi");
     ir_push_inst(b.cur_block, ii_load(i_n, T.mk_int(), ir_reg(idx_slot, T.mk_int())));
@@ -8215,14 +8064,9 @@ fn any_tag_of(k: str): int {
     return 7;
 }
 
-// Type-aware want/wrap tag: the element tier rides in the tag,
-// so an unwrap edge whose STATIC expectation is [any] must ask 10,
-// not 4 -- any_tag_of sees only the kind string and cannot know.
-// Doubles as the wrap-tag map (wrap tag = want tag by construction).
+// The tag a value of static type t carries in a cell, which is also the
+// tag a checked unwrap expects for it.
 fn any_want_of(t): int {
-    if (t.kind = "array") {
-        if (t.elem.kind = "any") { return 10; }
-    }
     return any_tag_of(t.kind);
 }
 
@@ -8235,14 +8079,8 @@ fn ir_wrap_any(b, vreg, st): Val {
         report_error(0, 0, "cannot store a union value into any; match it and store the member");
         return vreg;
     }
-    var aw_tag <- any_tag_of(st.kind);
-    if (st.kind = "array") {
-        // Element tier rides in the tag — 4 = raw
-        // elements, 10 = cell elements ([any]).
-        if (st.elem.kind = "any") { aw_tag <- 10; }
-    }
     var dst <- ir_fresh_tmp(b, "aw");
-    ir_push_inst(b.cur_block, ii_union_new(dst, ir_const_int(aw_tag), vreg));
+    ir_push_inst(b.cur_block, ii_union_new(dst, ir_const_int(any_tag_of(st.kind)), vreg));
     return ir_reg(dst, T.mk_any());
 }
 
@@ -8271,6 +8109,41 @@ fn ir_unwrap_any_checked(b, vreg, st, want: int): Val {
     var c <- ir_fresh_tmp(b, "auc");
     ir_push_inst(b.cur_block, ii_call(c, T.mk_int(), "arrow_any_unwrap", [vreg, ir_const_int(want)]));
     return ir_reg(c, T.mk_int());
+}
+
+// Read a cell as a value of static type t: an any value is the cell
+// itself, a union value is its own cell word, a concrete value is the
+// payload after a tag check, and a value of unknown type is the payload
+// as it is. Array slots, popped elements and generic returns bound to a
+// concrete type all read this way.
+fn ir_cell_read(b, cellreg: str, t): Val {
+    if (t.kind = "any") { return ir_reg(cellreg, T.mk_any()); }
+    if (t.kind = "union") { return ir_reg(cellreg, t); }
+    if (t.kind = "int" || t.kind = "str" || t.kind = "bool" || t.kind = "float" || t.kind = "array" || t.kind = "struct" || t.kind = "struct_lit" || t.kind = "fn" || t.kind = "none") {
+        var c <- ir_unwrap_any_checked(b, ir_reg(cellreg, T.mk_any()), T.mk_any(), any_want_of(t));
+        return ir_reg(c.name, t);
+    }
+    var p <- ir_unwrap_any(b, ir_reg(cellreg, T.mk_any()), T.mk_any());
+    return ir_reg(p.name, t);
+}
+
+// The cell stored into an array slot of static element type eslot. A
+// concrete value is wrapped by its own static type (a bool pushed into a
+// [int] still prints as a bool and still reads as an int); an any value
+// is checked against eslot and keeps its cell; a union value is its own
+// cell word; a value of unknown type is wrapped by eslot.
+fn ir_array_slot_cell(b, expr, eslot) {
+    if (eslot.kind = "union") { return ir_coerce_slot_value(b, expr, eslot); }
+    if (eslot.kind = "any" || eslot.kind = "") { return ir_coerce_slot_value(b, expr, T.mk_any()); }
+    var vt <- typeof_expr(expr);
+    if (vt.kind = "any") {
+        var cell <- ir_emit_expr(b, expr);
+        ir_unwrap_any_checked(b, cell, vt, any_want_of(eslot));
+        return cell;
+    }
+    var raw <- ir_coerce_slot_value(b, expr, eslot);
+    if (vt.kind = "") { return ir_wrap_any(b, raw, eslot); }
+    return ir_wrap_any(b, raw, vt);
 }
 
 // Split a value into (tag, payload) operands for the dyn runtime helpers.
@@ -8418,7 +8291,7 @@ fn ir_emit_value_for_slot(b, expr, slot_t) {
         var welems <- [];
         var wi <- 0;
         while (wi < len(expr.elements)) {
-            push(welems, ir_coerce_slot_value(b, expr.elements[wi], slot_t.elem));
+            push(welems, ir_array_slot_cell(b, expr.elements[wi], slot_t.elem));
             wi <- wi + 1;
         }
         var atmp <- ir_fresh_tmp(b, "uarr");
@@ -8669,31 +8542,20 @@ fn ir_emit_stmt(b, stmt): int {
     if (stmt.node = "IndexAssign") {
         var isat <- typeof_expr(stmt.obj);
         if (isat.kind = "any") {
-            // The element tier of an any-held array is
-            // runtime state (tag 4 raw vs tag 10 cells). Guard with
-            // want 11 = either array tier; branch in arrow_iset_dyn;
-            // bounds trap rides @arrow_index_set unchanged.
-            var isc <- ir_emit_expr(b, stmt.obj);
-            var ispay <- ir_unwrap_any_checked(b, isc, isat, 11);
-            var istg <- ir_fresh_tmp(b, "istag");
-            ir_push_inst(b.cur_block, ii_union_tag(istg, isc));
+            var ispay <- ir_unwrap_any_checked(b, ir_emit_expr(b, stmt.obj), isat, any_tag_of("array"));
             var isi <- ir_unwrap_any(b, ir_emit_expr(b, stmt.index), typeof_expr(stmt.index));
             var isv <- ir_dyn_side(b, ir_emit_expr(b, stmt.value), typeof_expr(stmt.value));
             var isd <- ir_fresh_tmp(b, "isetd");
-            ir_push_inst(b.cur_block, ii_call(isd, T.mk_int(), "arrow_iset_dyn", [ir_reg(istg, T.mk_int()), ispay, isi, isv.t, isv.p]));
+            ir_push_inst(b.cur_block, ii_call(isd, T.mk_int(), "arrow_iset_dyn", [ispay, isi, isv.t, isv.p]));
             return 0;
         }
         // Element writes are array-only — expected tag 4 strictly.
         var obj <- ir_unwrap_any_checked(b, ir_emit_expr(b, stmt.obj), typeof_expr(stmt.obj), any_tag_of("array"));
         var idx <- ir_unwrap_any(b, ir_emit_expr(b, stmt.index), typeof_expr(stmt.index));
-        // Coerce the new value to the array's element type: a union
-        // element stores a {tag,payload} cell, so a member value is
-        // wrapped (and a nested container has its own unions wrapped,
-        // recursively) instead of landing as a raw word.
         var at <- typeof_expr(stmt.obj);
         var eslot <- T.mk_unann();
         if (at.kind = "array") { eslot <- at.elem; }
-        var val <- ir_coerce_slot_value(b, stmt.value, eslot);
+        var val <- ir_array_slot_cell(b, stmt.value, eslot);
         var prefix <- ir_fresh_tmp(b, "aset");
         ir_push_inst(b.cur_block, ii_array_set(prefix, obj, idx, val));
         return 0;
@@ -8988,13 +8850,6 @@ fn ir_emit_stmt(b, stmt): int {
             type_ann: T.mk_unann(),
             is_decl: false
         };
-        // Statement nodes of mixed shapes go in here. Use the parser's
-        // raw-list idiom (`[]` infers [none]; push-refinement keeps
-        // mixed shapes on the raw tier -- see pb()). A declared [any]
-        // would store the elements as tagged two-word cells, and the
-        // WhileStmt body walk below reads statements raw: natively that
-        // misreads the cells as node structs and crashes. (This was the
-        // annotations_fail native segfault.)
         var new_body <- [];
         push(new_body, bind_x);
         var i <- 0;
@@ -9380,7 +9235,6 @@ fn llvm_emit_runtime() {
     emit_arena_helper();
     emit_safe_strcmp_helper();
     emit_push_helper();
-    emit_cells_helper();
     emit_array_concat_helper();
     emit_pop_helper();
     emit_trap_helpers();

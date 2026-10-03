@@ -164,11 +164,8 @@ fn union_in_container(t): int {
 // carry names.
 // Bind type parameters by matching a generic signature type against an
 // actual type: binds is [{name, type}], extended in place. A parameter
-// already bound to a different type is a conflict, returned as its name;
-// a raw-layout array where the signature has [T] is returned as "[]".
+// already bound to a different type is a conflict, returned as its name.
 fn tp_bind(pat, actual, binds): str {
-    if (pat.kind = "array" && actual.kind = "array" && contains_tparam(pat.elem)
-            && actual.elem.kind != "any" && actual.elem.kind != "") { return "[]"; }
     if (pat.kind = "tparam") {
         var i <- 0;
         while (i < len(binds)) {
@@ -410,10 +407,9 @@ fn types_compat(annot, actual): int {
     if (annot.kind = "int" && actual.kind = "float") { return true; }
     if (annot.kind = "bool" && actual.kind = "float") { return true; }
     if (annot.kind = "array" && actual.kind = "array") {
-        // The element TIER is baked into the allocation
-        // - [any] holds cell words, [T] raw words. A populated array
-        // cannot cross tiers (the empty literal adopts instead);
-        // elem-any on exactly one side is a layout lie: reject.
+        // An array's element type is fixed: [any] and a concrete element
+        // type do not mix in either direction (the empty literal adopts
+        // instead, see empty_arr_lit).
         if (annot.elem.kind = "any" && actual.elem.kind = "any") { return true; }
         if (annot.elem.kind = "any" || actual.elem.kind = "any") {
             if (annot.elem.kind = "" || actual.elem.kind = "") { return true; }
