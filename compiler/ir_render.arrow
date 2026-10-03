@@ -500,7 +500,10 @@ fn ir_render_inst(inst): str {
         return s;
     }
     if (op = "exit") {
-        var s <- inst.dst + ".c = trunc i64 " + ir_render_operand(inst.operands[0]) + " to i32\n";
+        // The status is code & 0xFF on every platform (Linux truncates on
+        // its own, Windows keeps the full value).
+        var s <- inst.dst + ".m = and i64 " + ir_render_operand(inst.operands[0]) + ", 255\n";
+        s <- s + "  " + inst.dst + ".c = trunc i64 " + inst.dst + ".m to i32\n";
         s <- s + "  call void @exit(i32 " + inst.dst + ".c)";
         return s;
     }

@@ -1,0 +1,12 @@
+// EXPECT: ok
+//EXIT: 5
+//OUT: before
+//OUT: 3
+
+// exit(code) ends the process with code & 0xFF, so 261 is status 5;
+// the runner pins the status through //EXIT: on both hosts.
+print("before");
+var n <- 1;
+print(n + 2);
+exit(261);
+print("after");

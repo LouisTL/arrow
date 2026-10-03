@@ -8,6 +8,7 @@ Annotation format (anywhere in the file as `// ...` comments):
     // EXPECT: ok | type_fail | scope_fail | parse_fail | check_fail
     //OUT: <line of expected stdout>     (zero or more, in source order)
     //ERR: <substring required in compiler diagnostic>  (zero or more)
+    //EXIT: <n>                          (at most one; ok and runtime_fail only)
 
 Rules per EXPECT category:
 
@@ -17,6 +18,8 @@ Rules per EXPECT category:
               equal that expected text. With no //OUT:, only the interp-vs-
               native check fires (flagged "weak" in the report — that means
               "they agree but we never checked they're right").
+              //EXIT: <n> replaces the expected exit status 0 with n (0-255)
+              for both hosts, e.g. a program that ends with exit(5).
 
   type_fail   native compile must report "type error" and abort.
   scope_fail  native compile must report "scope error" and abort.
@@ -27,7 +30,8 @@ Rules per EXPECT category:
               the native binary must exit 1 with byte-identical output.
               //OUT: lines are the expected pre-trap stdout (matched as a
               prefix); //ERR: lines are substrings required in the output
-              (the trap message).
+              (the trap message). //EXIT: <n> replaces the expected status
+              1 with n (1-255).
 
   For all *_fail categories: every //ERR: line must appear as a substring
   of the compiler's diagnostic output (its stdout). The interpreter side
@@ -77,12 +81,16 @@ INTERACTIVE_KEYWORDS = ["input("]
 
 
 def parse_header(src: str) -> dict:
-    """Pull EXPECT / OUT / ERR annotations out of the source. Annotations
-    can live anywhere in the file as `//` comments; we just scan every
-    line. Returns a dict with `expect`, `output`, `contains`."""
+    """Pull EXPECT / OUT / ERR / EXIT annotations out of the source.
+    Annotations can live anywhere in the file as `//` comments; we just
+    scan every line. Returns a dict with `expect`, `output`, `contains`,
+    `exit` (None when absent) and `header_error` (None when the header is
+    well formed)."""
     expect = None
     out_lines = []
     contains = []
+    exit_status = None
+    header_error = None
     for line in src.splitlines():
         s = line.lstrip()
         if not s.startswith("//"):
@@ -90,6 +98,16 @@ def parse_header(src: str) -> dict:
         m = re.match(r"//\s*EXPECT:\s*(\S+)", s)
         if m:
             expect = m.group(1)
+            continue
+        m = re.match(r"//\s*EXIT:\s*(.*?)\s*$", s)
+        if m:
+            value = m.group(1)
+            if exit_status is not None:
+                header_error = "more than one //EXIT: line"
+            elif not re.fullmatch(r"\d{1,3}", value) or int(value) > 255:
+                header_error = f"//EXIT: wants an integer 0-255, got {value!r}"
+            else:
+                exit_status = int(value)
             continue
         if s.startswith("//OUT:"):
             content = s[len("//OUT:"):]
@@ -101,7 +119,8 @@ def parse_header(src: str) -> dict:
             contains.append(s[len("//ERR:"):].strip())
             continue
     output = ("\n".join(out_lines) + "\n") if out_lines else None
-    return {"expect": expect, "output": output, "contains": contains}
+    return {"expect": expect, "output": output, "contains": contains,
+            "exit": exit_status, "header_error": header_error}
 
 
 def run_interp(example: Path) -> tuple[int, str, str]:
@@ -223,13 +242,14 @@ def check_check_fail(example: Path, header: dict, verbose: bool):
 
 
 def check_ok(example: Path, header: dict, verbose: bool):
+    want = header["exit"] if header["exit"] is not None else 0
     try:
         ic, iout, ierr = run_interp(example)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT (interp)", "")
-    if ic != 0:
+    if ic != want:
         last = (ierr or iout).strip().splitlines()
-        return ("interp ERROR", last[-1] if last else "")
+        return ("interp ERROR", f"rc={ic} (want {want}) " + (last[-1] if last else ""))
 
     if is_interactive(example):
         return ("skipped (interactive)", "")
@@ -240,9 +260,9 @@ def check_ok(example: Path, header: dict, verbose: bool):
             example, oracle_cmd, keep)
     except subprocess.TimeoutExpired:
         return ("TIMEOUT (native)", "")
-    if nc != 0:
+    if nc != want:
         last = (nerr or nout).strip().splitlines()
-        return ("native ERROR", last[-1] if last else "")
+        return ("native ERROR", f"rc={nc} (want {want}) " + (last[-1] if last else ""))
 
     if NATIVE_COMPILER is not None:
         try:
@@ -250,9 +270,9 @@ def check_ok(example: Path, header: dict, verbose: bool):
                 example, native_cmd, True)
         except subprocess.TimeoutExpired:
             return ("TIMEOUT (nc-native)", "")
-        if c2 != 0:
+        if c2 != want:
             last = (err2 or out2).strip().splitlines()
-            return ("nc-native ERROR", last[-1] if last else "")
+            return ("nc-native ERROR", f"rc={c2} (want {want}) " + (last[-1] if last else ""))
         if oll != nll:
             return ("MISMATCH (.ll oracle != nc)", ll_diff_note(oll, nll))
         if out2 != nout:
@@ -299,7 +319,9 @@ def check_fail(example: Path, header: dict, error_kind: str, verbose: bool):
 
 def check_runtime_fail(example: Path, header: dict, verbose: bool):
     """Compiles cleanly, then traps at runtime: both implementations must
-    exit 1 with byte-identical output (pre-trap prints + the error line)."""
+    exit 1 (or the //EXIT: status) with byte-identical output (pre-trap
+    prints + the error line)."""
+    want = header["exit"] if header["exit"] is not None else 1
     try:
         ic, iout, ierr = run_interp(example)
     except subprocess.TimeoutExpired:
@@ -317,8 +339,8 @@ def check_runtime_fail(example: Path, header: dict, verbose: bool):
         return ("UNEXPECTED (compile failed)", last[-1] if last else "")
     if nc == 0:
         return ("UNEXPECTED (native ran clean)", "")
-    if ic != 1 or nc != 1:
-        return ("BAD EXIT CODE", f"interp rc={ic}, native rc={nc} (want 1)")
+    if ic != want or nc != want:
+        return ("BAD EXIT CODE", f"interp rc={ic}, native rc={nc} (want {want})")
     if iout != nout:
         return ("MISMATCH (interp != native)",
                 f"interp:{iout!r} vs native:{nout!r}")
@@ -339,8 +361,8 @@ def check_runtime_fail(example: Path, header: dict, verbose: bool):
             return ("UNEXPECTED (nc compile failed)", last[-1] if last else "")
         if oll != nll:
             return ("MISMATCH (.ll oracle != nc)", ll_diff_note(oll, nll))
-        if c2 != 1:
-            return ("BAD EXIT CODE (nc)", f"nc rc={c2} (want 1)")
+        if c2 != want:
+            return ("BAD EXIT CODE (nc)", f"nc rc={c2} (want {want})")
         if out2 != iout:
             return ("MISMATCH (nc-native != interp)",
                     f"interp:{iout!r} vs nc:{out2!r}")
@@ -423,6 +445,14 @@ def main():
         dispatch = CATEGORY_DISPATCH.get(expect)
         if dispatch is None:
             results.append((ex.name, f"UNKNOWN EXPECT: {expect}", ""))
+            continue
+        if header["header_error"] is None and header["exit"] is not None:
+            if expect not in ("ok", "runtime_fail"):
+                header["header_error"] = f"//EXIT: does not apply to {expect}"
+            elif expect == "runtime_fail" and header["exit"] == 0:
+                header["header_error"] = "//EXIT: 0 contradicts runtime_fail"
+        if header["header_error"] is not None:
+            results.append((ex.name, "BAD HEADER", header["header_error"]))
             continue
         status, note = dispatch(ex, header, args.verbose)
         results.append((ex.name, status, note))
