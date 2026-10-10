@@ -28,7 +28,7 @@
 
 // The loop variable takes the element type of its iterable: float, bool,
 // struct, union, any, nested array, an any-typed iterable (array or
-// string), a string. Two loops may reuse a name at the same type.
+// string), a string. Two loops may reuse a name.
 var floats: [float] <- [1.5, 2.5];
 for (f in floats) { print(f + 1.0); }
 for (g in [1.5, 2.5]) { print(g * 2.0); }

@@ -1,0 +1,106 @@
+// EXPECT: ok
+//OUT: 5
+//OUT: s
+//OUT: 42
+//OUT: 9
+//OUT: 1
+//OUT: true
+//OUT: 1
+//OUT: 7
+//OUT: 2
+//OUT: p
+//OUT: 9
+//OUT: 1
+//OUT: 2
+//OUT: 7
+//OUT: a
+//OUT: 4
+//OUT: m0
+//OUT: m1
+//OUT: 5
+//OUT: 12
+//OUT: 1
+//OUT: 8
+//OUT: 1
+//OUT: 2
+//OUT: s
+//OUT: 100
+//OUT: 1
+//OUT: e
+//OUT: s
+//OUT: 100
+//OUT: 0
+//OUT: 1
+//OUT: 7
+//OUT: 7
+
+// Block scoping: a declaration lives until the end of its block and
+// shadows an outer declaration of the same name without changing it; a
+// bare reassignment writes the variable it resolves to. Sibling or
+// nested blocks, loops, closures and match arms may reuse a name at any
+// type, including any, and int/bool keep their own printing.
+fn sibling_blocks() {
+    if (true) { var t <- 5; print(t); }
+    if (true) { var t <- "s"; print(t); }
+    if (true) { var v: any <- 42; print(v); }
+    if (true) { var v <- 9; print(v); }
+    if (true) { var i <- 1; print(i); }
+    if (true) { var i <- true; print(i); }
+}
+fn nested_blocks(x: int) {
+    var y <- 7;
+    if (true) { var y <- 1; print(y); }
+    print(y);
+    if (true) { y <- 2; }
+    print(y);
+    if (true) { var x <- "p"; print(x); }
+    print(x);
+}
+fn loops() {
+    var n <- 7;
+    for (n in [1, 2]) { print(n); }
+    print(n);
+    for (w in ["a"]) { print(w); }
+    for (w in [3]) { print(w + 1); }
+    var k <- 0;
+    while (k < 2) { var m <- "m" + k; print(m); k <- k + 1; }
+    var m <- 5;
+    print(m);
+}
+fn closures() {
+    var c <- 1;
+    if (true) {
+        var c <- 10;
+        var inc <- () => { c <- c + 1; };
+        inc();
+        inc();
+        print(c);
+    }
+    print(c);
+    var g <- (c) => c * 2;
+    print(g(4));
+    print(c);
+}
+type Ok <- {ok: int};
+type Err <- {err: str};
+fn arms(r: Ok | Err) {
+    var ok <- 100;
+    var t <- "s";
+    match (r) {
+        Ok => { var t <- ok + 1; print(t); }
+        Err => { print(err); }
+    }
+    print(t);
+    print(ok);
+    print(match (r) { v: Ok => v.ok, e: Err => 0 });
+}
+sibling_blocks();
+nested_blocks(9);
+loops();
+closures();
+arms({ok: 1});
+arms({err: "e"});
+var top <- 7;
+fn show_top() { print(top); }
+if (true) { var top <- 1; print(top); show_top(); }
+print(top);

@@ -1,0 +1,7 @@
+// EXPECT: type_fail
+//ERR: cannot assign str to 'n' of type int
+
+// A for-loop variable is a declaration at the element type of its
+// iterable, so reassigning it to another type is the fixed-type error.
+var ints: [int] <- [1, 2];
+for (n in ints) { n <- "s"; print(n); }

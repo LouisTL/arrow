@@ -1400,13 +1400,6 @@ var global_decl_reg <- [[]];
 // type a bare reassignment must fit. any/union declared types accept all.
 var decl_types <- [[]]; // decl_types[0] is list of [{name, dtype}]
 
-// Shadowing rule registry: one {name, dtype} per name per function,
-// recording the FIRST declaration's type (annotation, else the inferred
-// RHS type at the declaration point). The typing maps are function-flat,
-// so a same-name re-declaration whose type differs cannot be compiled
-// faithfully — the checker rejects it instead (see shadow_declare).
-var shadow_decls <- [[]];
-
 // Track global variables (top-level)
 var global_vars: [str] <- []; // list of variable name strings
 
@@ -1496,43 +1489,6 @@ fn get_decl_type(name: str): any {
         gi2 <- gi2 - 1;
     }
     return T.mk_unann();
-}
-
-// Equality for the shadowing rule. int and bool share the i64
-// representation and every raw-tier operation, so shadowing across them
-// cannot misfire the emitters; everything else must match structurally.
-fn shadow_eq(a, b): int {
-    if (T.type_eq(a, b)) { return true; }
-    if (a.kind = "int" && b.kind = "bool") { return true; }
-    if (a.kind = "bool" && b.kind = "int") { return true; }
-    return false;
-}
-
-// Record / verify a declaration for the shadowing rule. First declaration
-// of a name records its type. A re-declaration whose type differs from
-// the recorded one is a checker error: the flat per-function typing maps
-// give every same-name declaration one shared slot, so the emitters would
-// type the earlier blocks by the later declaration (or vice versa).
-// `none` is a wildcard on either side — the raw tier is not type checked
-// — and a none record is refined in place by a later concrete decl.
-fn shadow_declare(name: str, t, line: int, col: int) {
-    var lst <- shadow_decls[0];
-    var i <- 0;
-    while (i < len(lst)) {
-        if (lst[i].name = name) {
-            var prev <- lst[i].dtype;
-            if (prev.kind != "" && t.kind != "" && !shadow_eq(prev, t)) {
-                report_error(line, col, "re-declaration of '" + name + "' changes its type from " + T.type_str(prev) + " to " + T.type_str(t) + "; shadowing may not change a variable's type (rename the variable)");
-            }
-            if (prev.kind = "" && t.kind != "") {
-                lst[i] <- {name: name, dtype: t};
-            }
-            return false;
-        }
-        i <- i + 1;
-    }
-    push(shadow_decls[0], {name: name, dtype: t});
-    return false;
 }
 
 // Track struct field layouts: var_name -> [{fname, ftype}]
@@ -2721,7 +2677,7 @@ fn arm_destructure_emit_bind(b, bn, ptype) {
                 b.locals[swap_i].reg <- fslot;
                 b.locals[swap_i].boxed <- false;
             } else {
-                push(b.locals, {name: fnm, reg: fslot, boxed: false, box_owned: false});
+                push(b.locals, {name: fnm, reg: fslot, boxed: false});
             }
             var svt <- get_var_type(fnm);
             set_var_type(fnm, ptype.fields[i].type);
@@ -2788,7 +2744,6 @@ fn infer_body(stmts) {
                 set_var_type(s.name, s.type_ann);
                 if (s.is_decl) {
                     set_decl_type(s.name, s.type_ann);
-                    shadow_declare(s.name, s.type_ann, s.line, s.col);
                 }
             } else {
                 // A reassignment (no annotation) must not downgrade a variable
@@ -2807,7 +2762,6 @@ fn infer_body(stmts) {
                     if (ty.kind = "") { ty <- T.mk_any(); }
                     set_decl_type(s.name, ty);
                     set_var_type(s.name, ty);
-                    shadow_declare(s.name, ty, s.line, s.col);
                 } else {
                     // Fixed-type rule (3b): a bare reassignment must fit the
                     // variable's declared type. any/union/union-container and
@@ -2815,7 +2769,7 @@ fn infer_body(stmts) {
                     var dt <- get_decl_type(s.name);
                     if (dt.kind != "" && dt.kind != "any" && dt.kind != "union"
                         && !T.union_in_container(dt) && !T.types_compat(dt, ty)) {
-                        report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + s.name + "' of type " + T.type_str(dt));
+                        report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + user_name(s.name) + "' of type " + T.type_str(dt));
                     }
                 }
                 // Variables explicitly declared `any` keep tracked type any
@@ -2869,16 +2823,8 @@ fn infer_body(stmts) {
         if (s.node = "MatchStmt") {
             var mi <- 0;
             while (mi < len(s.arms)) {
-                // Match arms are the one construct the checker scopes for
-                // real: the scrutinee binding is saved/restored per arm,
-                // and the parser's synthesized field binders (see
-                // match_destructure_body) re-bind the same field names in
-                // every struct-pattern arm at that arm's field types.
-                // Snapshot the shadowing registry around each arm so those
-                // per-arm bindings do not read as function-wide
-                // re-declarations; a declaration INSIDE an arm still
-                // checks against names declared outside the match.
-                var shadow_snap <- len(shadow_decls[0]);
+                // The scrutinee binding is narrowed to the arm's type for
+                // the arm body, then restored.
                 if (s.arms[mi].wild) {
                     infer_body(s.arms[mi].body);
                 } else {
@@ -2892,19 +2838,17 @@ fn infer_body(stmts) {
                         infer_body(s.arms[mi].body);
                     }
                 }
-                while (len(shadow_decls[0]) > shadow_snap) { pop(shadow_decls[0]); }
                 mi <- mi + 1;
             }
         }
         if (s.node = "WhileStmt") { infer_body(s.body); }
         if (s.node = "ForInStmt") {
             // The loop variable is a declaration at the type of `iterable[0]`
-            // (the read the emitter desugars the loop into), so the shadowing
-            // and fixed-type rules see it like a `var`.
+            // (the read the emitter desugars the loop into), so the
+            // fixed-type rule sees it like a `var`.
             var et <- typeof_expr({node: "IndexExpr", obj: s.iterable, index: {node: "NumberLit", value: 0}});
             set_decl_type(s.var_name, et);
             set_var_type(s.var_name, et);
-            shadow_declare(s.var_name, et, s.line, s.col);
             infer_body(s.body);
         }
         if (s.node = "ReturnStmt") {
@@ -3566,14 +3510,14 @@ fn check_stmt(s) {
                 } else {
                     var aactual <- typeof_expr(s.expr);
                     if (!array_union_src_ok(s.type_ann.elem, aactual, s.expr)) {
-                        report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
+                        report_error(s.line, s.col, "type mismatch: '" + user_name(s.name) + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(aactual) + " (an array-of-union slot requires an exactly matching [union] source)");
                     }
                 }
             } else {
                 var actual <- typeof_expr(s.expr);
                 var adopt <- (s.type_ann.kind = "array" && empty_arr_lit(s.expr));
                 if (!adopt && !T.types_compat(s.type_ann, actual)) {
-                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
+                    report_error(s.line, s.col, "type mismatch: '" + user_name(s.name) + "' annotated as " + T.type_str(s.type_ann) + " but assigned " + T.type_str(actual));
                 }
             }
         }
@@ -3590,7 +3534,7 @@ fn check_stmt(s) {
                 } else {
                     var rsa <- typeof_expr(s.expr);
                     if (!array_union_src_ok(lvt.elem, rsa, s.expr)) {
-                        report_error(s.line, s.col, "cannot reassign '" + s.name + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
+                        report_error(s.line, s.col, "cannot reassign '" + user_name(s.name) + "' (declared " + T.type_str(lvt) + ") from " + T.type_str(rsa) + " (an array-of-union requires an exactly matching [union] source)");
                     }
                 }
             } else if (T.union_in_container(lvt)) {
@@ -3600,7 +3544,7 @@ fn check_stmt(s) {
                 // construction; types_compat enforces that each value is a real member.
                 var rsv <- typeof_expr(s.expr);
                 if (!T.types_compat(lvt, rsv)) {
-                    report_error(s.line, s.col, "type mismatch: '" + s.name + "' (declared " + T.type_str(lvt) + ") reassigned " + T.type_str(rsv));
+                    report_error(s.line, s.col, "type mismatch: '" + user_name(s.name) + "' (declared " + T.type_str(lvt) + ") reassigned " + T.type_str(rsv));
                 }
             }
         }
@@ -3808,7 +3752,7 @@ fn generic_call_binds(e, fi) {
         var conflict <- T.tp_bind(fi.gsig.params[i], typeof_expr(e.args[i]), binds);
         if (conflict != "") {
             var prev <- T.tp_subst({kind: "tparam", name: conflict}, binds);
-            report_error(e.line, e.col, "call to '" + e.callee.name + "': type parameter '" + conflict + "' bound to " + T.type_str(prev) + " and " + T.type_str(typeof_expr(e.args[i])));
+            report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': type parameter '" + conflict + "' bound to " + T.type_str(prev) + " and " + T.type_str(typeof_expr(e.args[i])));
         }
         i <- i + 1;
     }
@@ -3919,7 +3863,7 @@ fn check_expr(e) {
             if (fi != false) {
                 var fpc: int <- fi.param_count;
                 if (len(e.args) != fpc) {
-                    report_error(e.line, e.col, "call to '" + e.callee.name + "': expected " + arity_str(fpc, fpc) + " but got " + len(e.args));
+                    report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': expected " + arity_str(fpc, fpc) + " but got " + len(e.args));
                 }
                 var gann <- fi.param_types_ann;
                 if (fi.gsig != false) {
@@ -3941,12 +3885,12 @@ fn check_expr(e) {
                             var actual <- typeof_expr(e.args[j]);
                             if (ann.kind = "array" && ann.elem.kind = "union") {
                                 if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
-                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
+                                    report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] argument or an empty array literal)");
                                 }
                             } else {
                                 var aadopt <- (ann.kind = "array" && empty_arr_lit(e.args[j]));
                                 if (!aadopt && !T.types_compat(ann, actual)) {
-                                    report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
+                                    report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': argument " + (j + 1) + " expected " + T.type_str(ann) + " but got " + T.type_str(actual));
                                 }
                             }
                         }
@@ -3963,14 +3907,14 @@ fn check_expr(e) {
                     var bsig: str <- bs.sig;
                     var bn <- len(e.args);
                     if (bn < blo || bn > bhi) {
-                        report_error(e.line, e.col, "call to '" + e.callee.name + "': expected " + arity_str(blo, bhi) + " but got " + bn);
+                        report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': expected " + arity_str(blo, bhi) + " but got " + bn);
                     }
                     var bj <- 0;
                     while (bj < bn && bj < str_len(bsig)) {
                         var bp <- char_at(bsig, bj);
                         var bact <- typeof_expr(e.args[bj]);
                         if (!builtin_arg_ok(bp, bact)) {
-                            report_error(e.line, e.col, "call to '" + e.callee.name + "': argument " + (bj + 1) + " expected " + builtin_param_str(bp) + " but got " + T.type_str(bact));
+                            report_error(e.line, e.col, "call to '" + user_name(e.callee.name) + "': argument " + (bj + 1) + " expected " + builtin_param_str(bp) + " but got " + T.type_str(bact));
                         }
                         bj <- bj + 1;
                     }
@@ -6236,7 +6180,7 @@ fn ir_get_local_slot(b, name: str): str {
         i <- i + 1;
     }
     var reg <- "%" + name;
-    push(b.locals, {name: name, reg: reg, boxed: false, box_owned: false});
+    push(b.locals, {name: name, reg: reg, boxed: false});
     // Always emit allocas in the entry block (first block of the function).
     // LLVM convention; also keeps alloca out of loops where it would reset each iter.
     ir_push_inst(b.func.blocks[0], ii_alloca(reg, T.mk_int()));
@@ -6244,43 +6188,14 @@ fn ir_get_local_slot(b, name: str): str {
 }
 
 // Mark an existing local slot as `boxed` — the slot stores a heap-cell
-// pointer rather than the value itself. All reads/writes of this name
-// go through the indirection. The `owned` flag distinguishes the two
-// callers of this function:
-//   owned=true   the outer-fn captured-locals pass that allocated the
-//                box itself. `var x <- ...` for such a slot writes the
-//                initial value through the box pointer — the box IS x's
-//                real storage.
-//   owned=false  the closure body's capture prologue, receiving a box
-//                pointer from env. `var x <- ...` for such a slot
-//                shadows the captured binding with a fresh local, so
-//                we un-box at the var-decl site instead of writing
-//                through.
-fn ir_mark_boxed(b, name: str, owned: int) {
+// pointer rather than the value itself, allocated by the declaring
+// function at entry or received from a closure's env. All reads and
+// writes of this name, the declaration included, go through it.
+fn ir_mark_boxed(b, name: str) {
     var i <- 0;
     while (i < len(b.locals)) {
         if (b.locals[i].name = name) {
             b.locals[i].boxed <- true;
-            b.locals[i].box_owned <- owned;
-            return false;
-        }
-        i <- i + 1;
-    }
-    return false;
-}
-
-// Inverse of ir_mark_boxed: used when `var x` shadows a captured (boxed)
-// slot inside a closure body. The slot stays the same alloca, but reads
-// and writes after this point treat it as a regular i64 (no deref). The
-// previously-captured box is dropped from this closure's view but still
-// exists on the heap and is still seen by the outer function — only this
-// closure's local binding shadows.
-fn ir_unmark_boxed(b, name: str) {
-    var i <- 0;
-    while (i < len(b.locals)) {
-        if (b.locals[i].name = name) {
-            b.locals[i].boxed <- false;
-            b.locals[i].box_owned <- false;
             return false;
         }
         i <- i + 1;
@@ -6292,22 +6207,6 @@ fn ir_is_boxed(b, name: str): int {
     var i <- 0;
     while (i < len(b.locals)) {
         if (b.locals[i].name = name) { return b.locals[i].boxed; }
-        i <- i + 1;
-    }
-    return false;
-}
-
-// True only when the slot is boxed AND we own that box (allocated it
-// ourselves at fn entry). Used to decide whether `var x <- ...` writes
-// through the box (we own it → it's x's real storage) or shadows the
-// captured binding with a fresh unboxed local (we don't own it).
-fn ir_is_box_owned(b, name: str): int {
-    var i <- 0;
-    while (i < len(b.locals)) {
-        if (b.locals[i].name = name) {
-            if (b.locals[i].boxed) { return b.locals[i].box_owned; }
-            return false;
-        }
         i <- i + 1;
     }
     return false;
@@ -6623,7 +6522,7 @@ fn ir_emit_expr(b, nd) {
                     swapped <- true;
                 } else {
                     add_idx <- len(b.locals);
-                    push(b.locals, {name: bn, reg: slot, boxed: false, box_owned: false});
+                    push(b.locals, {name: bn, reg: slot, boxed: false});
                 }
                 saved_vt <- get_var_type(bn);
                 set_var_type(bn, arm.ptype);
@@ -7281,7 +7180,6 @@ fn ir_emit_expr(b, nd) {
         struct_layouts[0] <- [];
         array_elem_types[0] <- [];
         decl_types[0] <- [];
-        shadow_decls[0] <- [];
 
         // Preserve type info for top-level globals into the arrow fn scope.
         // Inside a closure, references to top-level vars resolve to @g_<n>
@@ -7340,7 +7238,6 @@ fn ir_emit_expr(b, nd) {
             } else {
                 set_var_type(pname, T.mk_unann());
             }
-            shadow_declare(pname, pann3, 0, 0);
             i <- i + 1;
         }
 
@@ -7358,9 +7255,7 @@ fn ir_emit_expr(b, nd) {
                 var load_reg <- ir_fresh_tmp(sub, "cval");
                 ir_push_inst(sub.cur_block, ir_inst("closure_load_cap", load_reg, T.mk_int(), [ir_reg("%env.arg", T.mk_int()), ir_const_int(i)], false));
                 ir_push_inst(sub.cur_block, ii_store(ir_reg(load_reg, T.mk_int()), ir_reg(cslot, T.mk_int())));
-                // Box came in via env: we don't own it. A later `var cname`
-                // in this closure body should shadow, not write through.
-                ir_mark_boxed(sub, cname, false);
+                ir_mark_boxed(sub, cname);
                 set_var_type(cname, cap_outer_types[i]);
                 push(decl_types[0], {name: cname, dtype: cap_decl_types[i]});
                 i <- i + 1;
@@ -7416,10 +7311,7 @@ fn ir_emit_expr(b, nd) {
                 var ibox_tmp <- ir_fresh_tmp(sub, "box");
                 ir_push_inst(sub.cur_block, ii_box_alloc(ibox_tmp));
                 ir_push_inst(sub.cur_block, ii_store(ir_reg(ibox_tmp, T.mk_int()), ir_reg(ibslot, T.mk_int())));
-                // We allocated this box ourselves — own it. A future
-                // `var ibname` in this body is the original declaration
-                // and should write the initial value through the box.
-                ir_mark_boxed(sub, ibname, true);
+                ir_mark_boxed(sub, ibname);
             }
             ibi <- ibi + 1;
         }
@@ -8492,28 +8384,12 @@ fn ir_emit_stmt(b, stmt): int {
         //
         // At the top-level synthetic frame (__main_logic), top-level vars
         // ARE the globals, so both forms route to @g_x.
-        //
-        // Closure shadowing: if `var x` shadows a captured (boxed) slot
-        // — which happens in closure bodies like `var n <- n + 1;` — we
-        // un-box the slot at the var-decl site. The RHS evaluation
-        // already happened above (reading through the box, getting the
-        // captured value); now we want this `var` to introduce a fresh
-        // local shadow, so subsequent reads find the new value directly
-        // and writes don't propagate back to the outer's box.
         var is_top_level <- (b.func.name = "__main_logic");
         if (is_top_level && is_global(stmt.name)) {
             ir_push_inst(b.cur_block, ii_store(v, ir_reg("@g_" + stmt.name, T.mk_int())));
         } else {
             if (stmt.is_decl) {
                 var slot <- ir_get_local_slot(b, stmt.name);
-                // If this `var` is shadowing a captured (not-owned) box,
-                // un-box now so subsequent reads/writes go to the local
-                // slot directly. If we OWN the box (it's the original
-                // declaration in the outer fn that allocated it), keep
-                // the box — the store-to-slot below will write through.
-                if (ir_is_boxed(b, stmt.name) && !ir_is_box_owned(b, stmt.name)) {
-                    ir_unmark_boxed(b, stmt.name);
-                }
                 ir_emit_store_to_slot(b, slot, stmt.name, v);
             } else {
                 if (ir_has_local_slot(b, stmt.name)) {
@@ -8675,7 +8551,7 @@ fn ir_emit_stmt(b, stmt): int {
                     swapped <- true;
                 } else {
                     add_idx <- len(b.locals);
-                    push(b.locals, {name: bn, reg: slot, boxed: false, box_owned: false});
+                    push(b.locals, {name: bn, reg: slot, boxed: false});
                 }
                 saved_vt <- get_var_type(bn);
                 set_var_type(bn, arm.ptype);
@@ -8914,7 +8790,6 @@ fn emit_function_via_ir(nd, mod) {
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
     decl_types[0] <- [];
-    shadow_decls[0] <- [];
     var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -8982,8 +8857,7 @@ fn emit_function_via_ir(nd, mod) {
         if (pt2.kind = "any" && pann2.kind != "any") { pt2 <- T.mk_unann(); }
         if (pann2.kind = "any") { set_decl_type(nd.params[i], pann2); }
         set_var_type(nd.params[i], pt2);
-        shadow_declare(nd.params[i], pann2, 0, 0);
-            i <- i + 1;
+        i <- i + 1;
     }
 
     // Run type inference on body to populate var_types before emission.
@@ -9050,9 +8924,7 @@ fn emit_function_via_ir(nd, mod) {
             var box_tmp <- ir_fresh_tmp(b, "box");
             ir_push_inst(b.cur_block, ii_box_alloc(box_tmp));
             ir_push_inst(b.cur_block, ii_store(ir_reg(box_tmp, T.mk_int()), ir_reg(bslot, T.mk_int())));
-            // We own the box. `var bname` later in the body is the
-            // original declaration and should write through.
-            ir_mark_boxed(b, bname, true);
+            ir_mark_boxed(b, bname);
             bi <- bi + 1;
         }
         // If a param is boxed, the param-store earlier put the raw arg
@@ -9375,7 +9247,217 @@ fn prepass_global_types(stmts) {
     }
     return 0;
 }
+// ── Block scoping. Every typing map and every local slot is flat per
+// function, so a declaration of a name already declared in the function
+// (in an enclosing or a sibling block, or as a parameter) is renamed
+// `x$2`, `x$3`... and each identifier is rewritten to the declaration it
+// resolves to, innermost first. Top-level declarations keep their names:
+// functions read globals by name. A match arm's binder and the field
+// binders of a struct pattern in a match expression keep their names too:
+// the emitter scopes them by swapping slots. `$` cannot appear in a
+// source identifier; user_name strips the suffix for diagnostics.
+fn user_name(n: str): str {
+    var i <- 0;
+    while (i < str_len(n)) {
+        if (char_at(n, i) = "$") { return substring(n, 0, i); }
+        i <- i + 1;
+    }
+    return n;
+}
+fn sr_slot(scopes, name: str): str {
+    var si <- len(scopes) - 1;
+    while (si >= 0) {
+        var level <- scopes[si];
+        var j <- len(level) - 1;
+        while (j >= 0) {
+            if (level[j].name = name) { return level[j].slot; }
+            j <- j - 1;
+        }
+        si <- si - 1;
+    }
+    return "";
+}
+fn sr_declare(scopes, counts: [{name: str, n: int}], name: str): str {
+    var slot <- name;
+    var seen <- false;
+    var ci <- 0;
+    while (ci < len(counts)) {
+        if (counts[ci].name = name) {
+            counts[ci].n <- counts[ci].n + 1;
+            slot <- name + "$" + counts[ci].n;
+            seen <- true;
+        }
+        ci <- ci + 1;
+    }
+    if (!seen) { push(counts, {name: name, n: 1}); }
+    push(scopes[len(scopes) - 1], {name: name, slot: slot});
+    return slot;
+}
+fn sr_bind(scopes, name: str) {
+    push(scopes[len(scopes) - 1], {name: name, slot: name});
+    return 0;
+}
+fn sr_arm_binders(scopes, arm, scrutinee, with_fields: int) {
+    if (arm.wild) { return 0; }
+    if (arm.name != "") { sr_bind(scopes, arm.name); }
+    if (with_fields && (arm.name != "" || scrutinee.node = "Identifier") && arm.ptype.kind = "struct_lit") {
+        var fi <- 0;
+        while (fi < len(arm.ptype.fields)) { sr_bind(scopes, arm.ptype.fields[fi].name); fi <- fi + 1; }
+    }
+    return 0;
+}
+fn sr_expr(e, scopes, counts: [{name: str, n: int}]) {
+    if (e.node = "Identifier") {
+        var slot <- sr_slot(scopes, e.name);
+        if (slot != "") { e.name <- slot; }
+        return 0;
+    }
+    if (e.node = "BinOp") { sr_expr(e.left, scopes, counts); sr_expr(e.right, scopes, counts); return 0; }
+    if (e.node = "UnaryOp") { sr_expr(e.operand, scopes, counts); return 0; }
+    if (e.node = "CallExpr") {
+        sr_expr(e.callee, scopes, counts);
+        var ai <- 0;
+        while (ai < len(e.args)) { sr_expr(e.args[ai], scopes, counts); ai <- ai + 1; }
+        return 0;
+    }
+    if (e.node = "IndexExpr") { sr_expr(e.obj, scopes, counts); sr_expr(e.index, scopes, counts); return 0; }
+    if (e.node = "DotExpr") { sr_expr(e.obj, scopes, counts); return 0; }
+    if (e.node = "ArrayLit") {
+        var ei <- 0;
+        while (ei < len(e.elements)) { sr_expr(e.elements[ei], scopes, counts); ei <- ei + 1; }
+        return 0;
+    }
+    if (e.node = "StructLit") {
+        var fi <- 0;
+        while (fi < len(e.fields)) { sr_expr(e.fields[fi].val, scopes, counts); fi <- fi + 1; }
+        return 0;
+    }
+    if (e.node = "MatchExpr") {
+        sr_expr(e.scrutinee, scopes, counts);
+        var mi <- 0;
+        while (mi < len(e.arms)) {
+            push(scopes, []);
+            sr_arm_binders(scopes, e.arms[mi], e.scrutinee, true);
+            sr_expr(e.arms[mi].value, scopes, counts);
+            pop(scopes);
+            mi <- mi + 1;
+        }
+        return 0;
+    }
+    if (e.node = "ArrowFn") {
+        push(scopes, []);
+        var pi <- 0;
+        while (pi < len(e.params)) { e.params[pi] <- sr_declare(scopes, counts, e.params[pi]); pi <- pi + 1; }
+        if (e.is_expr) { sr_expr(e.body, scopes, counts); } else { sr_stmts(e.body, scopes, counts); }
+        pop(scopes);
+        return 0;
+    }
+    return 0;
+}
+fn sr_stmts(stmts, scopes, counts: [{name: str, n: int}]) {
+    var i <- 0;
+    while (i < len(stmts)) { sr_stmt(stmts[i], scopes, counts); i <- i + 1; }
+    return 0;
+}
+fn sr_stmt(s, scopes, counts: [{name: str, n: int}]) {
+    if (s.node = "Assignment") {
+        sr_expr(s.expr, scopes, counts);
+        if (s.is_decl) {
+            s.name <- sr_declare(scopes, counts, s.name);
+        } else {
+            var slot <- sr_slot(scopes, s.name);
+            if (slot != "") { s.name <- slot; }
+        }
+        return 0;
+    }
+    if (s.node = "IndexAssign") { sr_expr(s.obj, scopes, counts); sr_expr(s.index, scopes, counts); sr_expr(s.value, scopes, counts); return 0; }
+    if (s.node = "DotAssign") { sr_expr(s.obj, scopes, counts); sr_expr(s.value, scopes, counts); return 0; }
+    if (s.node = "PrintStmt") { sr_expr(s.expr, scopes, counts); return 0; }
+    if (s.node = "ReturnStmt") {
+        if (s.expr != false) { sr_expr(s.expr, scopes, counts); }
+        return 0;
+    }
+    if (s.node = "IfStmt") {
+        sr_expr(s.cond, scopes, counts);
+        push(scopes, []);
+        sr_stmts(s.then_body, scopes, counts);
+        pop(scopes);
+        push(scopes, []);
+        sr_stmts(s.else_body, scopes, counts);
+        pop(scopes);
+        return 0;
+    }
+    if (s.node = "WhileStmt") {
+        sr_expr(s.cond, scopes, counts);
+        push(scopes, []);
+        sr_stmts(s.body, scopes, counts);
+        pop(scopes);
+        return 0;
+    }
+    if (s.node = "ForInStmt") {
+        sr_expr(s.iterable, scopes, counts);
+        push(scopes, []);
+        s.var_name <- sr_declare(scopes, counts, s.var_name);
+        sr_stmts(s.body, scopes, counts);
+        pop(scopes);
+        return 0;
+    }
+    if (s.node = "MatchStmt") {
+        sr_expr(s.scrutinee, scopes, counts);
+        var mi <- 0;
+        while (mi < len(s.arms)) {
+            push(scopes, []);
+            sr_arm_binders(scopes, s.arms[mi], s.scrutinee, false);
+            sr_stmts(s.arms[mi].body, scopes, counts);
+            pop(scopes);
+            mi <- mi + 1;
+        }
+        return 0;
+    }
+    if (s.node = "FnDecl") { sr_fn(s); return 0; }
+    if (s.node = "Block") {
+        push(scopes, []);
+        sr_stmts(s.stmts, scopes, counts);
+        pop(scopes);
+        return 0;
+    }
+    if (s.node = "TypeDecl" || s.node = "ImportStmt") { return 0; }
+    sr_expr(s, scopes, counts);
+    return 0;
+}
+fn sr_fn(nd) {
+    var scopes <- [[]];
+    var counts: [{name: str, n: int}] <- [];
+    var i <- 0;
+    while (i < len(nd.params)) { sr_declare(scopes, counts, nd.params[i]); i <- i + 1; }
+    sr_stmts(nd.body, scopes, counts);
+    return 0;
+}
+fn scope_rename_program(stmts) {
+    var scopes <- [[]];
+    var counts: [{name: str, n: int}] <- [];
+    var i <- 0;
+    while (i < len(stmts)) {
+        var s <- stmts[i];
+        if (s.node = "Assignment" && s.is_decl) { sr_declare(scopes, counts, s.name); }
+        i <- i + 1;
+    }
+    i <- 0;
+    while (i < len(stmts)) {
+        var t <- stmts[i];
+        if (t.node = "FnDecl") {
+            sr_fn(t);
+        } else if (t.node = "Assignment" && t.is_decl) {
+            sr_expr(t.expr, scopes, counts);
+        } else {
+            sr_stmt(t, scopes, counts);
+        }
+        i <- i + 1;
+    }
+    return 0;
+}
 fn compile_via_ir(stmts, backend) {
+    scope_rename_program(stmts);
     backend_emit_preamble(backend);
 
     // Pre-passes: function table, call-site type inference, globals.
