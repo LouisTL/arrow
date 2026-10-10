@@ -76,7 +76,7 @@ for (ch in "abc") {
 print(upper);
 
 // ── Empty array ─────────────────────────
-for (x in []) {
+for (item in []) {
     print("should not print");
 }
 print("empty OK");

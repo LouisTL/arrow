@@ -1,0 +1,69 @@
+// EXPECT: ok
+//OUT: 2.5
+//OUT: 3.5
+//OUT: 3.0
+//OUT: 5.0
+//OUT: true
+//OUT: false
+//OUT: 1
+//OUT: 2
+//OUT: 4
+//OUT: 2
+//OUT: a!
+//OUT: 1
+//OUT: a
+//OUT: 2
+//OUT: 3
+//OUT: 4
+//OUT: 7
+//OUT: z
+//OUT: h
+//OUT: i
+//OUT: 1.5
+//OUT: 2.5
+//OUT: 10
+//OUT: 20
+//OUT: c?
+//OUT: d?
+
+// The loop variable takes the element type of its iterable: float, bool,
+// struct, union, any, nested array, an any-typed iterable (array or
+// string), a string. Two loops may reuse a name at the same type.
+var floats: [float] <- [1.5, 2.5];
+for (f in floats) { print(f + 1.0); }
+for (g in [1.5, 2.5]) { print(g * 2.0); }
+
+for (b in [true, false]) { print(b); }
+
+for (p in [{x: 1}, {x: 2}]) { print(p.x); }
+var ps: [{x: int}] <- [{x: 3}];
+for (q in ps) { print(q.x + 1); }
+
+var us: [int | str] <- [1, "a"];
+for (u in us) {
+    match (u) {
+        int => { print(u + 1); }
+        str => { print(u + "!"); }
+    }
+}
+
+var anys: [any] <- [1, "a"];
+for (a in anys) { print(a); }
+
+var m: [[int]] <- [[1, 2], [3]];
+for (row in m) { for (v in row) { print(v + 1); } }
+
+fn each(xs) { for (x in xs) { print(x); } }
+each([7, "z"]);
+each("hi");
+
+fn mk() { return [1.5, 2.5]; }
+var dyn: any <- mk();
+for (d in dyn) { print(d); }
+
+for (n in [10]) { print(n); }
+for (n in [20]) { print(n); }
+
+var cs: [str] <- ["c", "d"];
+for (c in cs) { print(c + "?"); }
+for (c in "") { print(c); }

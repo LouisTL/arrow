@@ -220,7 +220,7 @@ fn pfd(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("fn");var n<-pna
 fn ppl(){eat("LPAREN");var p:[str]<-[];var pt<-[];if(!ci("RPAREN")){push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}while(ci("COMMA")){eat("COMMA");push(p,pname("parameter"));if(ci("COLON")){eat("COLON");push(pt,pty());}else{push(pt,{kind:"any"});}}}eat("RPAREN");return{params:p,param_types_ann:pt};}
 fn pif(){eat("if");eat("LPAREN");var c<-pe();eat("RPAREN");var tb<-pb();var eb<-[];if(ci("else")){eat("else");if(ci("if")){eb<-[pif()];}else{eb<-pb();}}return{node:"IfStmt",cond:c,then_body:tb,else_body:eb};}
 fn pwh(){eat("while");eat("LPAREN");var c<-pe();eat("RPAREN");var b<-pb();return{node:"WhileStmt",cond:c,body:b};}
-fn pfi(){eat("for");eat("LPAREN");var v<-pname("loop variable");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b};}
+fn pfi(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("for");eat("LPAREN");var v<-pname("loop variable");eat("in");var it<-pe();eat("RPAREN");var b<-pb();return{node:"ForInStmt",var_name:v,iterable:it,body:b,line:ln,col:cl};}
 fn match_destructure_body(bindName: str, ptype, body, ln: int, cl: int){var out<-[];var i<-0;while(i<len(ptype.fields)){var fname<-ptype.fields[i].name;push(out,{node:"Assignment",name:fname,expr:{node:"DotExpr",obj:{node:"Identifier",name:bindName,line:ln,col:cl},field:fname},type_ann:{kind:""},is_decl:true,line:ln,col:cl});i<-i+1;}var j<-0;while(j<len(body)){push(out,body[j]);j<-j+1;}return out;}
 fn pmatch(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")&&!ci("EOF")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var body<-pb();if(pat.ptype.kind="struct_lit"&&!pat.wild){var bn<-pat.name;if(bn=""&&sc.node="Identifier"){bn<-sc.name;}if(bn!=""){body<-match_destructure_body(bn,pat.ptype,body,ln,cl);}}push(arms,{ptype:pat.ptype,name:pat.name,body:body,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(ci("COMMA")){eat("COMMA");}}eat("RBRACE");return{node:"MatchStmt",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:""};var is_lit<-false;var lit<-"";var lit_kind<-"";if(ci("IDENT")&&cv()="_"&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="FAT_ARROW"){wild<-true;adv();}else if(ci("NUMBER")){is_lit<-true;lit_kind<-"int";lit<-cv();adv();pt<-{kind:"int"};}else if(ci("STRING")){is_lit<-true;lit_kind<-"str";lit<-cv();adv();pt<-{kind:"str"};}else if(ci("BOOL")){is_lit<-true;lit_kind<-"bool";lit<-cv();adv();pt<-{kind:"bool"};}else if(ci("MINUS")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="NUMBER"){adv();is_lit<-true;lit_kind<-"int";lit<-"-"+cv();adv();pt<-{kind:"int"};}else{if(ci("IDENT")&&pos[0]+1<len(toks)&&toks[pos[0]+1].type="COLON"){nm<-cv();adv();eat("COLON");}pt<-pty_one();}return{ptype:pt,name:nm,wild:wild,is_lit:is_lit,lit:lit,lit_kind:lit_kind};}
@@ -2898,18 +2898,13 @@ fn infer_body(stmts) {
         }
         if (s.node = "WhileStmt") { infer_body(s.body); }
         if (s.node = "ForInStmt") {
-            // Loop variable: if iterable is a string, element is str char (a string)
-            var it_ty <- typeof_expr(s.iterable);
-            if (it_ty.kind = "str") {
-                set_var_type(s.var_name, T.mk_str());
-            } else {
-                // Array iteration: elem type from array
-                var et <- T.mk_unann();
-                if (s.iterable.node = "Identifier") {
-                    et <- get_array_elem_type(s.iterable.name);
-                }
-                set_var_type(s.var_name, et);
-            }
+            // The loop variable is a declaration at the type of `iterable[0]`
+            // (the read the emitter desugars the loop into), so the shadowing
+            // and fixed-type rules see it like a `var`.
+            var et <- typeof_expr({node: "IndexExpr", obj: s.iterable, index: {node: "NumberLit", value: 0}});
+            set_decl_type(s.var_name, et);
+            set_var_type(s.var_name, et);
+            shadow_declare(s.var_name, et, s.line, s.col);
             infer_body(s.body);
         }
         if (s.node = "ReturnStmt") {
