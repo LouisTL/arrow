@@ -1,0 +1,29 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 3
+//OUT: 12
+//OUT: 2
+//OUT: 15
+//OUT: 7
+//OUT: 2
+
+// A closure variable holds the arrow fn of its latest assignment: a
+// call after a reassignment passes its arguments for that arrow fn.
+fn make(n: int) { return (x) => x + n; }
+fn f() {
+    var k <- (x) => x;
+    print(k(1));
+    k <- (x, y) => x + y;
+    print(k(1, 2));
+    if (true) { k <- (x, y) => x * y; }
+    print(k(3, 4));
+    var m <- (a: int) => a + 1;
+    print(m(1));
+    m <- make(10);
+    print(m(5));
+}
+f();
+var g <- (x) => x;
+print(g(7));
+g <- (x, y) => y;
+print(g(1, 2));

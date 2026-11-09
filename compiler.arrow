@@ -6186,11 +6186,14 @@ fn ir_builder_new(f, entry_bb, mod) {
 
 // Look up whether a variable holds a closure (was assigned an ArrowFn).
 // Returns the {fn_name, param_count} record, or false if not a closure.
+// The latest record wins: a reassigned closure variable holds the arrow
+// fn of its most recent assignment, and the call site coerces arguments
+// by that arrow's parameters.
 fn ir_get_closure(b, name: str) {
-    var i <- 0;
-    while (i < len(b.closure_vars)) {
+    var i <- len(b.closure_vars) - 1;
+    while (i >= 0) {
         if (b.closure_vars[i].name = name) { return b.closure_vars[i]; }
-        i <- i + 1;
+        i <- i - 1;
     }
     return false;
 }
