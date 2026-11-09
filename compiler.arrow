@@ -1357,20 +1357,38 @@ var current_fn <- [""]; // name of function being compiled
 // Arrow function counter
 var arrow_fn_counter <- [0];
 
-// Map variable names to arrow function names for return type lookup
-var arrow_fn_map <- []; // [{var_name, fn_name}]
+// Closure variables of the function being checked: one entry per
+// `name <- (...) => ...` assignment in source order, so a call through the
+// name is checked against the latest arrow fn assigned to it. Consulted
+// before declared_fns (a local closure shadows a global one, as in the
+// emitter). Reset per function; an arrow body adds to its enclosing
+// function's list.
+var closure_vars <- [[]];
 
-fn set_arrow_fn_var(var_name: str, fn_name: str) {
-    push(arrow_fn_map, {var_name: var_name, fn_name: fn_name});
+fn arrow_var_entry(name: str, afn) {
+    var apt <- [];
+    var apt_ann <- [];
+    var k <- 0;
+    while (k < len(afn.params)) {
+        var ann <- T.mk_unann();
+        if (k < len(afn.param_types_ann)) { ann <- afn.param_types_ann[k]; }
+        push(apt_ann, ann);
+        if (ann.kind != "") { push(apt, ann); } else { push(apt, T.mk_any()); }
+        k <- k + 1;
+    }
+    var art <- T.mk_any();
+    if (afn.ret_type_ann.kind != "") { art <- afn.ret_type_ann; }
+    return {name: name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true, gsig: false};
 }
 
-fn get_arrow_fn_name(var_name: str): str {
-    var i <- len(arrow_fn_map) - 1;
+fn closure_sig(name: str) {
+    var lst <- closure_vars[0];
+    var i <- len(lst) - 1;
     while (i >= 0) {
-        if (arrow_fn_map[i].var_name = var_name) { return arrow_fn_map[i].fn_name; }
+        if (lst[i].name = name) { return lst[i]; }
         i <- i - 1;
     }
-    return "";
+    return false;
 }
 
 // String constants
@@ -1388,6 +1406,13 @@ fn add_string(text: str): str {
 var alloc_vars <- [[]]; // alloc_vars[0] is the current var list [{name, reg}]
 
 // Track variable types: var_name -> "int" or "str"
+fn list_copy(xs) {
+    var out <- [];
+    var i <- 0;
+    while (i < len(xs)) { push(out, xs[i]); i <- i + 1; }
+    return out;
+}
+
 var var_types <- [[]]; // var_types[0] is list of [{name, vtype}]
 // Read-only fallback of TOP-LEVEL decl types, consulted
 // on primary-registry misses so fn bodies see global types without the
@@ -1875,26 +1900,7 @@ fn scan_fns(stmts) {
         // name chosen later at emit time) because the checker runs before emit.
         if (stmts[i].node = "Assignment") {
             if (stmts[i].expr.node = "ArrowFn") {
-                var afn <- stmts[i].expr;
-                var apt <- [];
-                var apt_ann <- [];
-                var k <- 0;
-                while (k < len(afn.params)) {
-                    var ann <- T.mk_unann();
-                    if (k < len(afn.param_types_ann)) {
-                        ann <- afn.param_types_ann[k];
-                    }
-                    push(apt_ann, ann);
-                    if (ann.kind != "") {
-                        push(apt, ann);
-                    } else {
-                        push(apt, T.mk_any());
-                    }
-                    k <- k + 1;
-                }
-                var art <- T.mk_any();
-                if (afn.ret_type_ann.kind != "") { art <- afn.ret_type_ann; }
-                push(declared_fns, {name: stmts[i].name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true, gsig: false});
+                push(declared_fns, arrow_var_entry(stmts[i].name, stmts[i].expr));
             }
         }
         i <- i + 1;
@@ -3549,6 +3555,7 @@ fn check_stmt(s) {
             }
         }
         check_expr(s.expr);
+        if (s.expr.node = "ArrowFn") { push(closure_vars[0], arrow_var_entry(s.name, s.expr)); }
     }
     if (s.node = "CallExpr") {
         // Bare call statement: route it through check_expr so its args
@@ -3853,13 +3860,8 @@ fn check_expr(e) {
             }
         }
         if (e.callee.node = "Identifier") {
-            var fi <- find_fn(e.callee.name);
-            // If the direct lookup failed, the callee may be a variable holding
-            // an arrow function — look up via the var-name → fn-name mapping.
-            if (fi = false) {
-                var afn_name <- get_arrow_fn_name(e.callee.name);
-                if (afn_name != "") { fi <- find_fn(afn_name); }
-            }
+            var fi <- closure_sig(e.callee.name);
+            if (fi = false) { fi <- find_fn(e.callee.name); }
             if (fi != false) {
                 var fpc: int <- fi.param_count;
                 if (len(e.args) != fpc) {
@@ -3952,6 +3954,43 @@ fn check_expr(e) {
     if (e.node = "StructLit") {
         var j <- 0;
         while (j < len(e.fields)) { check_expr(e.fields[j].val); j <- j + 1; }
+    }
+    if (e.node = "ArrowFn") {
+        // The body is checked on copies of the enclosing function's maps
+        // (its captures are typed there) with the parameters typed as the
+        // lifting types them; the copies keep what the body declares or
+        // refines out of the enclosing function, like the lifting's own
+        // context. No current fn: a `return` inside the arrow fn is not
+        // checked against the enclosing function's return type.
+        var saved_vt <- var_types[0];
+        var saved_dt <- decl_types[0];
+        var saved_at <- array_elem_types[0];
+        var saved_sl <- struct_layouts[0];
+        var_types[0] <- list_copy(saved_vt);
+        decl_types[0] <- list_copy(saved_dt);
+        array_elem_types[0] <- list_copy(saved_at);
+        struct_layouts[0] <- list_copy(saved_sl);
+        var pi <- 0;
+        while (pi < len(e.params)) {
+            var pann <- T.mk_unann();
+            if (pi < len(e.param_types_ann)) { pann <- e.param_types_ann[pi]; }
+            if (pann.kind = "any") { set_decl_type(e.params[pi], pann); }
+            if (pann.kind != "") { set_var_type(e.params[pi], pann); } else { set_var_type(e.params[pi], T.mk_unann()); }
+            pi <- pi + 1;
+        }
+        var saved_fn <- current_fn[0];
+        current_fn[0] <- "";
+        if (e.is_expr) {
+            check_expr(e.body);
+        } else {
+            infer_body(e.body);
+            check_body(e.body);
+        }
+        current_fn[0] <- saved_fn;
+        var_types[0] <- saved_vt;
+        decl_types[0] <- saved_dt;
+        array_elem_types[0] <- saved_at;
+        struct_layouts[0] <- saved_sl;
     }
 }
 
@@ -8336,7 +8375,6 @@ fn ir_emit_stmt(b, stmt): int {
         if (stmt.expr.node = "ArrowFn") {
             ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
             set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
-            set_arrow_fn_var(stmt.name, v.arrow_fn_name);
         }
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
@@ -8790,6 +8828,7 @@ fn emit_function_via_ir(nd, mod) {
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
     decl_types[0] <- [];
+    closure_vars[0] <- [];
     var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -9251,8 +9290,10 @@ fn prepass_global_types(stmts) {
 // function, so a declaration of a name already declared in the function
 // (in an enclosing or a sibling block, or as a parameter) is renamed
 // `x$2`, `x$3`... and each identifier is rewritten to the declaration it
-// resolves to, innermost first. Top-level declarations keep their names:
-// functions read globals by name. A match arm's binder and the field
+// resolves to, innermost first. Top-level declarations keep their names
+// and count as declared in every function: functions read globals by
+// name, and a local named like a global gets its own slot, so the global
+// is readable again after the block. A match arm's binder and the field
 // binders of a struct pattern in a match expression keep their names too:
 // the emitter scopes them by swapping slots. `$` cannot appear in a
 // source identifier; user_name strips the suffix for diagnostics.
@@ -9414,7 +9455,7 @@ fn sr_stmt(s, scopes, counts: [{name: str, n: int}]) {
         }
         return 0;
     }
-    if (s.node = "FnDecl") { sr_fn(s); return 0; }
+    if (s.node = "FnDecl") { sr_fn(s, []); return 0; }
     if (s.node = "Block") {
         push(scopes, []);
         sr_stmts(s.stmts, scopes, counts);
@@ -9425,28 +9466,34 @@ fn sr_stmt(s, scopes, counts: [{name: str, n: int}]) {
     sr_expr(s, scopes, counts);
     return 0;
 }
-fn sr_fn(nd) {
+fn sr_fn(nd, globals: [str]) {
     var scopes <- [[]];
     var counts: [{name: str, n: int}] <- [];
+    var gi <- 0;
+    while (gi < len(globals)) { sr_declare(scopes, counts, globals[gi]); gi <- gi + 1; }
     var i <- 0;
-    while (i < len(nd.params)) { sr_declare(scopes, counts, nd.params[i]); i <- i + 1; }
+    while (i < len(nd.params)) { nd.params[i] <- sr_declare(scopes, counts, nd.params[i]); i <- i + 1; }
     sr_stmts(nd.body, scopes, counts);
     return 0;
 }
 fn scope_rename_program(stmts) {
     var scopes <- [[]];
     var counts: [{name: str, n: int}] <- [];
+    var globals: [str] <- [];
     var i <- 0;
     while (i < len(stmts)) {
         var s <- stmts[i];
-        if (s.node = "Assignment" && s.is_decl) { sr_declare(scopes, counts, s.name); }
+        if (s.node = "Assignment" && s.is_decl) {
+            sr_declare(scopes, counts, s.name);
+            push(globals, s.name);
+        }
         i <- i + 1;
     }
     i <- 0;
     while (i < len(stmts)) {
         var t <- stmts[i];
         if (t.node = "FnDecl") {
-            sr_fn(t);
+            sr_fn(t, globals);
         } else if (t.node = "Assignment" && t.is_decl) {
             sr_expr(t.expr, scopes, counts);
         } else {

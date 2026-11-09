@@ -1288,6 +1288,12 @@ def _any_check(val, want: str):
     raise RuntimeError_(f"expected {want} in any, got {got}")
 
 
+def _arity_str(lo: int, hi: int) -> str:
+    if lo == hi:
+        return "1 argument" if lo == 1 else f"{lo} arguments"
+    return f"{lo} or {hi} arguments"
+
+
 def _builtin_check(val, want: str):
     """'indexable' accepts str or array and reports 'array' on mismatch."""
     got = _value_kind(val)
@@ -1826,7 +1832,7 @@ class Interpreter:
             arg_vals.append(av)
         if len(arg_vals) != len(fn.params):
             raise RuntimeError_(
-                f"Function {fn.name} expects {len(fn.params)} args, got {len(arg_vals)}")
+                f"call to '{fn.name}': expected {_arity_str(len(fn.params), len(fn.params))} but got {len(arg_vals)}")
 
         call_env = Environment(parent=fn.closure, is_fn_root=True)
         for pi, (param, val) in enumerate(zip(fn.params, arg_vals)):
@@ -1865,10 +1871,7 @@ class Interpreter:
         def arity(lo, hi):
             n = len(args)
             if n < lo or n > hi:
-                if lo == hi:
-                    raise RuntimeError_(
-                        f"{name}() takes exactly {lo} argument{'s' if lo != 1 else ''}")
-                raise RuntimeError_(f"{name}() takes {lo} or {hi} arguments")
+                raise RuntimeError_(f"call to '{name}': expected {_arity_str(lo, hi)} but got {n}")
 
         if name == "len":
             arity(1, 1)

@@ -1,0 +1,20 @@
+// EXPECT: type_fail
+//ERR: call to 'k': expected 1 argument but got 2
+//ERR: call to 'm': expected 2 arguments but got 1
+//ERR: call to 'two': argument 1 expected int but got str
+//ERR: 4 type error(s)
+
+// A call through a closure variable is checked against the arrow fn the
+// variable holds, wherever the variable is declared; arrow-fn bodies are
+// checked like function bodies.
+fn two(a: int, b: int): int { return a + b; }
+fn local_closure() {
+    var k <- (x) => x;
+    print(k(1, 2));
+}
+fn inside_arrow(y: int) {
+    var m <- (a, b) => a + b;
+    var g <- () => { print(m(y)); print(two("x", 2)); };
+    g();
+}
+if (true) { var k <- (x) => x; k(1, 2); }

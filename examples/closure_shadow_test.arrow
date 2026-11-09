@@ -1,0 +1,17 @@
+// EXPECT: ok
+//OUT: 1
+//OUT: 3
+//OUT: 3
+//OUT: 5
+
+// A closure variable is checked against the arrow fn assigned to it in
+// its own function: two functions may use the same name at different
+// arities, and a local closure shadows a global one of the same name.
+fn first() { var k <- (x) => x; print(k(1)); }
+fn second() { var k <- (x, y) => x + y; print(k(1, 2)); }
+first();
+second();
+var f <- (v) => v;
+fn g() { var f <- (v, w) => v + w; print(f(1, 2)); }
+g();
+print(f(5));

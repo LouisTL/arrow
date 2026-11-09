@@ -33,12 +33,17 @@
 //OUT: 1
 //OUT: 7
 //OUT: 7
+//OUT: 1
+//OUT: 7
+//OUT: 2
+//OUT: 7
 
 // Block scoping: a declaration lives until the end of its block and
 // shadows an outer declaration of the same name without changing it; a
 // bare reassignment writes the variable it resolves to. Sibling or
 // nested blocks, loops, closures and match arms may reuse a name at any
-// type, including any, and int/bool keep their own printing.
+// type, including any, and int/bool keep their own printing. A local
+// named like a global hides it only inside its block.
 fn sibling_blocks() {
     if (true) { var t <- 5; print(t); }
     if (true) { var t <- "s"; print(t); }
@@ -104,3 +109,11 @@ var top <- 7;
 fn show_top() { print(top); }
 if (true) { var top <- 1; print(top); show_top(); }
 print(top);
+fn local_over_global() {
+    if (true) { var top <- 1; print(top); }
+    print(top);
+    var bump <- (top) => top + 1;
+    print(bump(1));
+    print(top);
+}
+local_over_global();
