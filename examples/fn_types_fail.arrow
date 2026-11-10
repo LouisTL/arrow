@@ -1,0 +1,30 @@
+// EXPECT: type_fail
+//ERR: cannot assign (any) => any to 'add' of type Binop
+//ERR: call to 'add': expected 2 arguments but got 1
+//ERR: call to 'add': argument 2 expected int but got str
+//ERR: type mismatch: 's' annotated as str but assigned int
+//ERR: return type mismatch in arrow fn: declared int but returning str
+//ERR: cannot assign (any, any) => any to 'k' of type (any) => any
+//ERR: call to 'g': expected 1 argument but got 2
+//ERR: type mismatch: 'h' annotated as (int) => int but assigned int
+//ERR: type mismatch: 'm' annotated as (int) => int but assigned (str) => int
+//ERR: type mismatch: 'two' annotated as ((int) => int) | ((str) => str) but assigned (any) => any
+//ERR: type mismatch: 'opt' annotated as ((int) => int) | none but assigned (str) => int
+//ERR: 11 type error(s)
+
+// A fn type fixes arity, parameter and return types; a closure variable
+// without an annotation is fixed to the fn type of its first arrow fn.
+type Binop <- (int, int) => int;
+var add: Binop <- (x, y) => x + y;
+add <- (x) => x;
+add(1);
+add(1, "s");
+var s: str <- add(1, 2);
+var bad: (int) => int <- (x) => "s";
+var k <- (x) => x;
+k <- (x, y) => x + y;
+fn f(g: (int) => int) { print(g(1, 2)); }
+var h: (int) => int <- 5;
+var m: (int) => int <- (x: str) => 1;
+var two: ((int) => int) | ((str) => str) <- (x) => x;
+var opt: ((int) => int) | none <- (s: str) => 1;

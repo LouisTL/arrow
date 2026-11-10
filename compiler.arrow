@@ -197,7 +197,7 @@ fn pimitem(){
 fn isl(): int{if(pi(1,"RBRACE")){return true;}if((pik(1)||pi(1,"STRING"))&&pi(2,"COLON")){return true;}return false;}
 fn pb(){eat("LBRACE");var ss<-[];while(!ci("RBRACE")&&!ci("EOF")){push(ss,ps());}eat("RBRACE");return ss;}
 fn pty(){var t<-pty_one();if(ci("PIPE")){var ms<-[t];while(ci("PIPE")){eat("PIPE");push(ms,pty_one());}return T.mk_union(ms);}return t;}
-fn pty_one(){if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-pname("field");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-pname("field");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-pname("type");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+pname("type");}var uln<-toks[pos[0]-1].line;var ucl<-toks[pos[0]-1].col;var targs<-[];if(ci("LT")){eat("LT");push(targs,pty());while(ci("COMMA")){eat("COMMA");push(targs,pty());}eat("GT");}return{kind:"unresolved",name:n,targs:targs,line:uln,col:ucl};}
+fn pty_one(){if(ci("LPAREN")){eat("LPAREN");var fps<-[];if(!ci("RPAREN")){push(fps,pty());while(ci("COMMA")){eat("COMMA");push(fps,pty());}}eat("RPAREN");if(len(fps)=1&&!ci("FAT_ARROW")){return fps[0];}eat("FAT_ARROW");return T.mk_fn_sig(fps,pty());}if(ci("LBRACKET")){eat("LBRACKET");var et<-pty();eat("RBRACKET");return T.mk_array(et);}if(ci("LBRACE")){eat("LBRACE");var fs<-[];if(!ci("RBRACE")){var fn1<-pname("field");eat("COLON");var ft<-pty();push(fs,{name:fn1,type:ft});while(ci("COMMA")){eat("COMMA");if(ci("RBRACE")){eat("RBRACE");return T.mk_struct_lit(fs);}var fn2<-pname("field");eat("COLON");var ft2<-pty();push(fs,{name:fn2,type:ft2});}}eat("RBRACE");return T.mk_struct_lit(fs);}var n<-pname("type");if(n="int"){return{kind:"int"};}if(n="str"){return{kind:"str"};}if(n="bool"){return{kind:"bool"};}if(n="float"){return{kind:"float"};}if(n="any"){return{kind:"any"};}if(n="none"){return{kind:"none"};}if(n="struct"){return{kind:"struct"};}if(n="fn"){return{kind:"fn"};}if(ci("DOT")){adv();n<-n+"."+pname("type");}var uln<-toks[pos[0]-1].line;var ucl<-toks[pos[0]-1].col;var targs<-[];if(ci("LT")){eat("LT");push(targs,pty());while(ci("COMMA")){eat("COMMA");push(targs,pty());}eat("GT");}return{kind:"unresolved",name:n,targs:targs,line:uln,col:ucl};}
 // `<A, B>` after a declared name; [] when absent.
 fn ptparams(): [str]{var ps:[str]<-[];if(ci("LT")){eat("LT");push(ps,pname("type parameter"));while(ci("COMMA")){eat("COMMA");push(ps,pname("type parameter"));}eat("GT");}return ps;}
 fn set_type_alias(name: str, t){var a<-type_aliases[0];var i<-0;while(i<len(a)){if(a[i].name=name){a[i]<-{name:name,atype:t};return false;}i<-i+1;}push(type_aliases[0],{name:name,atype:t});return false;}
@@ -227,7 +227,7 @@ fn parse_arm_pattern(){var nm<-"";var wild<-false;var pt<-{kind:""};var is_lit<-
 fn pmatch_expr(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;eat("match");eat("LPAREN");var sc<-pe();eat("RPAREN");eat("LBRACE");var arms<-[];while(!ci("RBRACE")&&!ci("EOF")){var pat<-parse_arm_pattern();eat("FAT_ARROW");var val<-pe();push(arms,{ptype:pat.ptype,name:pat.name,value:val,wild:pat.wild,is_lit:pat.is_lit,lit:pat.lit,lit_kind:pat.lit_kind});if(!ci("RBRACE")){eat("COMMA");}}eat("RBRACE");return{node:"MatchExpr",scrutinee:sc,arms:arms,line:ln,col:cl};}
 fn pe(){if(ci("LPAREN")&&iaf()){return paf();}return por();}
 fn iaf(): int{var d<-0;var i<-pos[0];while(i<len(toks)){var t<-toks[i].type;if(t="LPAREN"){d<-d+1;}else if(t="RPAREN"){d<-d-1;if(d=0){var j<-i+1;if(j<len(toks)&&toks[j].type="COLON"){j<-j+1;while(j<len(toks)&&toks[j].type!="FAT_ARROW"&&toks[j].type!="LBRACE"&&toks[j].type!="SEMI"){j<-j+1;}}if(j<len(toks)){return toks[j].type="FAT_ARROW";}return false;}}i<-i+1;}return false;}
-fn paf(){var pl<-ppl();var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true};}
+fn paf(){var ln<-toks[pos[0]].line;var cl<-toks[pos[0]].col;var pl<-ppl();var rt<-{kind:""};if(ci("COLON")){eat("COLON");rt<-pty();}eat("FAT_ARROW");if(ci("LBRACE")&&!isl()){var b<-pb();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:b,is_expr:false,line:ln,col:cl};}var e<-pe();return{node:"ArrowFn",params:pl.params,param_types_ann:pl.param_types_ann,ret_type_ann:rt,body:e,is_expr:true,line:ln,col:cl};}
 fn por(){var l<-pan();while(ci("OR")){eat("OR");l<-{node:"BinOp",op:"||",left:l,right:pan()};}return l;}
 fn pan(){var l<-peq();while(ci("AND")){eat("AND");l<-{node:"BinOp",op:"&&",left:l,right:peq()};}return l;}
 fn peq(){var l<-pcm();while(ci("EQ")||ci("NEQ")){var o<-cv();adv();l<-{node:"BinOp",op:o,left:l,right:pcm()};}return l;}
@@ -701,6 +701,18 @@ fn resolve_type(t, fid: int, skeys: [str], slines: [int], scols: [int], snames: 
         var ru <- T.mk_union(nm);
         if (t.tname != "") { ru <- T.mk_named(ru, t.tname); }
         return ru;
+    }
+    if (T.fn_has_sig(t)) {
+        var fps <- [];
+        var fp <- 0;
+        while (fp < len(t.params)) {
+            push(fps, resolve_type(t.params[fp], fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label));
+            fp <- fp + 1;
+        }
+        var frt <- resolve_type(t.ret, fid, skeys, slines, scols, snames, memo, rec_paths, rec_types, rec_edges, rec_tbinds, main_types, main_edges, main_tbinds, main_label);
+        var rf <- T.mk_fn_sig(fps, frt);
+        if (t.tname != "") { rf <- T.mk_named(rf, t.tname); }
+        return rf;
     }
     return t;
 }
@@ -1357,38 +1369,109 @@ var current_fn <- [""]; // name of function being compiled
 // Arrow function counter
 var arrow_fn_counter <- [0];
 
-// Closure variables of the function being checked: one entry per
-// `name <- (...) => ...` assignment in source order, so a call through the
-// name is checked against the latest arrow fn assigned to it. Consulted
-// before declared_fns (a local closure shadows a global one, as in the
-// emitter). Reset per function; an arrow body adds to its enclosing
-// function's list.
-var closure_vars <- [[]];
-
-fn arrow_var_entry(name: str, afn) {
-    var apt <- [];
-    var apt_ann <- [];
-    var k <- 0;
-    while (k < len(afn.params)) {
-        var ann <- T.mk_unann();
-        if (k < len(afn.param_types_ann)) { ann <- afn.param_types_ann[k]; }
-        push(apt_ann, ann);
-        if (ann.kind != "") { push(apt, ann); } else { push(apt, T.mk_any()); }
-        k <- k + 1;
+// ── fn types. An arrow fn literal has the type `(P1, ..., Pn) => R`: each
+// P is its parameter's annotation (any when unannotated), R its return
+// annotation, else none for a block body that never returns a value and
+// any otherwise — the same default as a fn declaration. A named fn used
+// as a value has the type of its declaration.
+fn arrow_fn_type(nd) {
+    var ps <- [];
+    var i <- 0;
+    while (i < len(nd.params)) {
+        var pa <- T.mk_any();
+        if (i < len(nd.param_types_ann)) {
+            if (nd.param_types_ann[i].kind != "") { pa <- nd.param_types_ann[i]; }
+        }
+        push(ps, pa);
+        i <- i + 1;
     }
-    var art <- T.mk_any();
-    if (afn.ret_type_ann.kind != "") { art <- afn.ret_type_ann; }
-    return {name: name, param_count: len(afn.params), ret_type: art, ret_fields: false, param_types: apt, param_types_ann: apt_ann, ret_type_ann: afn.ret_type_ann, is_arrow_var: true, gsig: false};
+    var rt <- nd.ret_type_ann;
+    if (rt.kind = "") {
+        rt <- T.mk_any();
+        if (!nd.is_expr) {
+            var rets <- [];
+            collect_returns(nd.body, rets);
+            var has_value <- false;
+            var ri <- 0;
+            while (ri < len(rets)) {
+                if (rets[ri].expr != false) { has_value <- true; }
+                ri <- ri + 1;
+            }
+            if (!has_value) { rt <- {kind: "none"}; }
+        }
+    }
+    return T.mk_fn_sig(ps, rt);
 }
 
-fn closure_sig(name: str) {
-    var lst <- closure_vars[0];
-    var i <- len(lst) - 1;
-    while (i >= 0) {
-        if (lst[i].name = name) { return lst[i]; }
-        i <- i - 1;
+fn fn_decl_type(fi) {
+    var rt <- fi.ret_type_ann;
+    if (rt.kind = "") { rt <- fi.ret_type; }
+    return T.mk_fn_sig(fi.param_types_ann, rt);
+}
+
+// An arrow fn literal written where a fn type is expected takes that
+// type's parameter and return types for the ones it leaves unannotated
+// (an unannotated parameter reads as any), the way the empty array
+// literal adopts an array type; the expected type reaches an arrow fn
+// through struct and array literals and through another arrow fn's
+// body. Positions that still mention a type parameter are left alone:
+// inside a generic body they are any.
+fn adopt_arrow(e, ft) {
+    if (e.node = "StructLit" && ft.kind = "struct_lit") {
+        var fi <- 0;
+        while (fi < len(e.fields)) {
+            if (T.struct_has_field(ft.fields, e.fields[fi].key)) { adopt_arrow(e.fields[fi].val, T.struct_field_type(ft.fields, e.fields[fi].key)); }
+            fi <- fi + 1;
+        }
+        return 0;
     }
-    return false;
+    if (e.node = "ArrayLit" && ft.kind = "array") {
+        var ei <- 0;
+        while (ei < len(e.elements)) { adopt_arrow(e.elements[ei], ft.elem); ei <- ei + 1; }
+        return 0;
+    }
+    if (e.node != "ArrowFn") { return 0; }
+    if (ft.kind = "union") {
+        var only: any <- false;
+        var ui <- 0;
+        while (ui < len(ft.members)) {
+            if (T.fn_has_sig(ft.members[ui])) {
+                if (only != false) { return 0; }
+                only <- ft.members[ui];
+            }
+            ui <- ui + 1;
+        }
+        if (only = false) { return 0; }
+        ft <- only;
+    }
+    if (!T.fn_has_sig(ft)) { return 0; }
+    if (len(ft.params) != len(e.params)) { return 0; }
+    var i <- 0;
+    while (i < len(e.params)) {
+        if (i < len(e.param_types_ann)) {
+            if (e.param_types_ann[i].kind = "any" && !T.contains_tparam(ft.params[i])) { e.param_types_ann[i] <- ft.params[i]; }
+        }
+        i <- i + 1;
+    }
+    if (e.ret_type_ann.kind = "" && !T.contains_tparam(ft.ret)) { e.ret_type_ann <- ft.ret; }
+    if (e.is_expr) {
+        adopt_arrow(e.body, e.ret_type_ann);
+    } else {
+        var rets <- [];
+        collect_returns(e.body, rets);
+        var ri <- 0;
+        while (ri < len(rets)) {
+            if (rets[ri].expr != false) { adopt_arrow(rets[ri].expr, e.ret_type_ann); }
+            ri <- ri + 1;
+        }
+    }
+    return 0;
+}
+
+// The declared_fns view of a call through a value of fn type, so the
+// call checks (arity, arguments) read one record shape.
+fn fn_type_entry(name: str, ft) {
+    return {name: name, param_count: len(ft.params), ret_type: ft.ret, ret_fields: false, param_types: ft.params, param_types_ann: ft.params, ret_type_ann: ft.ret, is_arrow_var: true, gsig: false};
 }
 
 // String constants
@@ -1892,15 +1975,6 @@ fn scan_fns(stmts) {
             while (pj < len(stmts[i].param_types_ann)) {
                 var pct <- stmts[i].param_types_ann[pj];
                 pj <- pj + 1;
-            }
-        }
-        // Also register top-level arrow-fn assignments under the variable name.
-        // This lets the type checker resolve `myVar(args)` calls where myVar holds
-        // an ArrowFn. Uses the variable name directly (not the mangled "__arrow_N"
-        // name chosen later at emit time) because the checker runs before emit.
-        if (stmts[i].node = "Assignment") {
-            if (stmts[i].expr.node = "ArrowFn") {
-                push(declared_fns, arrow_var_entry(stmts[i].name, stmts[i].expr));
             }
         }
         i <- i + 1;
@@ -2428,7 +2502,8 @@ fn typeof_expr(nd): any {
             // any: a bare function name is a closure value; anything
             // else is raw tier.
             if (get_decl_type(nd.name).kind != "any") {
-                if (find_fn(nd.name) != false) { return T.mk_fn(); }
+                var fdecl <- find_fn(nd.name);
+                if (fdecl != false) { return fn_decl_type(fdecl); }
                 return T.mk_unann();
             }
         }
@@ -2469,6 +2544,8 @@ fn typeof_expr(nd): any {
     if (nd.node = "CallExpr") {
         if (nd.callee.node = "Identifier") {
             var nm <- nd.callee.name;
+            var cvt0 <- get_var_type(nm);
+            if (T.fn_has_sig(cvt0)) { return cvt0.ret; }
             if (nm = "len") { return T.mk_int(); }
             if (nm = "str_len") { return T.mk_int(); }
             if (nm = "char_code") { return T.mk_int(); }
@@ -2532,8 +2609,10 @@ fn typeof_expr(nd): any {
                 return fi.ret_type;
             }
         }
-        // Unknown callee (indirect / closure calls): the dynamic
-        // result convention is a cell.
+        // A call through a value of fn type yields its return type; any
+        // other callee (a closure of unknown signature) yields a cell.
+        var cft <- typeof_expr(nd.callee);
+        if (T.fn_has_sig(cft)) { return cft.ret; }
         return T.mk_any();
     }
     if (nd.node = "ArrayLit") {
@@ -2623,7 +2702,7 @@ fn typeof_expr(nd): any {
         }
         return T.mk_struct_lit(fs);
     }
-    if (nd.node = "ArrowFn") { return T.mk_fn(); }
+    if (nd.node = "ArrowFn") { return arrow_fn_type(nd); }
     // Unrecognized expression forms are raw tier: only positions the
     // emitter actually wraps may type as `any`.
     return T.mk_unann();
@@ -2736,6 +2815,7 @@ fn union_member_index(u, mt): int {
         if (ms[i].kind = "struct_lit" && mt.kind = "struct_lit") {
             if (len(ms[i].fields) = len(mt.fields) && T.types_compat(ms[i], mt)) { return i; }
         }
+        if (ms[i].kind = "fn" && mt.kind = "fn" && T.fn_compat(ms[i], mt)) { return i; }
         i <- i + 1;
     }
     return -1;
@@ -2745,6 +2825,11 @@ fn infer_body(stmts) {
     while (i < len(stmts)) {
         var s <- stmts[i];
         if (s.node = "Assignment") {
+            if (s.expr.node = "ArrowFn") {
+                var want_ft <- s.type_ann;
+                if (want_ft.kind = "" && !s.is_decl) { want_ft <- get_decl_type(s.name); }
+                adopt_arrow(s.expr, want_ft);
+            }
             // Use explicit type annotation if present (already a Type), otherwise infer
             if (s.type_ann.kind != "") {
                 set_var_type(s.name, s.type_ann);
@@ -2759,6 +2844,7 @@ fn infer_body(stmts) {
                 // the variable keeps for the whole function.
                 var existing <- get_var_type(s.name);
                 var ty <- typeof_expr(s.expr);
+                var rejected <- false;
                 if (s.is_decl) {
                     // Unknown
                     // classifies as checked any - never a wrong
@@ -2776,6 +2862,7 @@ fn infer_body(stmts) {
                     if (dt.kind != "" && dt.kind != "any" && dt.kind != "union"
                         && !T.union_in_container(dt) && !T.types_compat(dt, ty)) {
                         report_error(s.line, s.col, "cannot assign " + T.type_str(ty) + " to '" + user_name(s.name) + "' of type " + T.type_str(dt));
+                        rejected <- true;
                     }
                 }
                 // Variables explicitly declared `any` keep tracked type any
@@ -2790,7 +2877,7 @@ fn infer_body(stmts) {
                 // demote turned into none — routing the store through the
                 // raw unchecked unwrap and skipping the trap.
                 var rdt <- get_decl_type(s.name);
-                if (!T.union_in_container(existing) && existing.kind != "union"
+                if (!rejected && !T.union_in_container(existing) && existing.kind != "union"
                     && rdt.kind != "any") {
                     if (ty.kind != "any" || rdt.kind = "" || rdt.kind = "union"
                         || T.union_in_container(rdt)) {
@@ -3502,6 +3589,21 @@ fn empty_arr_lit(e): int {
     }
     return false;
 }
+fn check_arrow_return(rexpr, rann, ln: int, cl: int) {
+    if (rann.kind = "none" || rann.kind = "any") { return 0; }
+    var actual <- typeof_expr(rexpr);
+    if (rann.kind = "array" && rann.elem.kind = "union") {
+        if (!array_union_src_ok(rann.elem, actual, rexpr)) {
+            report_error(ln, cl, "return type mismatch in arrow fn: declared " + T.type_str(rann) + " but returning " + T.type_str(actual) + " (an array-of-union requires an exactly matching [union] value or an empty array literal)");
+        }
+        return 0;
+    }
+    var radopt <- (rann.kind = "array" && empty_arr_lit(rexpr));
+    if (!radopt && !T.types_compat(rann, actual)) {
+        report_error(ln, cl, "return type mismatch in arrow fn: declared " + T.type_str(rann) + " but returning " + T.type_str(actual));
+    }
+    return 0;
+}
 fn check_stmt(s) {
     if (s.node = "Assignment") {
         if (s.type_ann.kind != "") {
@@ -3555,7 +3657,6 @@ fn check_stmt(s) {
             }
         }
         check_expr(s.expr);
-        if (s.expr.node = "ArrowFn") { push(closure_vars[0], arrow_var_entry(s.name, s.expr)); }
     }
     if (s.node = "CallExpr") {
         // Bare call statement: route it through check_expr so its args
@@ -3565,6 +3666,10 @@ fn check_stmt(s) {
     if (s.node = "PrintStmt") { check_expr(s.expr); }
     if (s.node = "ReturnStmt") {
         if (s.expr != false) {
+            if (current_fn[0] != "") {
+                var afi <- find_fn(current_fn[0]);
+                if (afi != false) { adopt_arrow(s.expr, afi.ret_type_ann); }
+            }
             check_expr(s.expr);
             if (current_fn[0] != "") {
                 var fi <- find_fn(current_fn[0]);
@@ -3860,7 +3965,9 @@ fn check_expr(e) {
             }
         }
         if (e.callee.node = "Identifier") {
-            var fi <- closure_sig(e.callee.name);
+            var fi: any <- false;
+            var cvt <- get_var_type(e.callee.name);
+            if (T.fn_has_sig(cvt)) { fi <- fn_type_entry(e.callee.name, cvt); }
             if (fi = false) { fi <- find_fn(e.callee.name); }
             if (fi != false) {
                 var fpc: int <- fi.param_count;
@@ -3884,6 +3991,7 @@ fn check_expr(e) {
                         var ann <- gann[j];
                         // Only check args against EXPLICIT annotations
                         if (ann.kind != "") {
+                            adopt_arrow(e.args[j], ann);
                             var actual <- typeof_expr(e.args[j]);
                             if (ann.kind = "array" && ann.elem.kind = "union") {
                                 if (!array_union_src_ok(ann.elem, actual, e.args[j])) {
@@ -3982,9 +4090,19 @@ fn check_expr(e) {
         current_fn[0] <- "";
         if (e.is_expr) {
             check_expr(e.body);
+            if (e.ret_type_ann.kind != "") { check_arrow_return(e.body, e.ret_type_ann, e.line, e.col); }
         } else {
             infer_body(e.body);
             check_body(e.body);
+            if (e.ret_type_ann.kind != "") {
+                var arets <- [];
+                collect_returns(e.body, arets);
+                var ari <- 0;
+                while (ari < len(arets)) {
+                    if (arets[ari].expr != false) { check_arrow_return(arets[ari].expr, e.ret_type_ann, arets[ari].line, arets[ari].col); }
+                    ari <- ari + 1;
+                }
+            }
         }
         current_fn[0] <- saved_fn;
         var_types[0] <- saved_vt;
@@ -6177,30 +6295,38 @@ fn ir_builder_new(f, entry_bb, mod) {
         // The owning module — needed by emitters that allocate string
         // constants or externs (e.g. StringLit, PrintStmt).
         mod: mod,
-        // Per-builder map: variable name → {fn_name, param_count} for variables
-        // that hold a closure value. Set by Assignment when rhs is an ArrowFn,
-        // consulted by CallExpr to emit an indirect call instead of a direct one.
-        closure_vars: []
+        // An arrow fn body: its returns are cells (see ReturnStmt).
+        is_arrow: false
     };
 }
 
 // Look up whether a variable holds a closure (was assigned an ArrowFn).
 // Returns the {fn_name, param_count} record, or false if not a closure.
-// The latest record wins: a reassigned closure variable holds the arrow
-// fn of its most recent assignment, and the call site coerces arguments
-// by that arrow's parameters.
-fn ir_get_closure(b, name: str) {
-    var i <- len(b.closure_vars) - 1;
-    while (i >= 0) {
-        if (b.closure_vars[i].name = name) { return b.closure_vars[i]; }
-        i <- i - 1;
+// A call through a closure value. Arguments ride the cell ABI, shaped by
+// the callee's fn type when it has one: a union parameter takes a union
+// cell, every other parameter an any-cell. The result comes back as a
+// cell and is read as the fn type's return (ir_cell_read); without a
+// signature it is a cell.
+fn ir_emit_closure_call(b, pair_val, ftype, arg_nodes) {
+    var args <- [];
+    var i <- 0;
+    while (i < len(arg_nodes)) {
+        var pann <- T.mk_any();
+        if (T.fn_has_sig(ftype) && i < len(ftype.params)) { pann <- ftype.params[i]; }
+        if (pann.kind = "union") {
+            push(args, ir_coerce_slot_value(b, arg_nodes[i], pann));
+        } else {
+            push(args, ir_coerce_slot_value(b, arg_nodes[i], T.mk_any()));
+        }
+        i <- i + 1;
     }
-    return false;
-}
-
-fn ir_set_closure(b, name: str, fn_name: str, param_count: int): int {
-    push(b.closure_vars, {name: name, fn_name: fn_name, param_count: param_count});
-    return 0;
+    var tmp <- ir_fresh_tmp(b, "cc");
+    ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), pair_val, args));
+    if (T.fn_has_sig(ftype)) {
+        if (ftype.ret.kind = "none") { return ir_const_int(0); }
+        return ir_cell_read(b, tmp, ftype.ret);
+    }
+    return ir_reg(tmp, T.mk_any());
 }
 
 fn ir_fresh_tmp(b, prefix: str): str {
@@ -6659,18 +6785,7 @@ fn ir_emit_expr(b, nd) {
                 ir_push_inst(b.cur_block, ii_call(euw, T.mk_int(), "arrow_any_unwrap", [callee_val, ir_const_int(6)]));
                 callee_val <- ir_reg(euw, T.mk_int());
             }
-            // Unknown target: uniform dynamic ABI — every arg rides as
-            // an any-cell.
-            var args <- [];
-            var i <- 0;
-            while (i < len(nd.args)) {
-                push(args, ir_coerce_slot_value(b, nd.args[i], T.mk_any()));
-                i <- i + 1;
-            }
-            var tmp <- ir_fresh_tmp(b, "icc");
-            ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), callee_val, args));
-            // Dynamic results are cells.
-            return ir_reg(tmp, T.mk_any());
+            return ir_emit_closure_call(b, callee_val, ect, nd.args);
         }
         var nm <- nd.callee.name;
 
@@ -6880,27 +6995,22 @@ fn ir_emit_expr(b, nd) {
             return ir_reg(tmp, T.mk_str());
         }
 
-        // Closure invocation: if `nm` was assigned an ArrowFn earlier in this
-        // function, it holds a closure pair. Load the pair, unpack [fn_ptr,
-        // env_ptr], and indirect-call with env prepended to args.
-        var cinfo <- ir_get_closure(b, nm);
-        if (cinfo != false) {
-            // Load the closure pair pointer from wherever the variable lives.
-            // Locals shadow globals: if the name is in this builder's locals,
-            // use the local slot even when a global of the same name exists.
-            var is_loc <- false;
-            var j <- 0;
-            while (j < len(b.locals)) {
-                if (b.locals[j].name = nm) { is_loc <- true; }
-                j <- j + 1;
-            }
+        // A variable holding a closure: a local (which shadows a function of
+        // the same name) or a global that is not a function. Load the pair
+        // from wherever the variable lives and call through it.
+        var is_loc <- false;
+        var j <- 0;
+        while (j < len(b.locals)) {
+            if (b.locals[j].name = nm) { is_loc <- true; }
+            j <- j + 1;
+        }
+        var fi_lookup <- find_fn(nm);
+        if (is_loc || (fi_lookup = false && is_global(nm))) {
             var pair_tmp <- ir_fresh_tmp(b, "pair");
             if (is_loc) {
                 var slot <- ir_get_local_slot(b, nm);
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
                 if (ir_is_boxed(b, nm)) {
-                    // slot holds a box pointer; the closure pair
-                    // value lives one indirection further.
                     var deref <- ir_fresh_tmp(b, "bxpair");
                     ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(pair_tmp, T.mk_int())));
                     pair_tmp <- deref;
@@ -6908,111 +7018,14 @@ fn ir_emit_expr(b, nd) {
             } else {
                 ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
             }
-            // A callee variable DECLARED any holds a tagged cell (tag 6
-            // when the pair wrapped as a fn value): verify the tag and
-            // unwrap to the raw closure pair before the indirect call.
+            // A callee variable DECLARED any holds a tagged cell: verify
+            // the tag and unwrap to the raw closure pair.
             if (get_decl_type(nm).kind = "any") {
                 var cuw <- ir_fresh_tmp(b, "cuw");
                 ir_push_inst(b.cur_block, ii_call(cuw, T.mk_int(), "arrow_any_unwrap", [ir_reg(pair_tmp, T.mk_int()), ir_const_int(6)]));
                 pair_tmp <- cuw;
             }
-            // Evaluate user args. If the underlying arrow fn carries
-            // annotations, coerce per-annotation: an any-annotated param
-            // receives a tagged cell, a union param wraps, and unannotated
-            // params stay raw (blanket any-unwrap via ir_emit_arg).
-            var cl_fi <- find_fn(cinfo.fn_name);
-            var args <- [];
-            var i <- 0;
-            while (i < len(nd.args)) {
-                var cl_pann <- T.mk_unann();
-                if (cl_fi != false && i < len(cl_fi.param_types_ann)) { cl_pann <- cl_fi.param_types_ann[i]; }
-                if (cl_pann.kind = "") {
-                    push(args, ir_emit_arg(b, nd.args[i]));
-                } else if (cl_pann.kind = "int" || cl_pann.kind = "float" || cl_pann.kind = "bool" || cl_pann.kind = "str" || cl_pann.kind = "array" || cl_pann.kind = "fn") {
-                    // Concrete-annotated closure params
-                    // ride the uniform cell ABI; the arrow entry
-                    // unwrap-checks against the annotation.
-                    push(args, ir_coerce_slot_value(b, nd.args[i], T.mk_any()));
-                } else {
-                    push(args, ir_coerce_slot_value(b, nd.args[i], cl_pann));
-                }
-                i <- i + 1;
-            }
-            var tmp <- ir_fresh_tmp(b, "cc");
-            ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
-            // Dynamic results are cells.
-            return ir_reg(tmp, T.mk_any());
-        }
-
-        // Indirect call via variable: if `nm` isn't a known top-level fn but
-        // matches a local var or a global, treat it as holding a closure pair
-        // value (e.g. assigned from another fn that returns a closure).
-        var fi_lookup <- find_fn(nm);
-        var is_known_fn <- false;
-        if (fi_lookup != false) {
-            // is_arrow_var entries are top-level arrow-fn assignments; they
-            // ARE callable via closure_call too, so still go through the
-            // indirect path. Plain FnDecls are direct calls.
-            if (!fi_lookup.is_arrow_var) { is_known_fn <- true; }
-        }
-        if (!is_known_fn) {
-            // Find where the closure pair lives — local slot or global.
-            // Locals SHADOW globals. Otherwise a captured parameter that
-            // happens to share a name with a top-level var (like `g` being
-            // captured in compose's body while another `g` exists at top
-            // level) would silently load the wrong value.
-            var is_loc <- false;
-            var j <- 0;
-            while (j < len(b.locals)) {
-                if (b.locals[j].name = nm) { is_loc <- true; }
-                j <- j + 1;
-            }
-            if (is_loc || is_global(nm)) {
-                var pair_tmp <- ir_fresh_tmp(b, "pair");
-                if (is_loc) {
-                    var slot <- ir_get_local_slot(b, nm);
-                    ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg(slot, T.mk_int())));
-                    if (ir_is_boxed(b, nm)) {
-                        var deref <- ir_fresh_tmp(b, "bxpair");
-                        ir_push_inst(b.cur_block, ii_box_load(deref, ir_reg(pair_tmp, T.mk_int())));
-                        pair_tmp <- deref;
-                    }
-                } else {
-                    ir_push_inst(b.cur_block, ii_load(pair_tmp, T.mk_int(), ir_reg("@g_" + nm, T.mk_int())));
-                }
-                // A callee variable DECLARED any holds a tagged cell:
-                // verify the tag and unwrap to the raw closure pair.
-                if (get_decl_type(nm).kind = "any") {
-                    var cuw <- ir_fresh_tmp(b, "cuw");
-                    ir_push_inst(b.cur_block, ii_call(cuw, T.mk_int(), "arrow_any_unwrap", [ir_reg(pair_tmp, T.mk_int()), ir_const_int(6)]));
-                    pair_tmp <- cuw;
-                }
-                var args <- [];
-                var i <- 0;
-                while (i < len(nd.args)) {
-                    var iv_pann <- T.mk_unann();
-                    if (fi_lookup != false && i < len(fi_lookup.param_types_ann)) { iv_pann <- fi_lookup.param_types_ann[i]; }
-                    if (fi_lookup = false) {
-                        // Unknown target: uniform dynamic ABI — every
-                        // arg rides as an any-cell.
-                        iv_pann <- T.mk_any();
-                    }
-                    if (iv_pann.kind = "") {
-                        push(args, ir_emit_arg(b, nd.args[i]));
-                    } else if (iv_pann.kind = "int" || iv_pann.kind = "float" || iv_pann.kind = "bool" || iv_pann.kind = "str" || iv_pann.kind = "array" || iv_pann.kind = "fn") {
-                        // Same uniform-cell leg as the
-                        // known-arrow-var site; entry unwraps.
-                        push(args, ir_coerce_slot_value(b, nd.args[i], T.mk_any()));
-                    } else {
-                        push(args, ir_coerce_slot_value(b, nd.args[i], iv_pann));
-                    }
-                    i <- i + 1;
-                }
-                var tmp <- ir_fresh_tmp(b, "cc");
-                ir_push_inst(b.cur_block, ii_closure_call(tmp, T.mk_int(), ir_reg(pair_tmp, T.mk_int()), args));
-                // Dynamic results are cells.
-                return ir_reg(tmp, T.mk_any());
-            }
+            return ir_emit_closure_call(b, ir_reg(pair_tmp, T.mk_int()), typeof_expr(nd.callee), nd.args);
         }
 
         // Generic user-function call. Arguments are evaluated left-to-right.
@@ -7197,6 +7210,7 @@ fn ir_emit_expr(b, nd) {
         // Sub-builder for the closure body. Reuses the outer module so
         // string constants pool together.
         var sub <- ir_builder_new(afn, afn_entry, b.mod);
+        sub.is_arrow <- true;
 
         // Save the outer var-types so we can restore later. We need fresh
         // var_types for the closure scope (params + captures + locals).
@@ -7244,6 +7258,8 @@ fn ir_emit_expr(b, nd) {
         }
 
         // Param prologue: allocate a slot for each user param and copy the arg in.
+        // pinit[i] is the register each slot was initialized from.
+        var pinit: [str] <- [];
         i <- 0;
         while (i < len(nd.params)) {
             var pname <- nd.params[i];
@@ -7267,12 +7283,14 @@ fn ir_emit_expr(b, nd) {
             // on EVERY call path now — unwrap-check against the
             // annotation (trap message matches the interp) and store
             // the raw payload. Other kinds store the incoming as-is.
-            if (pann3.kind = "int" || pann3.kind = "float" || pann3.kind = "bool" || pann3.kind = "str" || pann3.kind = "array" || pann3.kind = "fn") {
+            if (pann3.kind = "int" || pann3.kind = "float" || pann3.kind = "bool" || pann3.kind = "str" || pann3.kind = "array" || pann3.kind = "fn" || pann3.kind = "struct_lit" || pann3.kind = "struct") {
                 var pauc <- ir_fresh_tmp(sub, "pauc");
                 ir_push_inst(sub.cur_block, ii_call(pauc, T.mk_int(), "arrow_any_unwrap", [ir_reg("%" + pname + ".arg", T.mk_int()), ir_const_int(any_want_of(pann3))]));
                 ir_push_inst(sub.cur_block, ii_store(ir_reg(pauc, T.mk_int()), ir_reg(pslot, T.mk_int())));
+                push(pinit, pauc);
             } else {
                 ir_push_inst(sub.cur_block, ii_store(ir_reg("%" + pname + ".arg", T.mk_int()), ir_reg(pslot, T.mk_int())));
+                push(pinit, "%" + pname + ".arg");
             }
             if (pann3.kind = "any") { set_decl_type(pname, pann3); }
             if (pann3.kind != "") {
@@ -7358,13 +7376,13 @@ fn ir_emit_expr(b, nd) {
             ibi <- ibi + 1;
         }
         // Re-init any boxed params (same reason as in the regular fn
-        // path: the earlier %x.arg → slot store wrote a value where a
-        // box ptr is now required).
+        // path: the earlier prologue store wrote a value where a box
+        // ptr is now required).
         var ipi <- 0;
         while (ipi < len(nd.params)) {
             var ipname <- nd.params[ipi];
             if (ir_is_boxed(sub, ipname)) {
-                ir_emit_store_to_slot(sub, ir_get_local_slot(sub, ipname), ipname, ir_reg("%" + ipname + ".arg", T.mk_int()));
+                ir_emit_store_to_slot(sub, ir_get_local_slot(sub, ipname), ipname, ir_reg(pinit[ipi], T.mk_int()));
             }
             ipi <- ipi + 1;
         }
@@ -7380,8 +7398,11 @@ fn ir_emit_expr(b, nd) {
                 var rvt3 <- typeof_expr(nd.body);
                 if (nd.ret_type_ann.kind = "union") {
                     if (rvt3.kind != "union") { rv <- ir_union_wrap(sub, rv, rvt3, nd.ret_type_ann); }
+                } else if (nd.ret_type_ann.kind = "any") {
+                    rv <- ir_wrap_any(sub, rv, rvt3);
+                } else {
+                    rv <- ir_wrap_any(sub, rv, nd.ret_type_ann);
                 }
-                if (nd.ret_type_ann.kind = "any") { rv <- ir_wrap_any(sub, rv, rvt3); }
                 ir_set_terminator(sub.cur_block, ii_ret(rv));
                 ret_type_inferred <- nd.ret_type_ann;
             } else {
@@ -7404,7 +7425,7 @@ fn ir_emit_expr(b, nd) {
                 i <- i + 1;
             }
             if (sub.cur_block.terminator = false) {
-                ir_set_terminator(sub.cur_block, ii_ret(ir_const_int(0)));
+                ir_set_terminator(sub.cur_block, ii_ret(ir_wrap_any(sub, ir_const_int(0), {kind: "none"})));
             }
             // After infer_body, declared_fns[afn_name].ret_type holds the
             // inferred return type (or any if inference couldn't decide).
@@ -8287,6 +8308,8 @@ fn ir_emit_stmt(b, stmt): int {
             if (brfn != false) { brslot <- brfn.ret_type_ann; }
             if (tot_ret_includes_none(brslot)) {
                 ir_set_terminator(b.cur_block, ii_ret(ir_union_none_ret(b, brslot)));
+            } else if (b.is_arrow) {
+                ir_set_terminator(b.cur_block, ii_ret(ir_wrap_any(b, ir_const_int(0), {kind: "none"})));
             } else {
                 ir_set_terminator(b.cur_block, ii_ret(ir_const_int(0)));
             }
@@ -8331,6 +8354,9 @@ fn ir_emit_stmt(b, stmt): int {
             // BOTH wraps; named eff_any fns with rslot "" fired only
             // one, which hid it).
             if (eff_any && rvt.kind != "union" && rvt.kind != "any") { v <- ir_wrap_any(b, v, rvt); }
+            // An arrow fn's result is a cell on every call path: a value
+            // built for a concrete return annotation is wrapped by it.
+            if (b.is_arrow && !eff_any && rslot.kind != "" && rslot.kind != "union") { v <- ir_wrap_any(b, v, rslot); }
             ir_set_terminator(b.cur_block, ii_ret(v));
         }
         return 0;
@@ -8368,17 +8394,6 @@ fn ir_emit_stmt(b, stmt): int {
         // storing raw int bits into a float slot would bitcast to a denormal.
         var v: any <- ir_emit_value_for_slot(b, stmt.expr, slot_t);
         var rhs_t <- typeof_expr(stmt.expr);
-        // If the RHS was an ArrowFn (returned a value carrying arrow_fn_name),
-        // record this var as holding a closure so future CallExpr on this name
-        // emit closure_call instead of a direct call, and mirror the inferred
-        // return type onto the var's declared_fns entry so typeof_expr at call
-        // sites returns the right kind. This runs BEFORE the slot coercions
-        // below: the tagged-any wrap replaces `v` with a plain cell register,
-        // which would lose the arrow_* marker fields this block reads.
-        if (stmt.expr.node = "ArrowFn") {
-            ir_set_closure(b, stmt.name, v.arrow_fn_name, v.arrow_param_count);
-            set_fn_ret_type(stmt.name, v.arrow_ret_type, false);
-        }
         if (slot_t.kind = "float" && (rhs_t.kind = "int" || rhs_t.kind = "bool")) {
             // Promote: sitofp i64 → double, then bitcast double → i64 storage.
             var dr <- ir_fresh_tmp(b, "fsi");
@@ -8831,7 +8846,6 @@ fn emit_function_via_ir(nd, mod) {
     struct_layouts[0] <- [];
     array_elem_types[0] <- [];
     decl_types[0] <- [];
-    closure_vars[0] <- [];
     var old_fn <- current_fn[0];
     current_fn[0] <- nd.name;
 
@@ -9279,6 +9293,7 @@ fn prepass_global_types(stmts) {
         var s <- stmts[i];
         if (s.node = "Assignment") {
             if (s.is_decl) {
+                adopt_arrow(s.expr, s.type_ann);
                 var gt <- s.type_ann;
                 if (gt.kind = "") { gt <- typeof_expr(s.expr); }
                 if (gt.kind = "") { gt <- T.mk_any(); }

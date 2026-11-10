@@ -327,6 +327,7 @@ class Assignment:
     line: int = 0
     col: int = 0
     type_kind: str = ""  # annotation kind head ("" = unannotated)
+    type_sig: Any = None  # (param kinds, return kind) when the annotation is a fn type
 
 @dataclass
 class PrintStmt:
@@ -436,6 +437,7 @@ class TypeDecl:
     col: int = 0
     tparams: list = None
     type_uses: list = None     # TypeUse records inside the right-hand side
+    rhs_sig: Any = None        # (param kinds, return kind) for a fn type alias
 
 
 @dataclass
@@ -476,6 +478,7 @@ class Parser:
         self._panic = False
         self.type_uses: list = []      # every Name<...> written in this file
         self._tparams: list = []       # type parameters in scope
+        self._last_fn_sig = None       # signature of the fn type parsed last
 
     def _record_error(self, msg: str, line: int, col: int):
         if self._panic:
@@ -664,7 +667,9 @@ class Parser:
 
     def _skip_type_ann(self):
         """Parse and discard a type annotation. Supports: int, str, [int], [[str]], {x: int, y: int}, ..."""
-        if self._current().type == TokenType.LBRACKET:
+        if self._current().type == TokenType.LPAREN:
+            self._parse_type_kind()
+        elif self._current().type == TokenType.LBRACKET:
             self._eat(TokenType.LBRACKET)
             self._skip_type_ann()
             self._eat(TokenType.RBRACKET)
@@ -704,9 +709,9 @@ class Parser:
                 mk, _ = self._parse_type_kind()
                 members.append(mk)
             return "union_none" if "none" in members else "union"
-        if kind in ("int", "float", "bool", "str", "array", "struct", "any"):
+        if kind in ("int", "float", "bool", "str", "array", "struct", "any", "fn"):
             return kind
-        if kind in ("none", "fn"):
+        if kind == "none":
             return ""
         return kind
 
@@ -731,15 +736,18 @@ class Parser:
         # Optional type annotation: var x: int <- expr; the kind head is
         # retained for the runtime kind check at this declaration edge.
         tkind = ""
+        tsig = None
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             tkind = self._type_ann_kind()
+            if tkind == "fn":
+                tsig = self._last_fn_sig
         self._eat(TokenType.ARROW)
         expr = self._expression()
         self._eat(TokenType.SEMI)
         # Track at the `var` keyword position so error messages point there.
         return Assignment(name, expr, is_decl=True, line=var_tok.line, col=var_tok.col,
-                          type_kind=tkind)
+                          type_kind=tkind, type_sig=tsig)
 
     def _print_stmt(self) -> PrintStmt:
         self._eat(TokenType.PRINT)
@@ -866,16 +874,18 @@ class Parser:
         outer_uses, self.type_uses = self.type_uses, []
         self._tparams = tparams + self._tparams
         kind, pfields = self._parse_type_kind()
+        sig = self._last_fn_sig if kind == "fn" else None
         if self._current().type == TokenType.PIPE:
             while self._match(TokenType.PIPE):
                 self._parse_type_kind()
             kind, pfields = "union", None
+            sig = None
         self._eat(TokenType.SEMI)
         self._tparams = self._tparams[len(tparams):]
         uses, self.type_uses = self.type_uses, outer_uses
         return TypeDecl(name=name, rhs_kind=kind, rhs_pfields=pfields,
                         line=tok.line, col=tok.col, tparams=tparams,
-                        type_uses=uses)
+                        type_uses=uses, rhs_sig=sig)
 
     def _type_params(self) -> list:
         """`<A, B>` after a declared name; [] when absent."""
@@ -914,6 +924,20 @@ class Parser:
         (kind, pfields). pfields is the list of field names for a struct
         pattern (used for structural arm dispatch), else None."""
         t = self._current().type
+        if t == TokenType.LPAREN:
+            self._eat(TokenType.LPAREN)
+            pkinds = []
+            if self._current().type != TokenType.RPAREN:
+                pkinds.append(self._type_ann_kind())
+                while self._match(TokenType.COMMA):
+                    pkinds.append(self._type_ann_kind())
+            self._eat(TokenType.RPAREN)
+            if len(pkinds) == 1 and self._current().type != TokenType.FAT_ARROW:
+                return pkinds[0], None
+            self._eat(TokenType.FAT_ARROW)
+            rkind = self._type_ann_kind()
+            self._last_fn_sig = (pkinds, rkind)
+            return "fn", None
         if t == TokenType.LBRACKET:
             self._eat(TokenType.LBRACKET)
             self._skip_type_ann()
@@ -1541,6 +1565,16 @@ class Interpreter:
                 val = self._eval(expr)
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
+                if node.type_sig is not None and isinstance(expr, ArrowFn) and isinstance(val, Function):
+                    sig_params, sig_ret = node.type_sig
+                    if len(sig_params) == len(val.params):
+                        pk = list(val.param_kinds) if val.param_kinds else [""] * len(val.params)
+                        for pi, pkind in enumerate(sig_params):
+                            if pk[pi] in ("", "any"):
+                                pk[pi] = pkind
+                        val.param_kinds = pk
+                        if val.ret_kind == "":
+                            val.ret_kind = sig_ret
                 if is_decl:
                     # An annotated declaration checks the value's kind
                     # before binding. This runs OUTSIDE the try below — the
@@ -1701,6 +1735,7 @@ class Interpreter:
         elif isinstance(val, str): kind = "str"
         elif isinstance(val, float): kind = "float"
         elif isinstance(val, list): kind = "array"
+        elif isinstance(val, Function): kind = "fn"
         else: kind = "struct"
         for arm in arms:
             if arm.ptype_kind == "_":
@@ -2346,7 +2381,7 @@ def _dirname(path: str) -> str:
 
 
 # ── whole-program type + import resolution ──
-_CONCRETE_KINDS = ("int", "float", "bool", "str", "array", "struct", "any")
+_CONCRETE_KINDS = ("int", "float", "bool", "str", "array", "struct", "any", "fn")
 _RESERVED_KINDS = {"", "_", "none", "fn", "union", "union_none"} | set(_CONCRETE_KINDS)
 
 
@@ -2419,6 +2454,22 @@ class _TypeView:
             k, pf = sub
         self.memo[key] = (k, pf)
         return (k, pf)
+
+    def alias_fn_sig(self, name, depth=0):
+        """The signature of a fn type reached through alias names, or None."""
+        _, decl = self._decl_for(name)
+        if decl is None or depth > 32:
+            return None
+        if decl.rhs_sig is not None:
+            return decl.rhs_sig
+        if decl.rhs_kind not in _RESERVED_KINDS:
+            return self.alias_fn_sig(decl.rhs_kind, depth + 1)
+        return None
+
+    def resolve_sig(self, sig):
+        """Kind names inside a signature resolve like annotations."""
+        params, ret = sig
+        return ([self.ann_kind(k)[0] for k in params], self.ann_kind(ret)[0])
 
     def ann_kind(self, k):
         """Annotation kind head: reserved values pass through; names resolve
@@ -2493,11 +2544,16 @@ def _walk_types(node, view, seen):
         return
     if isinstance(node, Assignment):
         if node.type_kind not in _RESERVED_KINDS:
-            nk, ok = view.ann_kind(node.type_kind)
+            tname = node.type_kind
+            nk, ok = view.ann_kind(tname)
             if not ok:
                 view.terrors.append(
-                    f"{view.label}:{node.line}:{node.col}: unknown type '{node.type_kind}'")
+                    f"{view.label}:{node.line}:{node.col}: unknown type '{tname}'")
             node.type_kind = nk
+            if nk == "fn" and node.type_sig is None:
+                node.type_sig = view.alias_fn_sig(tname)
+        if node.type_sig is not None:
+            node.type_sig = view.resolve_sig(node.type_sig)
     if isinstance(node, (FnDecl, ArrowFn)):
         if node.param_kinds:
             for i, pk in enumerate(node.param_kinds):

@@ -18,7 +18,11 @@ fn mk_any(): any { return {kind: "any"}; }
 fn mk_struct(): any { return {kind: "struct"}; }
 fn mk_ptr(): any { return {kind: "ptr"}; }
 fn mk_i32(): any { return {kind: "i32"}; }
-fn mk_fn(): any { return {kind: "fn"}; }
+fn mk_fn(): any { return {kind: "fn", params: false, ret: false, tname: ""}; }
+fn mk_fn_sig(params, ret): any { return {kind: "fn", params: params, ret: ret, tname: ""}; }
+// A fn type written as `(T, U) => R` carries its signature; the bare fn
+// kind (a function value whose signature the checker never saw) does not.
+fn fn_has_sig(t): int { return t.kind = "fn" && t.params != false; }
 fn mk_unann(): any { return {kind: ""}; }
 fn mk_array(elem): any { return {kind: "array", elem: elem, tname: ""}; }
 fn mk_struct_lit(fields): any { return {kind: "struct_lit", fields: fields, tname: ""}; }
@@ -35,6 +39,7 @@ fn mk_named(t, name: str): any {
     if (t.kind = "array") { return {kind: "array", elem: t.elem, tname: name}; }
     if (t.kind = "struct_lit") { return {kind: "struct_lit", fields: t.fields, tname: name}; }
     if (t.kind = "union") { return {kind: "union", members: t.members, tname: name}; }
+    if (t.kind = "fn") { return {kind: "fn", params: t.params, ret: t.ret, tname: name}; }
     return t;
 }
 
@@ -125,6 +130,7 @@ fn union_normalize(members) {
 // fall back to structural compatibility.
 fn union_member_accepts(m, actual): int {
     if (m.kind = "array" || m.kind = "struct_lit") { return types_compat(m, actual); }
+    if (m.kind = "fn" && actual.kind = "fn") { return fn_compat(m, actual); }
     return m.kind = actual.kind;
 }
 
@@ -201,6 +207,15 @@ fn tp_bind(pat, actual, binds): str {
             k <- k + 1;
         }
     }
+    if (fn_has_sig(pat) && fn_has_sig(actual) && len(pat.params) = len(actual.params)) {
+        var fp <- 0;
+        while (fp < len(pat.params)) {
+            var c3 <- tp_bind(pat.params[fp], actual.params[fp], binds);
+            if (c3 != "") { return c3; }
+            fp <- fp + 1;
+        }
+        return tp_bind(pat.ret, actual.ret, binds);
+    }
     return "";
 }
 
@@ -214,6 +229,11 @@ fn contains_tparam(t): int {
     if (t.kind = "union") {
         var j <- 0;
         while (j < len(t.members)) { if (contains_tparam(t.members[j])) { return true; } j <- j + 1; }
+    }
+    if (fn_has_sig(t)) {
+        var fp <- 0;
+        while (fp < len(t.params)) { if (contains_tparam(t.params[fp])) { return true; } fp <- fp + 1; }
+        return contains_tparam(t.ret);
     }
     return false;
 }
@@ -245,13 +265,31 @@ fn tp_subst(t, binds): any {
         if (t.tname != "") { ru <- mk_named(ru, t.tname); }
         return ru;
     }
+    if (fn_has_sig(t)) {
+        var np <- [];
+        var fp <- 0;
+        while (fp < len(t.params)) { push(np, tp_subst(t.params[fp], binds)); fp <- fp + 1; }
+        var rf <- mk_fn_sig(np, tp_subst(t.ret, binds));
+        if (t.tname != "") { rf <- mk_named(rf, t.tname); }
+        return rf;
+    }
     return t;
 }
 
 fn type_str(t): str {
     if (t.kind = "tparam") { return t.name; }
-    if (t.kind = "array" || t.kind = "struct_lit" || t.kind = "union") {
+    if (t.kind = "array" || t.kind = "struct_lit" || t.kind = "union" || fn_has_sig(t)) {
         if (t.tname != "") { return t.tname; }
+    }
+    if (fn_has_sig(t)) {
+        var fs <- "(";
+        var fp <- 0;
+        while (fp < len(t.params)) {
+            if (fp > 0) { fs <- fs + ", "; }
+            fs <- fs + type_str(t.params[fp]);
+            fp <- fp + 1;
+        }
+        return fs + ") => " + type_str(t.ret);
     }
     if (t.kind = "array") { return "[" + type_str(t.elem) + "]"; }
     if (t.kind = "struct_lit") {
@@ -270,7 +308,8 @@ fn type_str(t): str {
         var i <- 0;
         while (i < len(ms)) {
             if (i > 0) { s2 <- s2 + " | "; }
-            s2 <- s2 + type_str(ms[i]);
+            if (fn_has_sig(ms[i]) && ms[i].tname = "") { s2 <- s2 + "(" + type_str(ms[i]) + ")"; }
+            else { s2 <- s2 + type_str(ms[i]); }
             i <- i + 1;
         }
         return s2;
@@ -325,6 +364,15 @@ fn type_eq(a, b): int {
         }
         return true;
     }
+    if (fn_has_sig(a) && fn_has_sig(b)) {
+        if (len(a.params) != len(b.params)) { return false; }
+        var fp <- 0;
+        while (fp < len(a.params)) {
+            if (!type_eq(a.params[fp], b.params[fp])) { return false; }
+            fp <- fp + 1;
+        }
+        return type_eq(a.ret, b.ret);
+    }
     return true;
 }
 
@@ -363,9 +411,33 @@ fn types_join(a, b): any {
     return mk_any();
 }
 
+// One position of a fn signature: fixed like an array's element type —
+// any and a concrete type do not mix (an arrow literal adopts the slot's
+// types instead), unknown matches anything.
+fn fn_part_compat(a, b): int {
+    if (a.kind = "any" && b.kind = "any") { return true; }
+    if (a.kind = "any" || b.kind = "any") {
+        if (a.kind = "" || b.kind = "") { return true; }
+        return false;
+    }
+    return types_compat(a, b);
+}
+
+fn fn_compat(annot, actual): int {
+    if (!fn_has_sig(annot) || !fn_has_sig(actual)) { return true; }
+    if (len(annot.params) != len(actual.params)) { return false; }
+    var fp <- 0;
+    while (fp < len(annot.params)) {
+        if (!fn_part_compat(annot.params[fp], actual.params[fp])) { return false; }
+        fp <- fp + 1;
+    }
+    return fn_part_compat(annot.ret, actual.ret);
+}
+
 // Is `actual` assignable to a slot declared with `annot`? Permissive:
-// none/any/struct/fn slots accept anything, numeric kinds are
-// interchangeable, arrays/struct_lits recurse with width subtyping.
+// none/any/struct slots accept anything, numeric kinds are
+// interchangeable, arrays/struct_lits recurse with width subtyping, fn
+// types compare signature-wise (fn_compat).
 fn types_compat(annot, actual): int {
     if (annot.kind = "") { return true; }
     if (actual.kind = "") { return true; }
@@ -373,8 +445,7 @@ fn types_compat(annot, actual): int {
     if (actual.kind = "any") { return true; }
     if (annot.kind = "struct") { return true; }
     if (actual.kind = "struct") { return true; }
-    if (annot.kind = "fn") { return true; }
-    if (actual.kind = "fn") { return true; }
+    if (annot.kind = "fn" && actual.kind = "fn") { return fn_compat(annot, actual); }
     if (annot.kind = "union" && actual.kind = "union") {
         var i <- 0;
         while (i < len(actual.members)) {

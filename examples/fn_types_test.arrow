@@ -1,0 +1,133 @@
+// EXPECT: ok
+//OUT: 3
+//OUT: 12
+//OUT: 12
+//OUT: 6
+//OUT: 6
+//OUT: 15
+//OUT: 42
+//OUT: 9
+//OUT: hi!
+//OUT: 2
+//OUT: z
+//OUT: [2, 4, 6]
+//OUT: n2
+//OUT: 42
+//OUT: twice
+//OUT: 5
+//OUT: 6
+//OUT: no fn
+//OUT: 3
+//OUT: none
+//OUT: 10
+//OUT: 123
+//OUT: 3
+//OUT: 15
+//OUT: 123
+//OUT: 6
+//OUT: none
+//OUT: 2
+//OUT: 42
+//OUT: 5
+//OUT: 103
+//OUT: 2
+//OUT: 40
+//OUT: none
+//OUT: 5
+//OUT: 9
+//OUT: none
+
+// A fn type `(T, U) => R` is a type like any other. An arrow fn literal
+// adopts the fn type of the slot it is written into (unannotated
+// parameters and return), also through struct and array literals and
+// nested arrow fns; a named fn used as a value has the type of its
+// declaration; a call through a fn-typed value is typed by its return.
+type Binop <- (int, int) => int;
+var add: Binop <- (x, y) => x + y;
+var mul: (int, int) => int <- (x, y) => { return x * y; };
+fn fold(xs: [int], f: Binop, init: int): int {
+    var acc <- init;
+    for (x in xs) { acc <- f(acc, x); }
+    return acc;
+}
+fn make(n: int): (int) => int { return (x) => x + n; }
+print(add(1, 2));
+print(mul(3, 4));
+var n: int <- add(5, 6);
+print(n + 1);
+print(fold([1, 2, 3], add, 0));
+print(fold([1, 2, 3], (a, b) => a * b, 1));
+print(make(10)(5));
+var inc <- make(1);
+print(inc(41));
+var d <- (x: int): int => x * 2;
+print(d(4) + 1);
+var say: (str) => none <- (s) => { print(s + "!"); };
+say("hi");
+fn apply(h, x) { return h(x); }
+print(apply(inc, 1));
+print(apply((v) => v, "z"));
+
+fn map<T, U>(xs: [T], f: (T) => U): [U] {
+    var out: [U] <- [];
+    for (x in xs) { push(out, f(x)); }
+    return out;
+}
+print(map([1, 2, 3], (x) => x * 2));
+var names <- map([1, 2], (x) => "n" + x);
+print(names[1]);
+type Handler <- {name: str, run: (int) => int};
+var h: Handler <- {name: "twice", run: (x) => x * 2};
+print(h.run(21));
+print(h.name);
+var ops: [(int, int) => int] <- [(a, b) => a + b, (a, b) => a * b];
+print(ops[0](2, 3));
+print(ops[1](2, 3));
+var maybe: ((int) => int) | none <- none;
+match (maybe) { none => { print("no fn"); } _ => { print("fn"); } }
+var opt: (int) => int | none <- (x) => { if (x > 0) { return x; } return none; };
+print(opt(3));
+print(opt(-1));
+fn plus(a: int, b: int): int { return a + b; }
+print(fold([1, 2, 3, 4], plus, 0));
+fn adder(k: int): (int) => (int) => int { return (a) => (b) => a + b + k; }
+print(adder(100)(20)(3));
+var any_f: any <- plus;
+print(any_f(1, 2));
+var quiet: (int) => none <- (x) => { print(x * 3); };
+quiet(5);
+var curried: (int) => (int) => int <- (a) => (b) => a + b;
+print(curried(100)(23));
+var r <- curried(1);
+print(r(5));
+
+// A union may hold a fn type (parenthesized, `=>` binds looser than `|`);
+// a literal adopts the one fn member's signature, and a fn-typed arm of
+// a match binds the function.
+type Step <- (int) => int;
+var mb: ((int) => int) | none <- none;
+print(match (mb) { none => "none", f: (int) => int => f(1) });
+mb <- (x) => x * 2;
+print(match (mb) { none => "none", f: (int) => int => f(1) });
+match (mb) {
+    f: Step => { print(f(21)); }
+    none => { print("none"); }
+}
+fn show(v: int | (int) => int) {
+    match (v) {
+        n: int => { print(n); }
+        g: (int) => int => { print(g(3)); }
+    }
+}
+show(5);
+show((x) => x + 100);
+var u: int | Step <- (x) => x - 1;
+show(u);
+fn pick(flag: bool): Step | none { if (flag) { return (x) => x * 10; } return none; }
+match (pick(true)) { f: Step => { print(f(4)); } z: none => { print("none"); } }
+match (pick(false)) { f: Step => { print(f(4)); } z: none => { print("none"); } }
+var box: {f: Step | none} <- {f: (x) => x + 1};
+match (box.f) { f: Step => { print(f(4)); } z: none => { print("none"); } }
+var arr: [Step | none] <- [(x) => x, none];
+match (arr[0]) { f: Step => { print(f(9)); } z: none => { print("none"); } }
+match (arr[1]) { f: Step => { print(f(9)); } z: none => { print("none"); } }
