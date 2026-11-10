@@ -396,12 +396,16 @@ class FnDecl:
     param_kinds: list = None   # per-param annotation kind heads
     ret_kind: str = ""     # return annotation kind head
     tparams: list = None
+    param_sigs: list = None    # per-param fn signature, None unless the param is fn-typed
+    ret_sig: Any = None        # fn signature of the return, None unless fn-typed
 
 @dataclass
 class ArrowFn:
     params: list[str]
     body: Any
     param_kinds: list = None   # per-param annotation kind heads
+    param_sigs: list = None    # per-param fn signature, None unless the param is fn-typed
+    ret_sig: Any = None        # fn signature of the return, None unless fn-typed
     ret_kind: str = ""     # return annotation kind head
 
 @dataclass
@@ -696,6 +700,14 @@ class Parser:
         while self._match(TokenType.PIPE):
             self._skip_type_ann()
 
+    def _type_ann_type(self):
+        """A type annotation as a kind head, or as its signature when it
+        is a fn type (a nested fn type keeps its own signature)."""
+        kind = self._type_ann_kind()
+        if kind == "fn":
+            return self._last_fn_sig
+        return kind
+
     def _type_ann_kind(self) -> str:
         """Parse a type annotation (consuming exactly what _skip_type_ann
         would) and return its kind head for the runtime kind checks: int / float /
@@ -828,39 +840,46 @@ class Parser:
         self._tparams = tparams + self._tparams
         for tp in tparams:
             self.type_uses.append(TypeUse("<param>" + tp, [], ftok.line, ftok.col))
-        params, pkinds = self._param_list()
+        params, pkinds, psigs = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
         rkind = ""
+        rsig = None
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             rkind = self._type_ann_kind()
+            if rkind == "fn":
+                rsig = self._last_fn_sig
         body = self._block()
         self._tparams = self._tparams[len(tparams):]
         return FnDecl(name, params, body.statements,
-                      param_kinds=pkinds, ret_kind=rkind, tparams=tparams)
+                      param_kinds=pkinds, ret_kind=rkind, tparams=tparams,
+                      param_sigs=psigs, ret_sig=rsig)
 
-    def _param_list(self) -> tuple[list[str], list[str]]:
+    def _param_list(self) -> tuple[list[str], list[str], list]:
         self._eat(TokenType.LPAREN)
         params = []
         kinds = []
-        if self._current().type != TokenType.RPAREN:
+        sigs = []
+
+        def param():
             params.append(self._eat_name("parameter").value)
             # Optional per-param type annotation: fn f(x: type, y: type) —
-            # the kind head is retained for the param-bind checks.
+            # the kind head is retained for the param-bind checks, the
+            # signature of a fn type for adoption at calls.
             if self._current().type == TokenType.COLON:
                 self._eat(TokenType.COLON)
                 kinds.append(self._type_ann_kind())
+                sigs.append(self._last_fn_sig if kinds[-1] == "fn" else None)
             else:
                 kinds.append("")
+                sigs.append(None)
+
+        if self._current().type != TokenType.RPAREN:
+            param()
             while self._match(TokenType.COMMA):
-                params.append(self._eat_name("parameter").value)
-                if self._current().type == TokenType.COLON:
-                    self._eat(TokenType.COLON)
-                    kinds.append(self._type_ann_kind())
-                else:
-                    kinds.append("")
+                param()
         self._eat(TokenType.RPAREN)
-        return params, kinds
+        return params, kinds, sigs
 
     def _type_decl(self) -> TypeDecl:
         """type Name <- Type; declare a structural alias. Runtime-typed, so
@@ -926,17 +945,17 @@ class Parser:
         t = self._current().type
         if t == TokenType.LPAREN:
             self._eat(TokenType.LPAREN)
-            pkinds = []
+            ptypes = []
             if self._current().type != TokenType.RPAREN:
-                pkinds.append(self._type_ann_kind())
+                ptypes.append(self._type_ann_type())
                 while self._match(TokenType.COMMA):
-                    pkinds.append(self._type_ann_kind())
+                    ptypes.append(self._type_ann_type())
             self._eat(TokenType.RPAREN)
-            if len(pkinds) == 1 and self._current().type != TokenType.FAT_ARROW:
-                return pkinds[0], None
+            if len(ptypes) == 1 and self._current().type != TokenType.FAT_ARROW:
+                return _kind_head(ptypes[0]), None
             self._eat(TokenType.FAT_ARROW)
-            rkind = self._type_ann_kind()
-            self._last_fn_sig = (pkinds, rkind)
+            rtype = self._type_ann_type()
+            self._last_fn_sig = (ptypes, rtype)
             return "fn", None
         if t == TokenType.LBRACKET:
             self._eat(TokenType.LBRACKET)
@@ -1096,21 +1115,26 @@ class Parser:
         return False
 
     def _arrow_fn(self) -> ArrowFn:
-        params, pkinds = self._param_list()
+        params, pkinds, psigs = self._param_list()
         # Optional return type annotation — kind head retained for the return check.
         rkind = ""
+        rsig = None
         if self._current().type == TokenType.COLON:
             self._eat(TokenType.COLON)
             rkind = self._type_ann_kind()
+            if rkind == "fn":
+                rsig = self._last_fn_sig
         self._eat(TokenType.FAT_ARROW)
         if self._current().type == TokenType.LBRACE and not self._is_struct_literal():
             body = self._block()
             return ArrowFn(params, body.statements,
-                           param_kinds=pkinds, ret_kind=rkind)
+                           param_kinds=pkinds, ret_kind=rkind,
+                           param_sigs=psigs, ret_sig=rsig)
         else:
             expr = self._expression()
             return ArrowFn(params, expr,
-                           param_kinds=pkinds, ret_kind=rkind)
+                           param_kinds=pkinds, ret_kind=rkind,
+                           param_sigs=psigs, ret_sig=rsig)
 
     def _or_expr(self):
         left = self._and_expr()
@@ -1271,8 +1295,9 @@ class Parser:
 #  INTERPRETER
 # ─────────────────────────────────────────────
 class ReturnSignal(Exception):
-    def __init__(self, value: Any):
+    def __init__(self, value: Any, literal: bool = False):
         self.value = value
+        self.literal = literal   # the returned expression was an arrow fn literal
 
 
 class RuntimeError_(Exception):
@@ -1493,16 +1518,44 @@ class Environment:
             self.vars[name] = value
 
 
+def _kind_head(t) -> str:
+    """The kind head of a type in a signature: a nested signature is fn."""
+    return "fn" if isinstance(t, tuple) else t
+
+
+def _adopt_sig(fnval, sig):
+    """An arrow fn literal written where a fn type is expected takes that
+    type's parameter and return types for the ones it left unannotated."""
+    ptypes, rtype = sig
+    if len(ptypes) != len(fnval.params):
+        return
+    pk = list(fnval.param_kinds) if fnval.param_kinds else [""] * len(fnval.params)
+    ps = list(fnval.param_sigs) if fnval.param_sigs else [None] * len(fnval.params)
+    for i, pt in enumerate(ptypes):
+        if pk[i] in ("", "any"):
+            pk[i] = _kind_head(pt)
+            ps[i] = pt if isinstance(pt, tuple) else None
+    fnval.param_kinds = pk
+    fnval.param_sigs = ps
+    if fnval.ret_kind == "":
+        fnval.ret_kind = _kind_head(rtype)
+        fnval.ret_sig = rtype if isinstance(rtype, tuple) else None
+
+
 class Function:
     def __init__(self, name: str, params: list[str], body: Any, closure: Environment,
-                 param_kinds: list | None = None, ret_kind: str = ""):
+                 param_kinds: list | None = None, ret_kind: str = "",
+                 param_sigs: list | None = None, ret_sig=None):
         self.name = name
         self.params = params
         self.body = body
         self.closure = closure
-        # Annotation kind heads for the param-bind and return checks.
+        # Annotation kind heads for the param-bind and return checks, and
+        # the signatures of fn-typed positions for adoption at calls.
         self.param_kinds = param_kinds if param_kinds is not None else []
         self.ret_kind = ret_kind
+        self.param_sigs = param_sigs if param_sigs is not None else []
+        self.ret_sig = ret_sig
 
     def __repr__(self):
         return f"<fn {self.name}({', '.join(self.params)})>"
@@ -1566,15 +1619,7 @@ class Interpreter:
                 if isinstance(val, Function) and val.name == "<arrow>":
                     val.name = name
                 if node.type_sig is not None and isinstance(expr, ArrowFn) and isinstance(val, Function):
-                    sig_params, sig_ret = node.type_sig
-                    if len(sig_params) == len(val.params):
-                        pk = list(val.param_kinds) if val.param_kinds else [""] * len(val.params)
-                        for pi, pkind in enumerate(sig_params):
-                            if pk[pi] in ("", "any"):
-                                pk[pi] = pkind
-                        val.param_kinds = pk
-                        if val.ret_kind == "":
-                            val.ret_kind = sig_ret
+                    _adopt_sig(val, node.type_sig)
                 if is_decl:
                     # An annotated declaration checks the value's kind
                     # before binding. This runs OUTSIDE the try below — the
@@ -1717,10 +1762,13 @@ class Interpreter:
             case FnDecl(name, params, body):
                 self.env.set(name, Function(name, params, body, self.env,
                                             param_kinds=node.param_kinds,
-                                            ret_kind=node.ret_kind))
+                                            ret_kind=node.ret_kind,
+                                            param_sigs=node.param_sigs,
+                                            ret_sig=node.ret_sig))
 
             case ReturnStmt(expr):
-                raise ReturnSignal(self._eval(expr) if expr is not None else None)
+                raise ReturnSignal(self._eval(expr) if expr is not None else None,
+                                   literal=isinstance(expr, ArrowFn))
 
             case _:
                 self._eval(node)
@@ -1815,7 +1863,9 @@ class Interpreter:
             case ArrowFn(params, body):
                 return Function("<arrow>", params, body, self.env,
                                 param_kinds=node.param_kinds,
-                                ret_kind=node.ret_kind)
+                                ret_kind=node.ret_kind,
+                                param_sigs=node.param_sigs,
+                                ret_sig=node.ret_sig)
 
             case CallExpr(callee, args):
                 return self._eval_call(callee, args)
@@ -1860,9 +1910,12 @@ class Interpreter:
         # on argument i fires before argument i+1 evaluates — matching the
         # native per-argument coercion order at the call site.
         pkinds = fn.param_kinds
+        psigs = fn.param_sigs
         arg_vals = []
         for ai, a in enumerate(args):
             av = self._eval(a)
+            if isinstance(a, ArrowFn) and ai < len(psigs) and psigs[ai] is not None:
+                _adopt_sig(av, psigs[ai])
             _any_check(av, pkinds[ai] if ai < len(pkinds) else "")
             arg_vals.append(av)
         if len(arg_vals) != len(fn.params):
@@ -1880,15 +1933,20 @@ class Interpreter:
         prev_env = self.env
         self.env = call_env
         result = None
+        literal = False
         try:
             if isinstance(fn.body, list):
                 for stmt in fn.body: self._exec(stmt)
             else:
                 result = self._eval(fn.body)
+                literal = isinstance(fn.body, ArrowFn)
         except ReturnSignal as ret:
             result = ret.value
+            literal = ret.literal
         finally:
             self.env = prev_env
+        if literal and fn.ret_sig is not None and isinstance(result, Function):
+            _adopt_sig(result, fn.ret_sig)
         if fn.ret_kind != "":
             # Annotated return edge — same matrix as the native
             # checked unwrap at the return slot. A body that falls off
@@ -2466,10 +2524,22 @@ class _TypeView:
             return self.alias_fn_sig(decl.rhs_kind, depth + 1)
         return None
 
-    def resolve_sig(self, sig):
-        """Kind names inside a signature resolve like annotations."""
+    def resolve_sig(self, sig, depth=0):
+        """Kind names inside a signature resolve like annotations; a name
+        for a fn type becomes that type's signature."""
         params, ret = sig
-        return ([self.ann_kind(k)[0] for k in params], self.ann_kind(ret)[0])
+        return ([self._resolve_sig_type(t, depth) for t in params],
+                self._resolve_sig_type(ret, depth))
+
+    def _resolve_sig_type(self, t, depth):
+        if isinstance(t, tuple):
+            return self.resolve_sig(t, depth + 1)
+        nk = self.ann_kind(t)[0]
+        if nk == "fn" and t != "fn" and depth < 32:
+            s = self.alias_fn_sig(t)
+            if s is not None:
+                return self.resolve_sig(s, depth + 1)
+        return nk
 
     def ann_kind(self, k):
         """Annotation kind head: reserved values pass through; names resolve
@@ -2556,17 +2626,28 @@ def _walk_types(node, view, seen):
             node.type_sig = view.resolve_sig(node.type_sig)
     if isinstance(node, (FnDecl, ArrowFn)):
         if node.param_kinds:
+            sigs = list(node.param_sigs) if node.param_sigs else [None] * len(node.param_kinds)
             for i, pk in enumerate(node.param_kinds):
                 if pk not in _RESERVED_KINDS:
                     nk, ok = view.ann_kind(pk)
                     if not ok:
                         view.terrors.append(f"{view.label}: unknown type '{pk}'")
                     node.param_kinds[i] = nk
+                    if nk == "fn" and sigs[i] is None:
+                        sigs[i] = view.alias_fn_sig(pk)
+                if sigs[i] is not None:
+                    sigs[i] = view.resolve_sig(sigs[i])
+            node.param_sigs = sigs
         if node.ret_kind not in _RESERVED_KINDS:
-            nk, ok = view.ann_kind(node.ret_kind)
+            rname = node.ret_kind
+            nk, ok = view.ann_kind(rname)
             if not ok:
-                view.terrors.append(f"{view.label}: unknown type '{node.ret_kind}'")
+                view.terrors.append(f"{view.label}: unknown type '{rname}'")
             node.ret_kind = nk
+            if nk == "fn" and node.ret_sig is None:
+                node.ret_sig = view.alias_fn_sig(rname)
+        if node.ret_sig is not None:
+            node.ret_sig = view.resolve_sig(node.ret_sig)
     if isinstance(node, (MatchArm, MatchExprArm)):
         if node.ptype_kind not in _RESERVED_KINDS                 and node.lit_kind is None:
             r = view.resolve_name(node.ptype_kind)

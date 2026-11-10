@@ -1,0 +1,28 @@
+// EXPECT: runtime_fail
+//OUT: 3
+//OUT: 12
+//OUT: 10
+//OUT: 3
+//OUT: 1
+//ERR: Error: expected int in any, got str
+
+// An arrow fn literal adopts the fn type of the place it is written —
+// a call argument, a return, a nested fn-typed parameter, an alias —
+// on both hosts, so its parameters are checked on entry.
+type Step <- (int) => int;
+type Runner <- (Step, int) => int;
+var apply: (Step, int) => int <- (g, x) => g(x);
+print(apply((v) => v + 1, 2));
+fn pick(n: int): Step {
+    for (i in [1, 2, 3]) {
+        if (i = n) { return (x) => x + i; }
+    }
+    return (x) => x;
+}
+print(pick(2)(10));
+fn run(r: Runner, p: Step, v: int): int { return r(p, v); }
+print(run((f, x) => f(x) * 2, (x) => x + 1, 4));
+var mk: (int) => (int) => int <- (a) => { return (b) => a + b; };
+print(mk(1)(2));
+fn each(xs: [any], f: (int) => none) { for (x in xs) { f(x); } }
+each([1, "two"], (n) => { print(n); });
